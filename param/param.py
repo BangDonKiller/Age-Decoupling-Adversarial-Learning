@@ -1,16 +1,17 @@
-# param.py
-
 import os
+import torch
 
 # --- 1. 通用設定 (General Settings) ---
 # 設置使用的計算設備：'cuda' 代表 GPU，'cpu' 代表 CPU
-# DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 # 設定隨機種子，確保實驗可重現性
 RANDOM_SEED = 42
 
 # --- 2. 路徑設定 (Path Configurations) ---
 # 數據集根目錄
-DATA_ROOT = '/path/to/your/VoxCeleb_dataset'
+DATA_ROOT = 'D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac'
+# 數據列表文件路徑 (包含音頻路徑、身份ID、年齡組ID)
+DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy"
 # 訓練日誌、模型檢查點的儲存目錄
 LOG_DIR = './logs'
 CHECKPOINT_DIR = './checkpoints'
