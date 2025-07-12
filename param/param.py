@@ -22,7 +22,7 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(SCORE_DIR, exist_ok=True)
 
 # 數據增強所需的外部數據集路徑
-MUSAN_DIR = '/path/to/your/musan_dataset'
+MUSAN_DIR = 'D:/Dataset/musan/musan'
 RIR_NOISE_DIR = '/path/to/your/rir_noise_dataset'
 
 # --- 3. 音頻特徵提取參數 (Audio Feature Extraction Parameters) ---

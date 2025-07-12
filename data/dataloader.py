@@ -6,6 +6,8 @@ import random
 import os
 import librosa
 import warnings
+import math
+import glob
 
 warnings.filterwarnings(
     "ignore",
@@ -16,7 +18,7 @@ warnings.simplefilter("ignore", category=FutureWarning)
 
 
 class VoxCeleb_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file, mode='train', augment=False):
+    def __init__(self, dataset_path, data_list_file, musan_path, mode='train', augment=False):
         self.data_list = self._load_data_list(dataset_path, data_list_file)
         self.mode = mode
         self.augment = augment
@@ -27,6 +29,21 @@ class VoxCeleb_dataset(Dataset):
             hop_length=160,    # 10ms hop_size
             n_mels=80          # 80 維 Mel-filterbank energies
         )
+        
+        # --- 數據增強相關的初始化 ---
+        if self.augment:
+            self.musan_noise_types = ['noise', 'speech', 'music'] # 論文中提到 MUSAN
+            self.musan_path = musan_path
+            self.noiselist = {}
+            self._load_musan_noise(self.musan_path) 
+        
+            
+    def _load_musan_noise(self, musan_path):
+        augment_files = glob.glob(os.path.join(musan_path,'*/*/*.wav'))
+        for file in augment_files:
+            if file.split('\\')[-3] not in self.noiselist:
+                self.noiselist[file.split('\\')[-3]] = []
+            self.noiselist[file.split('\\')[-3]].append(file)
 
     def _load_data_list(self, dataset_path, data_list_path):
         # 讀取包含 (audio_path, identity_id, age_group_id) 的列表        
@@ -77,10 +94,8 @@ class VoxCeleb_dataset(Dataset):
 
         # 如果該資料夾下沒有有效的音檔，返回 None 或拋出錯誤
         if not concatenated_waveform:
-            # 這裡您可以根據需求處理，例如返回一個 None 或一個默認的靜音音頻
-            # 對於訓練，通常會從 DataLoader 中篩選掉這種無效樣本
             print(f"Warning: No valid audio segments loaded for {audio_folder_path}. Skipping this sample.")
-            return None # 或拋出異常，讓 DataLoader 的 collate_fn 處理
+            return None
 
         # 將所有音頻波形片段串接起來
         # 確保波形是 (samples,) 或 (1, samples) 格式，MelSpectrogram 期望 (channels, samples)
@@ -118,7 +133,8 @@ class VoxCeleb_dataset(Dataset):
         Returns:
             Tensor: 增強後的音頻波形
         """
-        aug_type = random.randint(0, 4)
+        # aug_type = random.randint(0, 4)
+        aug_type = 1
         if aug_type == 0:
             waveform = waveform
         elif aug_type == 1:
@@ -133,7 +149,56 @@ class VoxCeleb_dataset(Dataset):
         return waveform
     
     def _add_noise(self, waveform, sample_rate):
-        return
+        """
+        添加噪音到音頻波形中。
+        噪音從 MUSAN 數據集模擬獲取。
+        SNR（信噪比）隨機選擇在一個範圍內（例如 0 到 15 dB）。
+
+        Args:
+            waveform (Tensor): 原始音頻波形 (channels, samples)，通常是 (1, samples)。
+            sample_rate (int): 音頻採樣率。
+
+        Returns:
+            Tensor: 加入噪音後的音頻波形。
+        """
+        if waveform.shape[1] == 0: # 處理空波形
+            return waveform
+
+        # 隨機選擇一個 SNR 值，例如從 0 dB 到 15 dB
+        snr_db = random.uniform(0, 15) 
+
+        # 1. 獲取一個與原始音頻長度相同的噪音片段
+        # 這裡使用模擬函數，實際應從 MUSAN 載入
+        noise_waveform = self._get_random_noise_segment(waveform.shape[1])
+        
+        # 確保 noise_waveform 和 waveform 都在相同的設備上
+        noise_waveform = noise_waveform.to(waveform.device)
+
+        # 2. 計算原始語音和噪音的 RMS（均方根）能量
+        # 添加一個小的 epsilon 以防止除以零，尤其當波形是全零時
+        eps = 1e-6 
+        speech_rms = torch.sqrt(torch.mean(waveform**2) + eps)
+        noise_rms = torch.sqrt(torch.mean(noise_waveform**2) + eps)
+
+        # 3. 將 SNR（dB）轉換為線性比例
+        snr_linear = 10**(snr_db / 10.0)
+
+        # 4. 計算噪音需要縮放的因子，以達到目標 SNR
+        # 目標噪音 RMS = 語音 RMS / sqrt(SNR_linear)
+        # 噪音縮放因子 = 目標噪音 RMS / 實際噪音 RMS
+        noise_scaling_factor = (speech_rms / (noise_rms * torch.sqrt(torch.tensor(snr_linear, device=waveform.device))))
+
+        # 5. 縮放噪音並將其添加到原始語音中
+        scaled_noise = noise_waveform * noise_scaling_factor
+        noisy_waveform = waveform + scaled_noise
+
+        # 6. 可選：將結果波形裁剪到 -1.0 到 1.0 的範圍，防止過載
+        noisy_waveform = torch.clamp(noisy_waveform, -1.0, 1.0)
+        
+        # 轉回音訊聽看看
+        # self.generate_song(waveform, noisy_waveform)
+
+        return noisy_waveform
     
     def _apply_reverberation(self, waveform, sample_rate):
         return
@@ -144,13 +209,56 @@ class VoxCeleb_dataset(Dataset):
     def _change_speed(self, waveform):
         return
     
+    def _get_random_noise_segment(self, target_length_samples):
+        """
+        模擬從 MUSAN 數據集中獲取一個隨機噪音片段。
+        在實際應用中，這裡會從預載入的噪音文件路徑中隨機選擇一個，
+        並從該文件中載入一個長度足夠的片段。
+        """
+        noise_type = random.choice(self.musan_noise_types)
+        noise_pool = self.noiselist[noise_type]
+        
+        selected_noise = random.choice(noise_pool)
+        
+        selected_audio, sr = librosa.load(selected_noise, sr=self.sample_rate, mono=True)
+        
+        selected_audio = torch.from_numpy(selected_audio).float().unsqueeze(0)  # 轉為 (1, samples)
+        
+        # 如果噪音片段比目標長度短，則重複填充
+        if selected_audio.shape[1] < target_length_samples:
+            repeats = math.ceil(target_length_samples / selected_audio.shape[1])
+            selected_audio = selected_audio.repeat(1, repeats)
+        
+        # 裁剪到目標長度
+        start_idx = random.randint(0, selected_audio.shape[1] - target_length_samples)
+        noise_segment = selected_audio[:, start_idx : start_idx + target_length_samples]
+        
+        return noise_segment.float()
+    
+    # Only for testing
+    def generate_song(self, origin_audio, adjusted_audio):
+        """
+        將波型圖還原回音訊，聽看看差別
+        """
+        import soundfile as sf
+        # 將音訊轉換為 numpy 陣列
+        origin_audio_np = origin_audio.squeeze().cpu().numpy()
+        adjusted_audio_np = adjusted_audio.squeeze().cpu().numpy()
+
+        # 使用 librosa 將音訊寫入檔案
+        sf.write('origin_audio.wav', origin_audio_np, samplerate=self.sample_rate)
+        sf.write('adjusted_audio.wav', adjusted_audio_np, samplerate=self.sample_rate)
+        
+        print("音訊已保存為 'origin_audio.wav' 和 'adjusted_audio.wav'. 請使用音訊播放器播放。")
+    
 # Testing
 if __name__ == "__main__":
     # 測試數據集
     dataset = VoxCeleb_dataset(dataset_path='D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac', 
-                               data_list_file='D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy', 
+                               data_list_file='D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy',
+                               musan_path='D:/Dataset/musan/musan', 
                                mode='train', 
-                               augment=False)
+                               augment=True)
     print(f"Dataset size: {len(dataset)}")
     
     for i in range(5):
