@@ -17,7 +17,6 @@ warnings.filterwarnings(
 warnings.simplefilter("ignore", category=FutureWarning)
 
 
-
 class VoxCeleb_loader(Dataset):
     def __init__(self, dataset_path, data_list_file, musan_path, rir_path, mode='train', augment=False):
         self.data_list = self._load_data_list(dataset_path, data_list_file)
@@ -33,7 +32,7 @@ class VoxCeleb_loader(Dataset):
         
         # --- 數據增強相關的初始化 ---
         if self.augment:
-            self.musan_noise_types = ['noise', 'speech', 'music'] # 論文中提到 MUSAN
+            self.musan_noise_types = ['noise', 'speech', 'music']
             self.musan_path = musan_path
             self.noiselist = {}
             self._load_musan_noise(self.musan_path)
