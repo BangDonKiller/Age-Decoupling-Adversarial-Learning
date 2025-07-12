@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 import torchaudio.transforms as T
+import torchaudio.functional as F_audio
 import numpy as np
 import random
 import os
@@ -17,8 +18,8 @@ warnings.simplefilter("ignore", category=FutureWarning)
 
 
 
-class VoxCeleb_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file, musan_path, mode='train', augment=False):
+class VoxCeleb_loader(Dataset):
+    def __init__(self, dataset_path, data_list_file, musan_path, rir_path, mode='train', augment=False):
         self.data_list = self._load_data_list(dataset_path, data_list_file)
         self.mode = mode
         self.augment = augment
@@ -35,7 +36,8 @@ class VoxCeleb_dataset(Dataset):
             self.musan_noise_types = ['noise', 'speech', 'music'] # 論文中提到 MUSAN
             self.musan_path = musan_path
             self.noiselist = {}
-            self._load_musan_noise(self.musan_path) 
+            self._load_musan_noise(self.musan_path)
+            self.rir_files = glob.glob(os.path.join(rir_path,'*/*/*.wav'))
         
             
     def _load_musan_noise(self, musan_path):
@@ -133,14 +135,13 @@ class VoxCeleb_dataset(Dataset):
         Returns:
             Tensor: 增強後的音頻波形
         """
-        # aug_type = random.randint(0, 4)
-        aug_type = 1
+        aug_type = random.randint(0, 4)
         if aug_type == 0:
             waveform = waveform
         elif aug_type == 1:
-            waveform = self._add_noise(waveform, sample_rate)
+            waveform = self._add_noise(waveform)
         elif aug_type == 2:
-            waveform = self._apply_reverberation(waveform, sample_rate)
+            waveform = self._apply_reverberation(waveform)
         elif aug_type == 3:
             waveform = self._change_volume(waveform)
         elif aug_type == 4:
@@ -148,7 +149,7 @@ class VoxCeleb_dataset(Dataset):
         
         return waveform
     
-    def _add_noise(self, waveform, sample_rate):
+    def _add_noise(self, waveform):
         """
         添加噪音到音頻波形中。
         噪音從 MUSAN 數據集模擬獲取。
@@ -200,14 +201,82 @@ class VoxCeleb_dataset(Dataset):
 
         return noisy_waveform
     
-    def _apply_reverberation(self, waveform, sample_rate):
-        return
+    def _apply_reverberation(self, waveform):
+        if not self.rir_files:
+            warnings.warn("No RIR files loaded for reverberation. Returning original waveform.")
+            return waveform
+        
+        rir_file = random.choice(self.rir_files)
+
+        try:
+            rir_np, sr_rir = librosa.load(rir_file, sr=self.sample_rate, mono=True)
+            rir_tensor = torch.from_numpy(rir_np).float()
+
+            # 將 RIR 移到與輸入波形相同的設備
+            rir_tensor = rir_tensor.to(waveform.device)
+            
+            # 正規化
+            rir_tensor = rir_tensor / torch.norm(rir_tensor)
+
+            # 進行卷積操作
+            reverb_waveform = F_audio.convolve(waveform, rir_tensor.unsqueeze(0))
+
+            # 將結果波形裁剪到 -1.0 到 1.0 的範圍，防止過載
+            reverb_waveform = torch.clamp(reverb_waveform, -1.0, 1.0)
+            
+            # For testing
+            # self.generate_song(waveform, reverb_waveform)
+
+            return reverb_waveform
+
+        except Exception as e:
+            warnings.warn(f"Error applying reverberation from {rir_file}: {e}. Returning original waveform.")
+            return waveform
     
     def _change_volume(self, waveform):
-        return 
+        """
+        隨機改變音量。
+        Args:
+            waveform (Tensor): 音頻波形，形狀為 (channels, samples)。
+        Returns:
+            Tensor: 音量調整後的音頻波形。
+        """
+        gain = random.uniform(0.5, 1.5) # 隨機選擇增益因子，例如 0.5 到 1.5 倍
+        adjusted_waveform = waveform * gain
+        adjusted_waveform = torch.clamp(adjusted_waveform, -1.0, 1.0) # 防止裁剪
+        
+        # For testing
+        # self.generate_song(waveform, adjusted_waveform)
+        return adjusted_waveform
     
     def _change_speed(self, waveform):
-        return
+        """
+        隨機改變音頻速度，同時保持音高不變。
+        這通常通過重新採樣實現。
+
+        Args:
+            waveform (Tensor): 音頻波形，形狀為 (channels, samples)。
+        Returns:
+            Tensor: 速度調整後的音頻波形。
+        """
+        
+        speed_factor = random.uniform(0.5, 1.5) # 隨機選擇速度因子，例如 0.5 到 1.5 倍
+        if speed_factor == 1.0:
+            return waveform # 不變速
+
+        # 計算新的採樣率
+        new_sample_rate = int(self.sample_rate * speed_factor)
+        
+        # 使用 torchaudio 的 Resample 進行速度變化 (同時保持音高)
+        resampler = T.Resample(orig_freq=self.sample_rate, new_freq=new_sample_rate).to(waveform.device)
+        
+        # 執行重新採樣
+        speed_waveform = resampler(waveform)
+        
+        # For testing
+        # self.generate_song(waveform, speed_waveform)
+        
+        return speed_waveform
     
     def _get_random_noise_segment(self, target_length_samples):
         """
@@ -254,9 +323,10 @@ class VoxCeleb_dataset(Dataset):
 # Testing
 if __name__ == "__main__":
     # 測試數據集
-    dataset = VoxCeleb_dataset(dataset_path='D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac', 
+    dataset = VoxCeleb_loader(dataset_path='D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac', 
                                data_list_file='D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy',
-                               musan_path='D:/Dataset/musan/musan', 
+                               musan_path='D:/Dataset/musan/musan',
+                               rir_path='D:/Dataset/sim_rir_16k/simulated_rirs_16k', 
                                mode='train', 
                                augment=True)
     print(f"Dataset size: {len(dataset)}")

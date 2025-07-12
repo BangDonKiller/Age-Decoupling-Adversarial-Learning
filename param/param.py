@@ -23,7 +23,7 @@ os.makedirs(SCORE_DIR, exist_ok=True)
 
 # 數據增強所需的外部數據集路徑
 MUSAN_DIR = 'D:/Dataset/musan/musan'
-RIR_NOISE_DIR = '/path/to/your/rir_noise_dataset'
+RIR_NOISE_DIR = 'D:/Dataset/sim_rir_16k/simulated_rirs_16k'
 
 # --- 3. 音頻特徵提取參數 (Audio Feature Extraction Parameters) ---
 # 音頻採樣率 (Hz) - 論文中未明確提及，常用值
