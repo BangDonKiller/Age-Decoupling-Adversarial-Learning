@@ -17,7 +17,7 @@ warnings.filterwarnings(
 warnings.simplefilter("ignore", category=FutureWarning)
 
 
-class VoxCeleb_loader(Dataset):
+class VoxCeleb_dataset(Dataset):
     def __init__(self, dataset_path, data_list_file, musan_path, rir_path, mode='train', augment=False):
         self.data_list = self._load_data_list(dataset_path, data_list_file)
         self.mode = mode
@@ -52,15 +52,24 @@ class VoxCeleb_loader(Dataset):
         data_dicts = data_list.item()
         
         data = []
+        speaker_id_map = {} # 用於將字串 ID 映射到整數 ID
+        next_speaker_int_id = 0 # 下一個可用的整數 ID
         
         for key, value in data_dicts.items():
             speaker_id = key[:7]
             utterance = key[8:]
             years_old = value
             
+            # 確保 speaker_id 是唯一的整數 ID
+            if speaker_id not in speaker_id_map:
+                speaker_id_map[speaker_id] = next_speaker_int_id
+                next_speaker_int_id += 1
+            identity_id_int = speaker_id_map[speaker_id] # 獲取對應的整數 ID
+            
+            
             # years_olds => {0~20: 0, 21~30: 1, ..., 70~100: 6}
             audio_folder_path = f"{dataset_path}/{speaker_id}/{utterance}/"
-            identity_id = speaker_id
+            identity_id = identity_id_int
             bins = [20, 30, 40, 50, 60, 70]
             age_group_id = next((i for i, b in enumerate(bins) if years_old <= b), 6)
 
@@ -78,33 +87,40 @@ class VoxCeleb_loader(Dataset):
         # 遍歷 audio_folder_path 中的所有音頻文件
         audio_files = [f for f in os.listdir(audio_folder_path) if f.endswith('.m4a')]
         
-        concatenated_waveform = []
+        audio_file = random.choice(audio_files)  # 隨機選擇一個音頻文件
+        audio_file_path = os.path.join(audio_folder_path, audio_file)
+        
+        waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
+        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0)  # (1, samples)
+        
+        # concatenated_waveform = []
 
-        for audio_filename in audio_files:
-            audio_file = os.path.join(audio_folder_path, audio_filename)
+        # for audio_filename in audio_files:
+        #     audio_file = os.path.join(audio_folder_path, audio_filename)
             
-            try:
-                # 使用 librosa 讀取音頻。librosa 會自動處理 .m4a
-                # sr=None 會保留原始採樣率，但為了 MelSpectrogram 一致性，指定為 self.sample_rate
-                waveform_segment, sr = librosa.load(audio_file, sr=self.sample_rate, mono=True)
-                # 將 NumPy 陣列轉換為 PyTorch 張量，並轉為 float
-                concatenated_waveform.append(torch.from_numpy(waveform_segment).float())
-            except Exception as e:
-                print(f"Error loading {audio_file}: {e}")
-                continue
+        #     try:
+        #         # 使用 librosa 讀取音頻。librosa 會自動處理 .m4a
+        #         # sr=None 會保留原始採樣率，但為了 MelSpectrogram 一致性，指定為 self.sample_rate
+        #         waveform_segment, sr = librosa.load(audio_file, sr=self.sample_rate, mono=True)
+        #         # 將 NumPy 陣列轉換為 PyTorch 張量，並轉為 float
+        #         concatenated_waveform.append(torch.from_numpy(waveform_segment).float())
+        #     except Exception as e:
+        #         print(f"Error loading {audio_file}: {e}")
+        #         continue
 
-        # 如果該資料夾下沒有有效的音檔，返回 None 或拋出錯誤
-        if not concatenated_waveform:
-            print(f"Warning: No valid audio segments loaded for {audio_folder_path}. Skipping this sample.")
-            return None
+        # # 如果該資料夾下沒有有效的音檔，返回 None 或拋出錯誤
+        # if not concatenated_waveform:
+        #     print(f"Warning: No valid audio segments loaded for {audio_folder_path}. Skipping this sample.")
+        #     return None
 
-        # 將所有音頻波形片段串接起來
-        # 確保波形是 (samples,) 或 (1, samples) 格式，MelSpectrogram 期望 (channels, samples)
-        final_waveform = torch.cat(concatenated_waveform, dim=-1)
-        final_waveform = final_waveform.unsqueeze(0) # 轉為 (1, samples) 才能給 MelSpectrogram
+        # # 將所有音頻波形片段串接起來
+        # # 確保波形是 (samples,) 或 (1, samples) 格式，MelSpectrogram 期望 (channels, samples)
+        # final_waveform = torch.cat(concatenated_waveform, dim=-1)
+        # final_waveform = final_waveform.unsqueeze(0) # 轉為 (1, samples) 才能給 MelSpectrogram
+        
 
         if self.augment and self.mode == 'train':
-            final_waveform = self._apply_augmentation(final_waveform, sr)
+            final_waveform = self._apply_augmentation(final_waveform)
 
         # 提取 Mel-filterbank energies
         # waveform 可能是 (channels, samples)
@@ -118,8 +134,28 @@ class VoxCeleb_loader(Dataset):
         # mel_spec = self._apply_cmvn(mel_spec)
 
         return mel_spec, identity_id, age_group_id
+    
+    def collate_fn(self, batch):
+        mels, ident, age = zip(*batch)
+        lengths = [m.shape[0] for m in mels]
+        maxlen = max(lengths)
+        padded = [torch.nn.functional.pad(m, (0,0,0,maxlen-m.shape[0])) for m in mels]
+        
+        # 原始：torch.stack(padded) 的形狀是 (batch_size, max_frames, n_mels=80)
+        # 期望：(batch_size, 1, n_mels=80, max_frames)
+        stacked_mels = torch.stack(padded) # (B, Max_Frames, 80)
+        
+        # 1. 轉置 Mel 譜，使 n_mels (80) 成為高度 (H)，max_frames 成為寬度 (W)
+        #    從 (B, Max_Frames, 80) 變為 (B, 80, Max_Frames)
+        permuted_mels = stacked_mels.permute(0, 2, 1) 
+        
+        # 2. 插入通道維度 (channels=1)
+        #    從 (B, 80, Max_Frames) 變為 (B, 1, 80, Max_Frames)
+        final_input_mels = permuted_mels.unsqueeze(1)
+        
+        return final_input_mels, torch.tensor(ident), torch.tensor(age)
 
-    def _apply_augmentation(self, waveform, sample_rate):
+    def _apply_augmentation(self, waveform):
         """
         資料強化方法:
             - aug_type = 0: 不進行增強
@@ -320,16 +356,16 @@ class VoxCeleb_loader(Dataset):
         print("音訊已保存為 'origin_audio.wav' 和 'adjusted_audio.wav'. 請使用音訊播放器播放。")
     
 # Testing
-if __name__ == "__main__":
-    # 測試數據集
-    dataset = VoxCeleb_loader(dataset_path='D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac', 
-                               data_list_file='D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy',
-                               musan_path='D:/Dataset/musan/musan',
-                               rir_path='D:/Dataset/sim_rir_16k/simulated_rirs_16k', 
-                               mode='train', 
-                               augment=True)
-    print(f"Dataset size: {len(dataset)}")
+# if __name__ == "__main__":
+#     # 測試數據集
+#     dataset = VoxCeleb_dataset(dataset_path='D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac', 
+#                                data_list_file='D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy',
+#                                musan_path='D:/Dataset/musan/musan',
+#                                rir_path='D:/Dataset/sim_rir_16k/simulated_rirs_16k', 
+#                                mode='train', 
+#                                augment=True)
+#     print(f"Dataset size: {len(dataset)}")
     
-    for i in range(5):
-        mel_spec, identity_id, age_group_id = dataset[i]
-        print(f"Sample {i}: Mel Spec Shape: {mel_spec.shape}, Identity ID: {identity_id}, Age Group ID: {age_group_id}")
+#     for i in range(5):
+#         mel_spec, identity_id, age_group_id = dataset[i]
+#         print(f"Sample {i}: Mel Spec Shape: {mel_spec.shape}, Identity ID: {identity_id}, Age Group ID: {age_group_id}")

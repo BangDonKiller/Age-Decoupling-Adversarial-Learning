@@ -127,4 +127,4 @@ VOXCELEB_TEST_SET_CONSTRUCTION = 'VoxCeleb1'
 # 構建CA測試集時所需的最小說話者數量 (80個說話者)
 MIN_SPEAKERS_FOR_CA = 80
 # 面部年齡估計模型路徑 (用於數據預處理，生成年齡標籤)
-FACE_AGE_MODEL_PATH = '/path/to/your/dex_model.pth' # Dex [28] 模型
+# FACE_AGE_MODEL_PATH = '/path/to/your/dex_model.pth' # Dex [28] 模型

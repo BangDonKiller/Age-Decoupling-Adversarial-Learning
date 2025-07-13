@@ -1,12 +1,10 @@
 import torch
 import torch.nn as nn
-from torch.autograd import Function
 import torch.nn.functional as F
 import torchvision.models as models
 from modules.GSP import GlobalStatisticalPooling
-# 從您的 modules/ARE.py 導入 ARE_Module
 from modules.ARE import ARE_Module 
-# from module.GRL import GradientReversalLayer
+from modules.GRL import GradientReversalLayer
 from tool.ArcFaceLoss import ArcFaceLoss
 
 
@@ -47,14 +45,14 @@ class ADAL_Model(nn.Module):
 
         # 這裡的 GRL 是用在身份特徵 z_id 上，將其送到一個年齡分類器，
         # 但這個分類器的目的是讓 z_id 變得年齡不相關
-        # self.grl = GradientReversalLayer()
-        # self.age_classifier_on_id = nn.Linear(feature_dim, age_classes)
+        self.grl = GradientReversalLayer()
+        self.age_classifier_on_id = nn.Linear(feature_dim, age_classes)
 
         # 身份分類器 (基於 z_id)
         self.identity_classifier = ArcFaceLoss(embedding_size=feature_dim, num_classes=identity_classes) # 需要傳入總類別數
 
         # 年齡分類器 (基於 z_age)
-        # self.age_classifier_on_age = nn.Linear(feature_dim, age_classes)
+        self.age_classifier_on_age = nn.Linear(feature_dim, age_classes)
 
 
     def forward(self, audio, labels=None):
@@ -75,72 +73,73 @@ class ADAL_Model(nn.Module):
         identity_logits = self.identity_classifier(z_id, labels) # ArcFace計算
 
         # 5. 年齡分類 (用於L_age，監督z_age)
-        # age_logits_from_age = self.age_classifier_on_age(z_age)
+        age_logits_from_age = self.age_classifier_on_age(z_age)
 
         # 6. 對抗年齡分類 (用於L_grl，將z_id通過GRL後再送入年齡分類器)
-        # z_id_grl = self.grl(z_id)
-        # age_logits_from_id_grl = self.age_classifier_on_id(z_id_grl)
+        z_id_grl = self.grl(z_id)
+        age_logits_from_id_grl = self.age_classifier_on_id(z_id_grl)
 
-        # return identity_logits, age_logits_from_age, age_logits_from_id_grl
-        return features, z, z_age, identity_logits
+        return features, z, z_age, identity_logits, age_logits_from_age, age_logits_from_id_grl
 
 
-if __name__ == "__main__":
-    # 測試模型
-    # feature_dim 是論文中提到的 128 維說話者嵌入
-    model = ADAL_Model(feature_dim=128, age_classes=7, identity_classes=1000)
+# if __name__ == "__main__":
+    # # 測試模型
+    # # feature_dim 是論文中提到的 128 維說話者嵌入
+    # model = ADAL_Model(feature_dim=128, age_classes=7, identity_classes=1000)
     
-    # 根據論文，輸入應該是 80 維的 Mel-filterbank energies
-    # 假設一個音頻有 300 幀 (約 3 秒)
-    batch_size = 4
-    num_frames = 300 
+    # # 根據論文，輸入應該是 80 維的 Mel-filterbank energies
+    # # 假設一個音頻有 300 幀 (約 3 秒)
+    # batch_size = 64
+    # num_frames = 300 
     
-    # 輸入張量形狀： (batch_size, channels=1, height=80, width=num_frames)
-    audio_sample = torch.randn(batch_size, 1, 80, num_frames)
+    # # 輸入張量形狀： (batch_size, channels=1, height=80, width=num_frames)
+    # audio_sample = torch.randn(batch_size, 1, 80, num_frames)
     
-    # 將模型移到 CPU 或 GPU (如果可用)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    audio_sample = audio_sample.to(device)
+    # # 將模型移到 CPU 或 GPU (如果可用)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model.to(device)
+    # audio_sample = audio_sample.to(device)
     
-    dummy_identity_labels = torch.randint(0, 1000, (batch_size,))
-    dummy_age_labels = torch.randint(0, 7, (batch_size,)) # 0-6 對應 7 個年齡組
+    # dummy_identity_labels = torch.randint(0, 1000, (batch_size,))
+    # dummy_age_labels = torch.randint(0, 7, (batch_size,)) # 0-6 對應 7 個年齡組
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    audio_sample = audio_sample.to(device)
-    dummy_identity_labels = dummy_identity_labels.to(device)
-    dummy_age_labels = dummy_age_labels.to(device)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model.to(device)
+    # audio_sample = audio_sample.to(device)
+    # dummy_identity_labels = dummy_identity_labels.to(device)
+    # dummy_age_labels = dummy_age_labels.to(device)
 
-    # 打印模型結構，檢查層的輸出形狀
+    # # 打印模型結構，檢查層的輸出形狀
     # print(model) 
 
-    features, z, z_age, identity_logits = model(audio_sample, dummy_identity_labels)
+    # features, z, z_age, identity_logits, age_logits_from_age, age_logits_from_id_grl = model(audio_sample, dummy_identity_labels)
     
-    print("Input audio_sample shape:", audio_sample.shape)
-    print("Output feature_extractor shape (x):", features.shape) # 應該是 (B, 512, H_feat, W_feat)
-    print("Output z (speaker embedding) shape:", z.shape) # 應該是 (B, 128)
-    print("Output z_age (age embedding) shape:", z_age.shape) # 應該是 (B, 128)
+    # print("Input audio_sample shape:", audio_sample.shape)
+    # print("Output feature_extractor shape (x):", features.shape) # 應該是 (B, 512, H_feat, W_feat)
+    # print("Output z (speaker embedding) shape:", z.shape) # 應該是 (B, 128)
+    # print("Output z_age (age embedding) shape:", z_age.shape) # 應該是 (B, 128)
+    # print("Identity logits shape:", identity_logits.shape) # 應該是 (B, 1000)
+    # print("Age logits from age classifier shape:", age_logits_from_age.shape) # 應該是 (B, 7)
     
-    lambda_id = 1.0 # 假設權重
-    lambda_age = 0.1 # 根據論文 4.1 節
-    lambda_grl = 0.1 # 根據論文 4.1 節
+    # lambda_id = 1.0 # 假設權重
+    # lambda_age = 0.1 # 根據論文 4.1 節
+    # lambda_grl = 0.1 # 根據論文 4.1 節
 
-    # 身份損失 (使用 F.cross_entropy，因為 ArcFaceLoss 已經輸出了 logits)
-    loss_id = F.cross_entropy(identity_logits, dummy_identity_labels)
+    # # 身份損失 (使用 F.cross_entropy，因為 ArcFaceLoss 已經輸出了 logits)
+    # loss_id = F.cross_entropy(identity_logits, dummy_identity_labels)
 
-    # 年齡損失 (監督 z_age)
+    # # 年齡損失 (監督 z_age)
     # loss_age = F.cross_entropy(age_logits_from_age, dummy_age_labels)
 
-    # 對抗年齡損失 (讓 z_id 無法預測年齡)
-    # GRL 層已經處理了梯度反轉，這裡只需正常計算交叉熵，其反向梯度會被 GRL 處理
+    # # 對抗年齡損失 (讓 z_id 無法預測年齡)
+    # # GRL 層已經處理了梯度反轉，這裡只需正常計算交叉熵，其反向梯度會被 GRL 處理
     # loss_grl = F.cross_entropy(age_logits_from_id_grl, dummy_age_labels)
 
-    # 總損失
+    # # 總損失
     # total_loss = lambda_id * loss_id + lambda_age * loss_age + lambda_grl * loss_grl
     
-    print(f"\nDummy Loss Calculations:")
-    print(f"Identity Loss (L_id): {loss_id.item():.4f}")
+    # print(f"\nDummy Loss Calculations:")
+    # print(f"Identity Loss (L_id): {loss_id.item():.4f}")
     # print(f"Age Loss (L_age): {loss_age.item():.4f}")
     # print(f"Adversarial Age Loss (L_grl): {loss_grl.item():.4f}")
     # print(f"Total Loss: {total_loss.item():.4f}")

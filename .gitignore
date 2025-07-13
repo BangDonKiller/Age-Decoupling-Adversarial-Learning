@@ -1,3 +1,6 @@
 .venv
 __pycache__
 data_aug/
+logs/
+checkpoints/
+scores/
