@@ -5,21 +5,11 @@ from torch.utils.data import DataLoader
 import numpy as np
 import os
 from tqdm import tqdm
-import logging
+from tool.save_system import save_system
 import random
 from data.dataloader import VoxCeleb_dataset
 from params import param
 from model import ADAL_Model 
-
-# --- 設定日誌 ---
-# 設置日誌格式
-logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    handlers=[
-                        logging.FileHandler(os.path.join(param.LOG_DIR, 'training.log')),
-                        logging.StreamHandler()
-                    ])
-logger = logging.getLogger(__name__)
 
 # --- 設定隨機種子，確保可重現性 ---
 def set_seed(seed):
@@ -33,6 +23,7 @@ def set_seed(seed):
         torch.backends.cudnn.benchmark = False # 如果輸入大小不變，可以設為True加速
 
 set_seed(param.RANDOM_SEED)
+save_system = save_system()  # 初始化保存系統，確保目錄存在並創建初始文件
 
 # --- 訓練主函數 ---
 def train_model():
@@ -57,7 +48,7 @@ def train_model():
         drop_last=True, # 確保每個批次的數據量相同
         collate_fn=train_dataset.collate_fn # 使用自定義的 collate_fn 來處理變長序列
     )
-    logger.info(f"Training DataLoader created with {len(train_loader)} batches, batch size {param.BATCH_SIZE}.")
+    # logger.info(f"Training DataLoader created with {len(train_loader)} batches, batch size {param.BATCH_SIZE}.")
 
     # --- 2. 模型、優化器、損失函數 ---
     model = ADAL_Model(
@@ -65,7 +56,7 @@ def train_model():
         age_classes=param.NUM_AGE_GROUPS,
         identity_classes=param.NUM_SPEAKERS
     ).to(device)
-    logger.info(f"Model initialized and moved to {device}.")
+    # logger.info(f"Model initialized and moved to {device}.")
 
     optimizer = optim.SGD(
         model.parameters(),
@@ -73,7 +64,7 @@ def train_model():
         momentum=0.9,
         weight_decay=1e-4 # 常見的權重衰減，作為正則化
     )
-    logger.info(f"Optimizer {param.OPTIMIZER} initialized with initial LR {param.INITIAL_LR}.")
+    # logger.info(f"Optimizer {param.OPTIMIZER} initialized with initial LR {param.INITIAL_LR}.")
 
     # --- 學習率調度器與預熱 ---
     def lr_lambda(current_epoch):
@@ -89,7 +80,7 @@ def train_model():
             return decay_factor
 
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    logger.info(f"Learning rate scheduler initialized with warmup epochs {param.LR_WARMUP_EPOCHS} and decay steps {param.LR_DECAY_STEPS}.")
+    # logger.info(f"Learning rate scheduler initialized with warmup epochs {param.LR_WARMUP_EPOCHS} and decay steps {param.LR_DECAY_STEPS}.")
 
     # 交叉熵損失用於年齡分類
     criterion_ce = nn.CrossEntropyLoss()

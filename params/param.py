@@ -16,6 +16,7 @@ DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.
 LOG_DIR = './logs'
 CHECKPOINT_DIR = './checkpoints'
 SCORE_DIR = './scores' # 儲存驗證結果 (EER, mDCF)
+TENSOR_BOARD_DIR = './tensorboard_logs'  # TensorBoard 日誌目錄
 # 確保目錄存在
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
