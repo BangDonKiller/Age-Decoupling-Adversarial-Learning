@@ -1,5 +1,6 @@
 import os
 import sys
+import torch
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from params import param
 import importlib.util
@@ -45,7 +46,7 @@ class save_system:
             self.count += 1
         with open(file_path, 'w') as f:
             if filename == "result":
-                f.write("Epoch, L_id, L_age, L_grl, Total Loss, EER, minDCF\n")  # 寫入表頭
+                f.write("Epoch, lr, L_id, L_age, L_grl, Total Loss, EER, minDCF\n")  # 寫入表頭
             else:
                 f.write("")
             
@@ -60,9 +61,9 @@ class save_system:
         :param content: 要寫入的內容
         """
         file_path = os.path.join(path, f"{filename}{self.count}.txt")
-        epoch, l_id, l_age, l_grl, total_loss, eer, min_dcf = content
+        epoch, lr, l_id, l_age, l_grl, total_loss, eer, min_dcf = content
         with open(file_path, 'a') as f:
-            f.write(f"{epoch}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
+            f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
         print(f"結果已寫入: {file_path}")
             
     def write_parameters_to_file(self, path, filename):
@@ -97,6 +98,17 @@ class save_system:
 
         print(f"參數已寫入：{file_path}")
         
+    def save_model(self, model, epoch):
+        """
+        保存模型的狀態字典到指定的檔案。
+
+        :param model: 要保存的模型
+        :param epoch: 當前訓練的 epoch
+        """
+        checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'model_epoch_{epoch}.pth')
+        torch.save(model.state_dict(), checkpoint_path)
+        print(f"模型已保存到：{checkpoint_path}")
+        
     def create_tensor_board(self, path):
         """
         根據 count 創建一個 TensorBoard 日誌資料夾。
@@ -111,6 +123,25 @@ class save_system:
         writer = SummaryWriter(log_dir=tb_path)
         print(f"TensorBoard 事件文件已創建: {tb_path}")
         return writer
+    
+    def write_tensorboard_log(self, writer, state, epoch, l_id, l_age, l_grl, total_loss, eer, min_dcf):
+        """
+        將數據寫入 TensorBoard 日誌。
+
+        :param writer: SummaryWriter 實例
+        :param tag: 日誌標籤
+        :param value: 要寫入的值
+        :param step: 步驟或 epoch 編號
+        """
+        if state == "train":
+            writer.add_scalar('Loss/L_id', l_id, epoch)
+            writer.add_scalar('Loss/L_age', l_age, epoch)
+            writer.add_scalar('Loss/L_grl', l_grl, epoch)
+            writer.add_scalar('Loss/Total', total_loss, epoch)
+            
+        elif state == "val":
+            writer.add_scalar('EER', eer, epoch)
+            writer.add_scalar('minDCF', min_dcf, epoch)
 
     
 if __name__ == "__main__":

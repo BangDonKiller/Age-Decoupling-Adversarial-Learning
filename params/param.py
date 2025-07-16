@@ -9,9 +9,13 @@ RANDOM_SEED = 42
 
 # --- 2. 路徑設定 (Path Configurations) ---
 # 數據集根目錄
-DATA_ROOT = 'D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac'
+DATA_ROOT = ['D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac']
 # 數據列表文件路徑 (包含音頻路徑、身份ID、年齡組ID)
 DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy"
+# 訓練數據列表文件路徑
+VAL_DATA_ROOT = ["D:/Dataset/VoxCeleb1/vox1_dev_wav/wav", "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
+# 驗證數據列表文件路徑
+VAL_DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/vox1/segment2age.npy"
 # 訓練日誌、模型檢查點的儲存目錄
 LOG_DIR = './logs'
 CHECKPOINT_DIR = './checkpoints'
@@ -77,7 +81,7 @@ LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此
 # 訓練輪數
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 # 每批次訓練樣本數
-BATCH_SIZE = 64
+BATCH_SIZE = 16
 # 優化器類型
 OPTIMIZER = 'SGD'
 # 初始學習率
