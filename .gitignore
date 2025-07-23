@@ -4,3 +4,4 @@ data_aug/
 logs/
 checkpoints/
 scores/
+tensorboard_logs/

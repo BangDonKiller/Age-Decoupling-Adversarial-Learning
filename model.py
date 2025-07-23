@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 import torchvision.models as models
 from modules.GSP import GlobalStatisticalPooling
 from modules.ARE import ARE_Module 
@@ -13,29 +14,50 @@ class ADAL_Model(nn.Module):
         super(ADAL_Model, self).__init__()
         
          # 特徵提取器
-        self.resnet = models.resnet34(weights=models.ResNet34_Weights.DEFAULT) 
+        self.model = models.shufflenet_v2_x0_5(weights=torchvision.models.ShuffleNet_V2_X0_5_Weights.DEFAULT)  # 加載在 ImageNet 上預訓練的權重
+        # self.resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT) 
+        # self.resnet = models.resnet34(weights=models.ResNet34_Weights.DEFAULT) 
+        
         # 修改 ResNet 的第一個卷積層以適應單通道輸入 (音頻 Mel 頻譜通常是單通道)
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        # self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(1, 24, kernel_size=3, stride=2, padding=1, bias=False)
         
         # 替換 ResNet 的第一個卷積層以及去除最後一個分類層
-        # self.resnet.conv1 = self.conv1 # 直接替換 ResNet 的 conv1
-        # 為了更安全，我們用 Sequential 包裝起來，並只包含 ResNet 的特徵提取部分
+        # self.feature_extractor = nn.Sequential(
+        #     self.conv1,
+        #     self.resnet.bn1,
+        #     self.resnet.relu,
+        #     self.resnet.maxpool,
+        #     self.resnet.layer1,
+        #     self.resnet.layer2,
+        #     self.resnet.layer3,
+        #     self.resnet.layer4 # layer4 的輸出通道數是 512
+        # )
         self.feature_extractor = nn.Sequential(
-            self.conv1,
-            self.resnet.bn1,
-            self.resnet.relu,
-            self.resnet.maxpool,
-            self.resnet.layer1,
-            self.resnet.layer2,
-            self.resnet.layer3,
-            self.resnet.layer4 # layer4 的輸出通道數是 512
+            self.conv1,  # 替換第一個卷積層
+            self.model.conv1[1],  # BatchNorm
+            self.model.conv1[2],  # ReLU
+            self.model.maxpool,
+
+            # ShuffleNet 的三個 stage
+            self.model.stage2,
+            self.model.stage3,
+            self.model.stage4,
+
+            # conv5 將通道升至1024，接著再用1×1降至512
+            self.model.conv5,  # 預設升到1024
+
+            nn.Conv2d(1024, 512, kernel_size=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True)
         )
         
         # 全局統計池化層 + 說話者嵌入層 => 提取出 z
         # 根據 ResNet34 layer4 的輸出通道數 512，GSP 應輸出 512 * 2 = 1024 維
         self.speaker_embedding_layer = nn.Sequential(
             GlobalStatisticalPooling(),
-            nn.Linear(512 * 2 * 3, feature_dim) # 修正此處的輸入維度為 1024
+            nn.Linear(512 * 2 * 3, feature_dim), # 修正此處的輸入維度為 1024
+            nn.ReLU(inplace=True)
         )
         
         
@@ -46,16 +68,30 @@ class ADAL_Model(nn.Module):
         # 這裡的 GRL 是用在身份特徵 z_id 上，將其送到一個年齡分類器，
         # 但這個分類器的目的是讓 z_id 變得年齡不相關
         self.grl = GradientReversalLayer()
-        self.age_classifier_on_id = nn.Linear(feature_dim, age_classes)
+        self.age_classifier_on_id = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feature_dim, age_classes)  # 最終輸出類別數
+        )
 
         # 身份分類器 (基於 z_id)
-        self.identity_classifier = ArcFaceLoss(embedding_size=feature_dim, num_classes=identity_classes) # 需要傳入總類別數
+        # self.identity_classifier = ArcFaceLoss(embedding_size=feature_dim, num_classes=identity_classes) # 需要傳入總類別數
+        self.identity_classifier = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feature_dim, identity_classes)  # 最終輸出類別數
+        )
+
 
         # 年齡分類器 (基於 z_age)
-        self.age_classifier_on_age = nn.Linear(feature_dim, age_classes)
+        self.age_classifier_on_age = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feature_dim, age_classes)  # 最終輸出類別數
+        )
 
 
-    def forward(self, audio, labels=None):
+    def forward(self, audio, mode=None):
         # 1. 提取整體特徵 x (論文中的 Feature maps)
         features = self.feature_extractor(audio) # features 現在是 (B, 512, H_feat, W_feat)
         
@@ -70,16 +106,23 @@ class ADAL_Model(nn.Module):
         z_id = z - z_age
 
         # 4. 身份分類 (用於L_id)
-        identity_logits = self.identity_classifier(z_id, labels) # ArcFace計算
+        if mode == "train":
+            pred_id = self.identity_classifier(z_id)
+            # 5. 年齡分類 (用於L_age，監督z_age)
+            pred_age = self.age_classifier_on_age(z_age)
 
-        # 5. 年齡分類 (用於L_age，監督z_age)
-        age_logits_from_age = self.age_classifier_on_age(z_age)
+            # 6. 對抗年齡分類 (用於L_grl，將z_id通過GRL後再送入年齡分類器)
+            z_id_grl = self.grl(z_id)
+            pred_grl_age = self.age_classifier_on_id(z_id_grl)
+            
+            return features, z, z_age, pred_id, pred_age, pred_grl_age
+        
+        else:
+            id_embedding = z_id
+            
+            return features, z, z_age, id_embedding
 
-        # 6. 對抗年齡分類 (用於L_grl，將z_id通過GRL後再送入年齡分類器)
-        z_id_grl = self.grl(z_id)
-        age_logits_from_id_grl = self.age_classifier_on_id(z_id_grl)
 
-        return features, z, z_age, identity_logits, age_logits_from_age, age_logits_from_id_grl
 
 
 # if __name__ == "__main__":

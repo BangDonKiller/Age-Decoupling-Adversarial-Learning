@@ -15,7 +15,7 @@ DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.
 # 訓練數據列表文件路徑
 VAL_DATA_ROOT = ["D:/Dataset/VoxCeleb1/vox1_dev_wav/wav", "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
 # 驗證數據列表文件路徑
-VAL_DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/vox1/segment2age.npy"
+VAL_DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA20/test.txt"
 # 訓練日誌、模型檢查點的儲存目錄
 LOG_DIR = './logs'
 CHECKPOINT_DIR = './checkpoints'
@@ -64,7 +64,7 @@ RESNET_BLOCK_WIDTHS = [32, 64, 128, 256]
 # 說話者嵌入向量的維度 (池化層後接128維全連接層)
 EMBEDDING_DIM = 128
 # 身份分類器的輸出類別數 (即數據集中說話者的總數)
-NUM_SPEAKERS = 5994 # VoxCeleb2 的說話者數量，訓練時用
+NUM_SPEAKERS = 5994 # 已被標記年齡的VoxCeleb2說話者數量(原始為5994)
 # 年齡分類器的年齡組數量 (0-20, 21-30, ..., 70-100，共7組)
 NUM_AGE_GROUPS = 7
 
@@ -81,11 +81,11 @@ LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此
 # 訓練輪數
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 # 每批次訓練樣本數
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 # 優化器類型
 OPTIMIZER = 'SGD'
 # 初始學習率
-INITIAL_LR = 0.1
+INITIAL_LR = 0.001
 # 學習率調度器設定 (多步學習率調度器)
 LR_SCHEDULER_TYPE = 'MultiStepLR'
 LR_DECAY_STEPS = [10, 20, 30] # 學習率在哪個epoch衰減 (論文寫10，但通常是多個點)

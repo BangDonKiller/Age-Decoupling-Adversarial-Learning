@@ -7,7 +7,7 @@ import importlib.util
 import inspect
 from torch.utils.tensorboard import SummaryWriter
 
-class save_system:
+class Save_system:
     @staticmethod
     def ensure_directories_exist():
         """
@@ -29,7 +29,7 @@ class save_system:
         self.create_save_file(param.SCORE_DIR, "result")  # 創建一個初始的保存模型訓練結果文件
         self.create_save_file(param.LOG_DIR, "setup")  # 創建一個初始的保存模型參數文件
         self.write_parameters_to_file(param.LOG_DIR, "setup")  # 寫入參數到 setup.txt
-        self.create_tensor_board(param.TENSOR_BOARD_DIR)  # 創建 TensorBoard 日誌目錄
+        # self.create_tensor_board(param.TENSOR_BOARD_DIR)  # 創建 TensorBoard 日誌目錄
         
     def create_save_file(self, path, filename):
         """
@@ -63,7 +63,7 @@ class save_system:
         file_path = os.path.join(path, f"{filename}{self.count}.txt")
         epoch, lr, l_id, l_age, l_grl, total_loss, eer, min_dcf = content
         with open(file_path, 'a') as f:
-            f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
+            f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf.item():.4f}\n")
         print(f"結果已寫入: {file_path}")
             
     def write_parameters_to_file(self, path, filename):
@@ -105,43 +105,43 @@ class save_system:
         :param model: 要保存的模型
         :param epoch: 當前訓練的 epoch
         """
-        checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'model_epoch_{epoch}.pth')
+        checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'model_step_{epoch}.pth')
         torch.save(model.state_dict(), checkpoint_path)
         print(f"模型已保存到：{checkpoint_path}")
         
-    def create_tensor_board(self, path):
-        """
-        根據 count 創建一個 TensorBoard 日誌資料夾。
+    # def create_tensor_board(self, path):
+    #     """
+    #     根據 count 創建一個 TensorBoard 日誌資料夾。
         
-        :param path: TensorBoard 根目錄
-        :return: SummaryWriter 實例
-        """
-        # 根據 count 建立子資料夾，例如 ./logs_tensorboard/run1/
-        tb_path = os.path.join(path, f"run{self.count}")
-        os.makedirs(tb_path, exist_ok=True)
+    #     :param path: TensorBoard 根目錄
+    #     :return: SummaryWriter 實例
+    #     """
+    #     # 根據 count 建立子資料夾，例如 ./logs_tensorboard/run1/
+    #     tb_path = os.path.join(path, f"run{self.count}")
+    #     os.makedirs(tb_path, exist_ok=True)
         
-        writer = SummaryWriter(log_dir=tb_path)
-        print(f"TensorBoard 事件文件已創建: {tb_path}")
-        return writer
+    #     writer = SummaryWriter(log_dir=tb_path)
+    #     print(f"TensorBoard 事件文件已創建: {tb_path}")
+    #     return writer
     
-    def write_tensorboard_log(self, writer, state, epoch, l_id, l_age, l_grl, total_loss, eer, min_dcf):
-        """
-        將數據寫入 TensorBoard 日誌。
+    # def write_tensorboard_log(self, writer, state, epoch, l_id, l_age, l_grl, total_loss, eer, min_dcf):
+    #     """
+    #     將數據寫入 TensorBoard 日誌。
 
-        :param writer: SummaryWriter 實例
-        :param tag: 日誌標籤
-        :param value: 要寫入的值
-        :param step: 步驟或 epoch 編號
-        """
-        if state == "train":
-            writer.add_scalar('Loss/L_id', l_id, epoch)
-            writer.add_scalar('Loss/L_age', l_age, epoch)
-            writer.add_scalar('Loss/L_grl', l_grl, epoch)
-            writer.add_scalar('Loss/Total', total_loss, epoch)
+    #     :param writer: SummaryWriter 實例
+    #     :param tag: 日誌標籤
+    #     :param value: 要寫入的值
+    #     :param step: 步驟或 epoch 編號
+    #     """
+    #     if state == "train":
+    #         writer.add_scalar('Loss/L_id', l_id, epoch)
+    #         writer.add_scalar('Loss/L_age', l_age, epoch)
+    #         writer.add_scalar('Loss/L_grl', l_grl, epoch)
+    #         writer.add_scalar('Loss/Total', total_loss, epoch)
             
-        elif state == "val":
-            writer.add_scalar('EER', eer, epoch)
-            writer.add_scalar('minDCF', min_dcf, epoch)
+    #     elif state == "val":
+    #         writer.add_scalar('EER', eer, epoch)
+    #         writer.add_scalar('minDCF', min_dcf, epoch)
 
     
 if __name__ == "__main__":

@@ -5,12 +5,13 @@ from torch.utils.data import DataLoader
 import numpy as np
 import os
 from tqdm import tqdm
-from tool.save_system import save_system
+from tool.save_system import Save_system
 import random
-from data.dataloader import VoxCeleb_dataset
+from data.dataloader import Voxceleb2_dataset, Voxceleb1_dataset
 from params import param
 from model import ADAL_Model 
-from tool.eval_metric import compute_eer, compute_min_dcf
+from tool.eval_metric import *
+from torch.utils.tensorboard import SummaryWriter
 
 # --- 設定隨機種子，確保可重現性 ---
 def set_seed(seed):
@@ -24,7 +25,6 @@ def set_seed(seed):
         torch.backends.cudnn.benchmark = False # 如果輸入大小不變，可以設為True加速
 
 set_seed(param.RANDOM_SEED)
-save_system = save_system()  # 初始化保存系統，確保目錄存在並創建初始文件
 
 def prepare_dataloader():
     """
@@ -32,12 +32,11 @@ def prepare_dataloader():
     這裡可以根據需要進行數據增強或其他處理。
     """
     # 數據集初始化
-    train_dataset = VoxCeleb_dataset(
+    train_dataset = Voxceleb2_dataset(
         data_list_file=param.DATA_LIST_FILE,
         dataset_path=param.DATA_ROOT,
         musan_path=param.MUSAN_DIR,
         rir_path=param.RIR_NOISE_DIR,
-        mode='train',
         augment=False,
     )
     
@@ -48,26 +47,22 @@ def prepare_dataloader():
         train_dataset,
         batch_size=param.BATCH_SIZE,
         shuffle=True,
-        num_workers=0,  # 根據實際情況調整
+        num_workers=0,
         # pin_memory=True if param.DEVICE == 'cuda' else False,
-        drop_last=True,  # 確保每個批次的數據量相同
+        drop_last=True,  # 確保每個批次的數據量相同(會丟棄最後一個不完整批次)
         collate_fn=train_dataset.collate_fn  # 使用自定義的 collate_fn 來處理變長序列
     )
     
-    val_dataset = VoxCeleb_dataset(
+    val_dataset = Voxceleb1_dataset(
         data_list_file=param.VAL_DATA_LIST_FILE,
         dataset_path=param.VAL_DATA_ROOT,
-        musan_path=param.MUSAN_DIR,
-        rir_path=param.RIR_NOISE_DIR,
-        mode='val',
-        augment=False,  # 驗證時不進行數據增強
     )
     
     print(f"Validation dataset loaded with {len(val_dataset)} samples.")
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=param.BATCH_SIZE,
+        batch_size=1, # param.BATCH_SIZE
         shuffle=False,  # 驗證集通常不需要打亂
         num_workers=0,  # 根據實際情況調整
         # pin_memory=True if param.DEVICE == 'cuda' else False,
@@ -79,6 +74,30 @@ def prepare_dataloader():
     return train_loader, val_loader
 
 
+def init_tensorboard():
+    count = 1
+    while True:
+        if not os.path.exists(f"tensorboard_logs/exp{count}"):
+            os.makedirs(f"tensorboard_logs/exp{count}")
+            break
+        count += 1
+    writer = SummaryWriter(comment="ADAL", log_dir=f"tensorboard_logs/exp{count}")
+    return writer
+
+def log_tensorboard(writer, step, id_loss, age_loss, age_grl_loss, acc, EER, minDCF):
+    if id_loss is not None:
+        writer.add_scalar("Loss/train", id_loss, step)
+    if age_loss is not None:
+        writer.add_scalar("Loss/train/age", age_loss, step)
+    if age_grl_loss is not None:
+        writer.add_scalar("Loss/train/age_grl", age_grl_loss, step)
+    if acc is not None:
+        writer.add_scalar("Accuracy/train", acc, step)
+    if EER is not None:
+        writer.add_scalar("EER/train", EER, step)
+    if minDCF is not None:
+        writer.add_scalar("minDCF/train", minDCF, step)
+
 def evaluate(model, val_loader, device):
     """
     在驗證集上評估模型性能，計算 EER 和 minDCF。
@@ -89,31 +108,31 @@ def evaluate(model, val_loader, device):
     :return: EER 和 minDCF。
     """
     model.eval()  # 設置模型為評估模式
-    all_scores = []
-    all_labels = []
+    scores = []
+    labels = []
 
     with torch.no_grad():
-        for mels, identity_labels, age_labels in tqdm(val_loader, desc="Evaluating", unit="batch"):
-            mels = mels.to(device)
-            identity_labels = identity_labels.to(device)
-            age_labels = age_labels.to(device)
+        for audio1, audio2, label in tqdm(val_loader, desc="Evaluating", unit="batch"):
+            audio1 = audio1.to(device)
+            audio2 = audio2.to(device)
 
             # 前向傳播
-            _, _, _, identity_logits, _, _ = model(mels, identity_labels)
+            _, _, _, embedding1 = model(audio1, mode="val")
+            _, _, _, embedding2 = model(audio2, mode="val")
 
-            # 獲取分數 (這裡假設使用身份分類的 logits 作為分數)
-            scores = torch.softmax(identity_logits, dim=1)[:, 1]  # 假設第二類是目標類別
-            all_scores.extend(scores.cpu().numpy())
-            all_labels.extend(identity_labels.cpu().numpy())
-
-    all_scores = np.array(all_scores)
-    all_labels = np.array(all_labels)
-
+            score_1 = torch.mean(torch.matmul(embedding1, embedding2.T)) # higher is positive
+            score_2 = torch.mean(torch.matmul(embedding1, embedding2.T))
+            score = (score_1 + score_2) / 2
+            score = score.detach().cpu().numpy()
+            scores.append(score)
+            labels.append(label)
+            
     # 計算 EER 和 minDCF
-    eer, eer_threshold = compute_eer(all_scores, all_labels)
-    min_dcf = compute_min_dcf(all_scores, all_labels, p_target=param.P_TARGET, c_fa=param.C_FA, c_miss=param.C_MISS)
+    EER = tuneThresholdfromScore(scores, labels, [1, 0.1])[1]
+    fnrs, fprs, thresholds = ComputeErrorRates(scores, labels)
+    minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
 
-    return eer, min_dcf
+    return EER, minDCF
 
 # --- 訓練主函數 ---
 def train_model():
@@ -121,6 +140,8 @@ def train_model():
     
     # --- 1. 數據加載器 ---
     train_loader, val_loader = prepare_dataloader()
+    save_system = Save_system()  # 初始化保存系統，確保目錄存在並創建初始文件
+    writer = init_tensorboard()  # 初始化 TensorBoard 日誌
 
     # --- 2. 模型、優化器、損失函數 ---
     model = ADAL_Model(
@@ -156,9 +177,9 @@ def train_model():
 
     # --- 3. 訓練循環 ---   
     best_val_eer = float('inf') 
+    step = 0
 
     for epoch in range(param.EPOCHS):
-        state = "train"
         model.train() # 設置模型為訓練模式
         total_loss = 0.0
         total_loss_id = 0.0
@@ -169,8 +190,6 @@ def train_model():
         # 檢查學習率是否達到停止條件
         if current_lr < param.MIN_LR:
             break
-        
-        # logger.info(f"Epoch {epoch+1}/{param.EPOCHS}, Current LR: {current_lr:.6f}")
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", unit="batch")
         for batch_idx, (mels, identity_labels, age_labels) in enumerate(pbar):
@@ -181,23 +200,25 @@ def train_model():
             optimizer.zero_grad() # 清除梯度
 
             # 前向傳播
-            # features, z, z_age, identity_logits, age_logits_from_age, age_logits_from_id_grl
-            _, _, _, identity_logits, age_logits_from_age, age_logits_from_id_grl = model(mels, identity_labels)
+            _, _, _, pred_ids, pred_age, pred_grl_age = model(mels, mode = "train")
 
             # 計算損失
-            # L_id: 身份分類損失 (ArcFaceLoss)
-            loss_id = criterion_ce(identity_logits, identity_labels) 
+            # L_id: 身份分類損失
+            max_index_of_id = torch.argmax(pred_ids, dim=1)
+            loss_id = criterion_ce(pred_ids, identity_labels) 
 
             # L_age: 年齡分類損失 (監督 z_age)
-            loss_age = criterion_ce(age_logits_from_age, age_labels)
+            max_index_of_age = torch.argmax(pred_age, dim=1)
+            loss_age = criterion_ce(pred_age, age_labels)
 
             # L_grl: 對抗年齡損失 (讓 z_id 無法預測年齡)
-            loss_grl = criterion_ce(age_logits_from_id_grl, age_labels)
+            loss_grl = criterion_ce(pred_grl_age, age_labels)
 
             # 總損失 (根據論文公式5)
             loss = (param.LAMBDA_ID * loss_id +
                     param.LAMBDA_AGE * loss_age +
                     param.LAMBDA_GRL * loss_grl)
+            # loss = param.LAMBDA_ID * loss_id
 
             # 反向傳播與優化
             loss.backward()
@@ -214,7 +235,28 @@ def train_model():
                 'L_age': f'{loss_age.item():.4f}',
                 'L_grl': f'{loss_grl.item():.4f}'
             })
-
+            
+            # --- 4. 保存模型檢查點 ---
+            if step % 320 == 0:
+                # --- 執行驗證/評估 ---
+                val_eer, val_mDCF = evaluate(model, val_loader, device)
+                if val_eer < best_val_eer:
+                    best_val_eer = val_eer
+                    best_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, 'best_adal_model.pth')
+                    torch.save(model.state_dict(), best_checkpoint_path)
+                log_tensorboard(
+                    writer, 
+                    step,
+                    loss_id.item(),
+                    loss_age.item(),
+                    loss_grl.item(),
+                    None,  # 這裡可以添加準確率或其他指標
+                    val_eer,  # EER
+                    val_mDCF   # minDCF
+                )
+            
+            step += param.BATCH_SIZE
+                
         avg_loss = total_loss / len(train_loader)
         avg_loss_id = total_loss_id / len(train_loader)
         avg_loss_age = total_loss_age / len(train_loader)
@@ -222,42 +264,6 @@ def train_model():
 
         # 在每個 epoch 結束後更新學習率
         scheduler.step()
-
-        # --- 4. 保存模型檢查點 ---
-        save_system.save_model(model, epoch + 1)
-        
-        # 寫入各種loss以及 EER 和 minDCF 到tensorboard
-        save_system.write_tensorboard_log(
-            param.TENSOR_BOARD_DIR,
-            epoch + 1,
-            current_lr,
-            avg_loss_id,
-            avg_loss_age,
-            avg_loss_grl,
-            avg_loss,
-            eer=None,  # 在訓練階段不計算 EER
-            min_dcf=None  # 在訓練階段不計算 minDCF
-        )
-
-        # --- 執行驗證/評估 ---
-        state = "val"
-        val_eer, val_mDCF = evaluate(model, val_loader, device)
-        if val_eer < best_val_eer:
-            best_val_eer = val_eer
-            best_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, 'best_adal_model.pth')
-            torch.save(model.state_dict(), best_checkpoint_path)
-            
-        save_system.write_tensorboard_log(
-            param.TENSOR_BOARD_DIR,
-            state,
-            epoch + 1,
-            l_id=avg_loss_id,
-            l_age=avg_loss_age,
-            l_grl=avg_loss_grl,
-            total_loss=avg_loss,
-            eer=val_eer,
-            min_dcf=val_mDCF
-        )
             
         # 保存訓練結果到文件
         save_system.write_result_to_file(
@@ -265,15 +271,18 @@ def train_model():
             "result", 
             (epoch + 1, current_lr, avg_loss_id, avg_loss_age, avg_loss_grl, avg_loss, val_eer, val_mDCF)
         )
-        
-        state = "train"
+
         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
               f"Avg Loss: {avg_loss:.4f}, "
               f"Avg L_id: {avg_loss_id:.4f}, "
               f"Avg L_age: {avg_loss_age:.4f}, "
               f"Avg L_grl: {avg_loss_grl:.4f}, "
               f"Val EER: {val_eer:.4f}, "
-              f"Val minDCF: {val_mDCF:.4f}")
+              f"Val minDCF: {val_mDCF.item():.4f}")
+        
+        if epoch == param.EPOCHS - 1:
+            # 在最後一個 epoch 結束時保存模型
+            save_system.save_model(model, epoch + 1)
 
 
 if __name__ == '__main__':

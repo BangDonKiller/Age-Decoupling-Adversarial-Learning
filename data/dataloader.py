@@ -10,6 +10,7 @@ import warnings
 import math
 import glob
 from tqdm import tqdm # 導入 tqdm 以顯示進度條
+from pathlib import Path
 
 # 忽略 librosa 可能發出的警告
 warnings.filterwarnings(
@@ -19,9 +20,8 @@ warnings.filterwarnings(
 warnings.simplefilter("ignore", category=FutureWarning)
 
 
-class VoxCeleb_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file, musan_path, rir_path, mode='train', augment=False):
-        self.mode = mode
+class Voxceleb2_dataset(Dataset):
+    def __init__(self, dataset_path, data_list_file, musan_path, rir_path, augment=False):
         self.augment = augment
         self.sample_rate = 16000  # 假設採樣率為 16000 Hz
         
@@ -98,28 +98,25 @@ class VoxCeleb_dataset(Dataset):
         優化：在初始化時就確定每個樣本的具體音頻文件路徑。
         """
         data_list_raw = np.load(data_list_path, allow_pickle=True).item()
-        
-        # 根據 mode 選擇不同的數據量 (保留，但如果用於完整訓練，應移除此限制)
-        if self.mode == 'train':    
-            data_dicts = dict(list(data_list_raw.items())[:100])
-        else:
-            data_dicts = dict(list(data_list_raw.items())[:10])
+         
+        sample_keys = random.sample(list(data_list_raw.keys()), 1000)
+        data_dicts = {key: data_list_raw[key] for key in sample_keys}
         
         data = []
         speaker_id_map = {} # 用於將字串 ID 映射到整數 ID
         next_speaker_int_id = 0 # 下一個可用的整數 ID
         
         # 使用 tqdm 顯示進度條，因為這部分可能耗時
-        for key, years_old in tqdm(data_dicts.items(), desc=f"Loading {self.mode} data list"):
+        for key, years_old in tqdm(data_dicts.items(), desc=f"Loading train data list"):
             speaker_id = key[:7]
             utterance_id = key[8:] # 這是影片/語音段的 ID
             
             for folder in dataset_path:
                 full_audio_dir = os.path.join(folder, speaker_id, utterance_id)
-                if not os.path.exists(full_audio_dir):
-                    continue
+                if os.path.exists(full_audio_dir):
+                    break
             
-            # **關鍵優化點：在初始化時遍歷資料夾，找到所有 .m4a 檔案的路徑**
+            # **關鍵優化點：在初始化時遍歷資料夾，找到所有 .m4a/.wav 檔案的路徑**
             m4a_files_in_dir = [
                 os.path.join(full_audio_dir, f)
                 for f in os.listdir(full_audio_dir) if f.endswith('.m4a') or f.endswith('.wav')
@@ -140,10 +137,12 @@ class VoxCeleb_dataset(Dataset):
             age_group_id = next((i for i, b in enumerate(bins) if years_old <= b), 6)
 
             # 將該 utterance_id 下所有找到的 .m4a 檔案作為單獨的樣本添加到數據列表中
-            for audio_file_path in m4a_files_in_dir:
-                 data.append((audio_file_path, identity_id_int, age_group_id))
+            # for audio_file_path in m4a_files_in_dir:
+                #  data.append((audio_file_path, identity_id_int, age_group_id))
+            target_file = random.choice(m4a_files_in_dir)  # 隨機選擇一個音訊檔案
+            data.append((target_file, identity_id_int, age_group_id))
 
-        print(f"Loaded {len(data)} samples for {self.mode} mode.")
+        print(f"Loaded {len(data)} samples for training mode.")
         return data
 
     def __len__(self):
@@ -158,7 +157,7 @@ class VoxCeleb_dataset(Dataset):
         final_waveform = torch.from_numpy(waveform).float().unsqueeze(0)  # (1, samples)
         
         # --- 數據增強 ---
-        if self.augment and self.mode == 'train':
+        if self.augment:
             final_waveform = self._apply_augmentation(final_waveform)
 
         # 提取 Mel-filterbank energies
@@ -175,7 +174,6 @@ class VoxCeleb_dataset(Dataset):
         mel_spec = torch.log(mel_spec + 1e-6)
 
         # 通常會對特徵進行均值/方差歸一化 (CMVN)
-        # 如果需要，可以在這裡實作 _apply_cmvn 方法
         # mel_spec = self._apply_cmvn(mel_spec)
 
         return mel_spec, identity_id, age_group_id
@@ -343,6 +341,128 @@ class VoxCeleb_dataset(Dataset):
         
         print("音訊已保存為 'origin_audio.wav' 和 'adjusted_audio.wav'. 請使用音訊播放器播放。")
     
+
+class Voxceleb1_dataset(Dataset):
+    def __init__(self, dataset_path, data_list_file):
+        self.sample_rate = 16000
+
+        # MelSpectrogram 應保持在 CPU，因為輸入波形是 CPU Tensor
+        self.mel_spectrogram = T.MelSpectrogram(
+            sample_rate=self.sample_rate,
+            n_fft=400,         # 25ms 幀長
+            hop_length=160,    # 10ms hop_size
+            n_mels=80          # 80 維 Mel-filterbank energies
+        )
+        
+        # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
+        self.data_list = self._load_data_list(dataset_path, data_list_file)
+        
+    def __len__(self):
+        return len(self.data_list)
+        
+    def _load_data_list(self, dataset_path, data_list_path):
+        """
+        讀取包含 (audio1_path, audio2_path, label) 的列表。
+        """
+        with open (data_list_path, 'r') as f:
+            # read txt
+            data_list_raw = f.readlines()
+        data_list_raw = [line.strip().split() for line in data_list_raw]
+        data_list_raw = random.sample(data_list_raw, 500)  # 隨機選擇 1000 條數據
+        
+        data = []
+        
+        for line in data_list_raw:
+            audio11_path = os.path.join(dataset_path[0], line[1])
+            audio12_path = os.path.join(dataset_path[1], line[1])
+            
+            audio21_path = os.path.join(dataset_path[0], line[2])
+            audio22_path = os.path.join(dataset_path[1], line[2])
+            
+            # 確保音訊檔案存在
+            if os.path.exists(audio11_path):
+                audio1_path = audio11_path
+            else:
+                audio1_path = audio12_path
+            if os.path.exists(audio21_path):
+                audio2_path = audio21_path
+            else:
+                audio2_path = audio22_path
+
+            data.append((int(line[0]), audio1_path, audio2_path))  # (label, audio1, audio2)
+        return data
+
+    def __getitem__(self, idx):
+        # 現在 self.data_list[idx] 已經是完整的音訊檔案路徑了
+        label, audio1_path, audio2_path = self.data_list[idx]
+        
+        audio1_mel = self.turn_to_mel(audio1_path)
+        audio2_mel = self.turn_to_mel(audio2_path)
+
+        return audio1_mel, audio2_mel, label
+
+    def turn_to_mel(self, audio_file_path):
+        """
+        將音訊檔案轉換為 Mel-filterbank energies。
+        """
+        # **優化點：直接載入確定的音訊檔案，不再需要 os.listdir 或 random.choice**
+        waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
+        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0)  # (1, samples)
+
+        # 提取 Mel-filterbank energies
+        # waveform 可能是 (channels, samples)，MelSpectrogram 期望 (channels, samples)
+        mel_spec = self.mel_spectrogram(final_waveform)
+        
+        # 轉換為論文中期望的形狀 (features, frames)
+        # 從 (channels, n_mels, n_frames) 轉為 (n_frames, n_mels)
+        # mel_spec.squeeze(0) 將 (1, 80, n_frames) 變成 (80, n_frames)
+        # .transpose(0, 1) 將 (80, n_frames) 變成 (n_frames, 80)
+        mel_spec = mel_spec.squeeze(0).transpose(0, 1)
+        
+        # 對數 Mel-filterbank energies
+        mel_spec = torch.log(mel_spec + 1e-6)
+
+        # 通常會對特徵進行均值/方差歸一化 (CMVN)
+        # mel_spec = self._apply_cmvn(mel_spec)
+        return mel_spec
+    
+    def collate_fn(self, batch):
+        """
+        將批次數據填充到相同長度，並調整為模型期望的形狀。
+        """
+        # 過濾掉 __getitem__ 返回 None 的樣本 (如果有的話，雖然本次修改應該不會)
+        # batch = [item for item in batch if item is not None] # 確保 batch 不包含 None
+        
+        mel1, mel2, label = zip(*batch)
+        
+        mel1 = self.padding_mel(mel1)  # 對 mel1 進行填充
+        mel2 = self.padding_mel(mel2)  # 對 mel2 進行填充
+
+        return mel1, mel2, torch.tensor(label, dtype=torch.long)
+    
+    def padding_mel(self, mel):
+        # 獲取每個 Mel 譜的幀數 (長度)
+        lengths = [m.shape[0] for m in mel]
+        maxlen = max(lengths) # 找出批次中最長的 Mel 譜幀數
+        
+        # 對所有 Mel 譜進行零填充，使其長度達到 maxlen
+        # (0,0) 對應最後兩個維度 (n_mels)，(0, maxlen-m.shape[0]) 對應第一個維度 (frames)
+        padded = [torch.nn.functional.pad(m, (0,0,0,maxlen-m.shape[0])) for m in mel]
+        
+        # 將填充後的 Mel 譜堆疊成一個批次的 Tensor
+        # 原始：torch.stack(padded) 的形狀是 (batch_size, max_frames, n_mels=80)
+        stacked_mels = torch.stack(padded) # (B, Max_Frames, 80)
+        
+        # 1. 轉置 Mel 譜，使 n_mels (80) 成為高度 (H)，max_frames 成為寬度 (W)
+        #    從 (B, Max_Frames, 80) 變為 (B, 80, Max_Frames)
+        permuted_mels = stacked_mels.permute(0, 2, 1) 
+        
+        # 2. 插入通道維度 (channels=1)，模型通常期望 (B, C, H, W) 格式
+        #    從 (B, 80, Max_Frames) 變為 (B, 1, 80, Max_Frames)
+        final_input_mels = permuted_mels.unsqueeze(1)
+        
+        return final_input_mels
+        
 # Testing
 # if __name__ == "__main__":
 #     # 請根據您的實際路徑修改這裡
@@ -350,11 +470,11 @@ class VoxCeleb_dataset(Dataset):
 #     data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy'
 #     musan_path = 'D:/Dataset/musan/musan'
 #     rir_path = 'D:/Dataset/sim_rir_16k/simulated_rirs_16k'
-#     val_dataset_path = ['D:/Dataset/VoxCeleb1/vox1_dev_wav/wav', "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
-#     val_data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/vox1/segment2age.npy'
+    # val_dataset_path = ['D:/Dataset/VoxCeleb1/vox1_dev_wav/wav', "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
+    # val_data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA20/test.txt'
 
 #     print("Initializing training dataset (with augmentation)...")
-#     train_dataset = VoxCeleb_dataset(
+#     train_dataset = Voxceleb_dataset(
 #         dataset_path=dataset_path,
 #         data_list_file=data_list_file,
 #         musan_path=musan_path,
@@ -364,20 +484,16 @@ class VoxCeleb_dataset(Dataset):
 #     )
 #     print(f"Training Dataset size: {len(train_dataset)}")
 
-#     print("\nInitializing validation dataset (no augmentation)...")
-#     val_dataset = VoxCeleb_dataset(
-#         dataset_path=val_dataset_path,
-#         data_list_file=val_data_list_file,
-#         musan_path=musan_path, # 即使不增強，也需要這些參數傳入
-#         rir_path=rir_path,     # 為了保持 __init__ 參數一致
-#         mode='val', # 或 'test'
-#         augment=False
-#     )
-#     print(f"Validation Dataset size: {len(val_dataset)}")
+    # print("\nInitializing validation dataset (no augmentation)...")
+    # val_dataset = Voxceleb1_dataset(
+    #     dataset_path=val_dataset_path,
+    #     data_list_file=val_data_list_file,
+    # )
+    # print(f"Validation Dataset size: {len(val_dataset)}")
 
-#     from torch.utils.data import DataLoader
-#     import time
-#     import os
+    # from torch.utils.data import DataLoader
+    # import time
+    # import os
 
 #     print("\nCreating DataLoader...")
 #     # 建議 num_workers 設定為 CPU 核心數的 1/2 到 3/4，或者 os.cpu_count() - 1
@@ -391,14 +507,14 @@ class VoxCeleb_dataset(Dataset):
 #         collate_fn=train_dataset.collate_fn
 #     )
 
-#     val_loader = DataLoader(
-#         val_dataset,
-#         batch_size=32,
-#         shuffle=False,
-#         num_workers=0,
-#         pin_memory=True,
-#         collate_fn=val_dataset.collate_fn
-#     )
+    # val_loader = DataLoader(
+    #     val_dataset,
+    #     batch_size=32,
+    #     shuffle=False,
+    #     num_workers=0,
+    #     pin_memory=True,
+    #     collate_fn=val_dataset.collate_fn
+    # )
 
 #     print(f"Testing DataLoader (first {min(5, len(train_loader))} batches for train_loader):")
 #     start_time = time.time()
@@ -409,13 +525,13 @@ class VoxCeleb_dataset(Dataset):
 #     end_time = time.time()
 #     print(f"Time to load 5 batches (train_loader): {end_time - start_time:.2f} seconds")
 
-#     print(f"\nTesting DataLoader (first {min(5, len(val_loader))} batches for val_loader):")
-#     start_time = time.time()
-#     for i, (mels, ident, age) in enumerate(val_loader):
-#         print(f"Batch {i+1}: Mel Spec Shape: {mels.shape}, Identity IDs: {ident.shape}, Age Group IDs: {age.shape}")
-#         if i >= 4: # 只測試前5個批次
-#             break
-#     end_time = time.time()
-#     print(f"Time to load 5 batches (val_loader): {end_time - start_time:.2f} seconds")
+    # print(f"\nTesting DataLoader (first {min(5, len(val_loader))} batches for val_loader):")
+    # start_time = time.time()
+    # for i, (mel1, mel2, label) in enumerate(val_loader):
+    #     print(f"Batch {i+1}: Mel Spec Shape: {mel1.shape}, {mel2.shape}, Label: {label.shape}")
+    #     if i >= 4: # 只測試前5個批次
+    #         break
+    # end_time = time.time()
+    # print(f"Time to load 5 batches (val_loader): {end_time - start_time:.2f} seconds")
 
-#     print("\nDataLoader test complete.")
+    # print("\nDataLoader test complete.")
