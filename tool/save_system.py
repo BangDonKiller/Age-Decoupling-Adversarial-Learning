@@ -63,7 +63,7 @@ class Save_system:
         file_path = os.path.join(path, f"{filename}{self.count}.txt")
         epoch, lr, l_id, l_age, l_grl, total_loss, eer, min_dcf = content
         with open(file_path, 'a') as f:
-            f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf.item():.4f}\n")
+            f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
         print(f"結果已寫入: {file_path}")
             
     def write_parameters_to_file(self, path, filename):

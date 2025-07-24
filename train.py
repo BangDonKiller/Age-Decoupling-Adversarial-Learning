@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
@@ -62,7 +63,7 @@ def prepare_dataloader():
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=1, # param.BATCH_SIZE
+        batch_size=32, # param.BATCH_SIZE
         shuffle=False,  # 驗證集通常不需要打亂
         num_workers=0,  # 根據實際情況調整
         # pin_memory=True if param.DEVICE == 'cuda' else False,
@@ -108,8 +109,8 @@ def evaluate(model, val_loader, device):
     :return: EER 和 minDCF。
     """
     model.eval()  # 設置模型為評估模式
-    scores = []
-    labels = []
+    all_scores = [] # 用於收集所有測試對的分數
+    all_labels = [] # 用於收集所有測試對的真實標籤
 
     with torch.no_grad():
         for audio1, audio2, label in tqdm(val_loader, desc="Evaluating", unit="batch"):
@@ -117,19 +118,25 @@ def evaluate(model, val_loader, device):
             audio2 = audio2.to(device)
 
             # 前向傳播
-            _, _, _, embedding1 = model(audio1, mode="val")
-            _, _, _, embedding2 = model(audio2, mode="val")
-
-            score_1 = torch.mean(torch.matmul(embedding1, embedding2.T)) # higher is positive
-            score_2 = torch.mean(torch.matmul(embedding1, embedding2.T))
-            score = (score_1 + score_2) / 2
-            score = score.detach().cpu().numpy()
-            scores.append(score)
-            labels.append(label)
+            embedding1 = model(audio1, mode="val") # 輸出形狀: (batch_size, feature_dim)
+            embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
             
-    # 計算 EER 和 minDCF
-    EER = tuneThresholdfromScore(scores, labels, [1, 0.1])[1]
-    fnrs, fprs, thresholds = ComputeErrorRates(scores, labels)
+            # L2 正則化 (這部分是正確的)
+            embedding1 = F.normalize(embedding1, p=2, dim=1)
+            embedding2 = F.normalize(embedding2, p=2, dim=1)
+
+            # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
+            scores_batch = F.cosine_similarity(embedding1, embedding2, dim=1)
+            
+            all_scores.extend(scores_batch.cpu().numpy().tolist())
+            all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
+            
+    all_scores = np.array(all_scores)
+    all_labels = np.array(all_labels)
+
+    # 計算 EER 和 minDCF (這部分不需要修改)
+    EER = tuneThresholdfromScore(all_scores, all_labels, [1, 0.1])[1]
+    fnrs, fprs, thresholds = ComputeErrorRates(all_scores, all_labels)
     minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
 
     return EER, minDCF
@@ -200,25 +207,26 @@ def train_model():
             optimizer.zero_grad() # 清除梯度
 
             # 前向傳播
-            _, _, _, pred_ids, pred_age, pred_grl_age = model(mels, mode = "train")
-
+            z_id, loss_id, pred_age, pred_grl_age = model(mels, mode = "train", id_label = identity_labels)
+            
             # 計算損失
             # L_id: 身份分類損失
-            max_index_of_id = torch.argmax(pred_ids, dim=1)
-            loss_id = criterion_ce(pred_ids, identity_labels) 
+            # max_index_of_id = torch.argmax(pred_ids, dim=1)
+            # loss_id = criterion_ce(pred_ids, identity_labels) 
 
             # L_age: 年齡分類損失 (監督 z_age)
             max_index_of_age = torch.argmax(pred_age, dim=1)
             loss_age = criterion_ce(pred_age, age_labels)
-
+            
+            max_index_of_grl_age = torch.argmax(pred_grl_age, dim=1)
             # L_grl: 對抗年齡損失 (讓 z_id 無法預測年齡)
-            loss_grl = criterion_ce(pred_grl_age, age_labels)
+            loss_grl = criterion_ce(pred_grl_age, age_labels)            
 
             # 總損失 (根據論文公式5)
             loss = (param.LAMBDA_ID * loss_id +
                     param.LAMBDA_AGE * loss_age +
                     param.LAMBDA_GRL * loss_grl)
-            # loss = param.LAMBDA_ID * loss_id
+            # loss = param.LAMBDA_ID * loss_id + param.LAMBDA_AGE * loss_age
 
             # 反向傳播與優化
             loss.backward()
@@ -237,7 +245,7 @@ def train_model():
             })
             
             # --- 4. 保存模型檢查點 ---
-            if step % 320 == 0:
+            if step % 640 == 0:
                 # --- 執行驗證/評估 ---
                 val_eer, val_mDCF = evaluate(model, val_loader, device)
                 if val_eer < best_val_eer:

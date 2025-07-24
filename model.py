@@ -6,7 +6,8 @@ import torchvision.models as models
 from modules.GSP import GlobalStatisticalPooling
 from modules.ARE import ARE_Module 
 from modules.GRL import GradientReversalLayer
-from tool.ArcFaceLoss import ArcFaceLoss
+from tool.ArcFaceLoss import AAMsoftmax
+from params import param
 
 
 class ADAL_Model(nn.Module):
@@ -20,8 +21,6 @@ class ADAL_Model(nn.Module):
         
         # 修改 ResNet 的第一個卷積層以適應單通道輸入 (音頻 Mel 頻譜通常是單通道)
         # self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.conv1 = nn.Conv2d(1, 24, kernel_size=3, stride=2, padding=1, bias=False)
-        
         # 替換 ResNet 的第一個卷積層以及去除最後一個分類層
         # self.feature_extractor = nn.Sequential(
         #     self.conv1,
@@ -33,6 +32,8 @@ class ADAL_Model(nn.Module):
         #     self.resnet.layer3,
         #     self.resnet.layer4 # layer4 的輸出通道數是 512
         # )
+        self.conv1 = nn.Conv2d(1, 24, kernel_size=3, stride=2, padding=1, bias=False)
+        
         self.feature_extractor = nn.Sequential(
             self.conv1,  # 替換第一個卷積層
             self.model.conv1[1],  # BatchNorm
@@ -53,20 +54,19 @@ class ADAL_Model(nn.Module):
         )
         
         # 全局統計池化層 + 說話者嵌入層 => 提取出 z
-        # 根據 ResNet34 layer4 的輸出通道數 512，GSP 應輸出 512 * 2 = 1024 維
         self.speaker_embedding_layer = nn.Sequential(
             GlobalStatisticalPooling(),
-            nn.Linear(512 * 2 * 3, feature_dim), # 修正此處的輸入維度為 1024
+            nn.Linear(512 * 2 * 3, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(1024, feature_dim),
             nn.ReLU(inplace=True)
         )
         
-        
         # 年齡特徵提取模塊 (ARE)
-        # ARE 也接收 ResNet34 layer4 的輸出，所以 input_channels 也是 512
         self.age_extractor_module = ARE_Module(input_channels=512, output_dim=feature_dim)
 
-        # 這裡的 GRL 是用在身份特徵 z_id 上，將其送到一個年齡分類器，
-        # 但這個分類器的目的是讓 z_id 變得年齡不相關
+        # 這裡的 GRL 是用在身份特徵 z_id 上，將其送到一個年齡分類器，讓 z_id 變得年齡不相關
         self.grl = GradientReversalLayer()
         self.age_classifier_on_id = nn.Sequential(
             nn.Linear(feature_dim, feature_dim),
@@ -75,29 +75,23 @@ class ADAL_Model(nn.Module):
         )
 
         # 身份分類器 (基於 z_id)
-        # self.identity_classifier = ArcFaceLoss(embedding_size=feature_dim, num_classes=identity_classes) # 需要傳入總類別數
-        self.identity_classifier = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(feature_dim, identity_classes)  # 最終輸出類別數
-        )
-
+        self.identity_classifier = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
 
         # 年齡分類器 (基於 z_age)
         self.age_classifier_on_age = nn.Sequential(
             nn.Linear(feature_dim, feature_dim),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
             nn.Linear(feature_dim, age_classes)  # 最終輸出類別數
         )
 
 
-    def forward(self, audio, mode=None):
+    def forward(self, audio, mode=None, id_label=None):
         # 1. 提取整體特徵 x (論文中的 Feature maps)
         features = self.feature_extractor(audio) # features 現在是 (B, 512, H_feat, W_feat)
         
         # 2. 提取 z (整個說話者嵌入)
         z = self.speaker_embedding_layer(features) # z 現在是 (B, feature_dim)
-        
 
         # 3. 提取年齡特徵 z_age
         z_age = self.age_extractor_module(features) # z_age 現在是 (B, feature_dim)
@@ -105,24 +99,23 @@ class ADAL_Model(nn.Module):
         # 3. 計算身份特徵 z_id = z - z_age
         z_id = z - z_age
 
-        # 4. 身份分類 (用於L_id)
         if mode == "train":
-            pred_id = self.identity_classifier(z_id)
-            # 5. 年齡分類 (用於L_age，監督z_age)
-            pred_age = self.age_classifier_on_age(z_age)
-
-            # 6. 對抗年齡分類 (用於L_grl，將z_id通過GRL後再送入年齡分類器)
-            z_id_grl = self.grl(z_id)
-            pred_grl_age = self.age_classifier_on_id(z_id_grl)
+            # 4. 計算身份分類損失
+            loss_id, pred_id = self.identity_classifier(z_id, id_label)
             
-            return features, z, z_age, pred_id, pred_age, pred_grl_age
+            # 5. 預測年齡
+            pred_age = self.age_classifier_on_age(z_age)
+            
+            # 6. 計算年齡對抗
+            z_age_grl = self.grl(z_id)
+            
+            # 7. 預測年齡 (對抗性)
+            pred_grl_age = self.age_classifier_on_id(z_age_grl)
+            
+            return z_id, loss_id, pred_age, pred_grl_age
         
         else:
-            id_embedding = z_id
-            
-            return features, z, z_age, id_embedding
-
-
+            return z_id
 
 
 # if __name__ == "__main__":

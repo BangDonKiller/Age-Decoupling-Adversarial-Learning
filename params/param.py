@@ -81,7 +81,7 @@ LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此
 # 訓練輪數
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 # 每批次訓練樣本數
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 # 優化器類型
 OPTIMIZER = 'SGD'
 # 初始學習率

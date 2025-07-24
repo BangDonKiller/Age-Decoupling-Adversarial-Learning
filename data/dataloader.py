@@ -10,7 +10,7 @@ import warnings
 import math
 import glob
 from tqdm import tqdm # 導入 tqdm 以顯示進度條
-from pathlib import Path
+from collections import defaultdict
 
 # 忽略 librosa 可能發出的警告
 warnings.filterwarnings(
@@ -92,30 +92,67 @@ class Voxceleb2_dataset(Dataset):
                     warnings.warn(f"Failed to preload {file_path}: {e}. Skipping.")
         return loaded_data
 
-    def _load_data_list(self, dataset_path, data_list_path):
+    def _load_data_list(self, dataset_paths, data_list_path, num_samples_target=3000):
         """
         讀取包含 (audio_path, identity_id, age_group_id) 的列表。
-        優化：在初始化時就確定每個樣本的具體音頻文件路徑。
+        優化：在初始化時就確定每個樣本的具體音頻文件路徑，並確保說話者唯一性。
         """
         data_list_raw = np.load(data_list_path, allow_pickle=True).item()
-         
-        sample_keys = random.sample(list(data_list_raw.keys()), 1000)
-        data_dicts = {key: data_list_raw[key] for key in sample_keys}
+        
+        # --- 步驟 1: 將所有原始資料按說話者 ID 進行分組 ---
+        # 鍵是 speaker_id (idXXXXX)，值是該說話者擁有的所有 utterance keys (idXXXXX/YYYYY)
+        speaker_to_utterance_keys = defaultdict(list)
+        for full_key in data_list_raw.keys():
+            speaker_id = full_key[:7] # 提取說話者 ID
+            speaker_to_utterance_keys[speaker_id].append(full_key)
+        
+        all_unique_speaker_ids = list(speaker_to_utterance_keys.keys())
+        
+        # --- 步驟 2: 隨機選擇 num_samples_target 個唯一的說話者 ID ---
+        # 如果可用的獨立說話者數量不足，則選擇所有可用的說話者
+        if len(all_unique_speaker_ids) < num_samples_target:
+            warnings.warn(
+                f"Warning: Only {len(all_unique_speaker_ids)} unique speakers available "
+                f"in {data_list_path}, less than the requested {num_samples_target}. "
+                f"Sampling all {len(all_unique_speaker_ids)} unique speakers instead."
+            )
+            sampled_speaker_ids = all_unique_speaker_ids
+        else:
+            # 隨機抽取 num_samples_target 個獨立的說話者 ID
+            sampled_speaker_ids = random.sample(all_unique_speaker_ids, num_samples_target)
+        
+        # --- 步驟 3: 從每個被選中的說話者中隨機選擇一筆資料 (一個 utterance key) ---
+        selected_utterance_keys = []
+        for speaker_id in sampled_speaker_ids:
+            # 從該說話者的所有 utterance key 中隨機選一個
+            selected_utterance_keys.append(random.choice(speaker_to_utterance_keys[speaker_id]))
+        
+        # 根據這些選定的 utterance key 構建 `data_dicts` 子集
+        # 這樣 `data_dicts` 就包含了 num_samples_target 筆資料，且來自 num_samples_target 個不同說話者
+        data_dicts = {key: data_list_raw[key] for key in selected_utterance_keys}
         
         data = []
         speaker_id_map = {} # 用於將字串 ID 映射到整數 ID
         next_speaker_int_id = 0 # 下一個可用的整數 ID
         
         # 使用 tqdm 顯示進度條，因為這部分可能耗時
-        for key, years_old in tqdm(data_dicts.items(), desc=f"Loading train data list"):
+        # 迭代的是確保唯一的說話者 ID 的資料子集
+        for key, years_old in tqdm(data_dicts.items(), desc=f"Loading data for {len(data_dicts)} unique speakers"):
             speaker_id = key[:7]
             utterance_id = key[8:] # 這是影片/語音段的 ID
             
-            for folder in dataset_path:
-                full_audio_dir = os.path.join(folder, speaker_id, utterance_id)
-                if os.path.exists(full_audio_dir):
+            # 遍歷可能的數據根路徑，找到實際的音頻資料夾
+            full_audio_dir = None
+            for folder in dataset_paths: # 注意這裡用 dataset_paths，因為它可能是個列表
+                potential_dir = os.path.join(folder, speaker_id, utterance_id)
+                if os.path.exists(potential_dir):
+                    full_audio_dir = potential_dir
                     break
             
+            if full_audio_dir is None:
+                warnings.warn(f"Audio directory not found for {speaker_id}/{utterance_id}. Skipping this entry.")
+                continue
+
             # **關鍵優化點：在初始化時遍歷資料夾，找到所有 .m4a/.wav 檔案的路徑**
             m4a_files_in_dir = [
                 os.path.join(full_audio_dir, f)
@@ -123,7 +160,7 @@ class Voxceleb2_dataset(Dataset):
             ]
 
             if not m4a_files_in_dir:
-                warnings.warn(f"No .m4a files found in {full_audio_dir}. Skipping this utterance.")
+                warnings.warn(f"No .m4a/.wav files found in {full_audio_dir}. Skipping this utterance.")
                 continue
 
             # 確保 speaker_id 是唯一的整數 ID
@@ -137,13 +174,73 @@ class Voxceleb2_dataset(Dataset):
             age_group_id = next((i for i, b in enumerate(bins) if years_old <= b), 6)
 
             # 將該 utterance_id 下所有找到的 .m4a 檔案作為單獨的樣本添加到數據列表中
-            # for audio_file_path in m4a_files_in_dir:
-                #  data.append((audio_file_path, identity_id_int, age_group_id))
             target_file = random.choice(m4a_files_in_dir)  # 隨機選擇一個音訊檔案
             data.append((target_file, identity_id_int, age_group_id))
 
-        print(f"Loaded {len(data)} samples for training mode.")
-        return data
+        print(f"Loaded {len(data)} samples from {len(speaker_id_map)} unique speakers for training mode.")
+        # 如果需要在類的其他地方使用這個 map，可以存起來
+        self.speaker_id_map = speaker_id_map
+        
+        # 測試每個說話者ID只出現一次
+        # unique_speakers = []
+        # for path, id, age_group in data:
+        #     speakerID = path[42:49]
+        #     if speakerID not in unique_speakers:
+        #         unique_speakers.append(speakerID)
+        #     else:
+        #         print(f"Warning: Speaker ID {speakerID} appears multiple times in the dataset. This should not happen.")
+        return data    
+    
+    # def _load_data_list(self, dataset_path, data_list_path):
+    #     """
+    #     讀取包含 (audio_path, identity_id, age_group_id) 的列表。
+    #     優化：在初始化時就確定每個樣本的具體音頻文件路徑。
+    #     """
+    #     data_list_raw = np.load(data_list_path, allow_pickle=True).item()
+         
+    #     sample_keys = random.sample(list(data_list_raw.keys()), 3000)
+    #     data_dicts = {key: data_list_raw[key] for key in sample_keys}
+        
+    #     data = []
+    #     speaker_id_map = {} # 用於將字串 ID 映射到整數 ID
+    #     next_speaker_int_id = 0 # 下一個可用的整數 ID
+        
+    #     # 使用 tqdm 顯示進度條，因為這部分可能耗時
+    #     for key, years_old in tqdm(data_dicts.items(), desc=f"Loading train data list"):
+    #         speaker_id = key[:7]
+    #         utterance_id = key[8:] # 這是影片/語音段的 ID
+            
+    #         for folder in dataset_path:
+    #             full_audio_dir = os.path.join(folder, speaker_id, utterance_id)
+    #             if os.path.exists(full_audio_dir):
+    #                 break
+            
+    #         # **關鍵優化點：在初始化時遍歷資料夾，找到所有 .m4a/.wav 檔案的路徑**
+    #         m4a_files_in_dir = [
+    #             os.path.join(full_audio_dir, f)
+    #             for f in os.listdir(full_audio_dir) if f.endswith('.m4a') or f.endswith('.wav')
+    #         ]
+
+    #         if not m4a_files_in_dir:
+    #             warnings.warn(f"No .m4a files found in {full_audio_dir}. Skipping this utterance.")
+    #             continue
+
+    #         # 確保 speaker_id 是唯一的整數 ID
+    #         if speaker_id not in speaker_id_map:
+    #             speaker_id_map[speaker_id] = next_speaker_int_id
+    #             next_speaker_int_id += 1
+    #         identity_id_int = speaker_id_map[speaker_id] # 獲取對應的整數 ID
+            
+    #         # years_olds => {0~20: 0, 21~30: 1, ..., 70~100: 6}
+    #         bins = [20, 30, 40, 50, 60, 70]
+    #         age_group_id = next((i for i, b in enumerate(bins) if years_old <= b), 6)
+
+    #         # 將該 utterance_id 下所有找到的 .m4a 檔案作為單獨的樣本添加到數據列表中
+    #         target_file = random.choice(m4a_files_in_dir)  # 隨機選擇一個音訊檔案
+    #         data.append((target_file, identity_id_int, age_group_id))
+
+    #     print(f"Loaded {len(data)} samples for training mode.")
+    #     return data
 
     def __len__(self):
         return len(self.data_list)
