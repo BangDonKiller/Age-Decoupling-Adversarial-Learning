@@ -226,7 +226,6 @@ def train_model():
             loss = (param.LAMBDA_ID * loss_id +
                     param.LAMBDA_AGE * loss_age +
                     param.LAMBDA_GRL * loss_grl)
-            # loss = param.LAMBDA_ID * loss_id + param.LAMBDA_AGE * loss_age
 
             # 反向傳播與優化
             loss.backward()

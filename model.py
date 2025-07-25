@@ -56,11 +56,9 @@ class ADAL_Model(nn.Module):
         # 全局統計池化層 + 說話者嵌入層 => 提取出 z
         self.speaker_embedding_layer = nn.Sequential(
             GlobalStatisticalPooling(),
-            nn.Linear(512 * 2 * 3, 1024),
+            nn.Linear(512 * 2, feature_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(1024, feature_dim),
-            nn.ReLU(inplace=True)
+            nn.Dropout(0.5)
         )
         
         # 年齡特徵提取模塊 (ARE)
