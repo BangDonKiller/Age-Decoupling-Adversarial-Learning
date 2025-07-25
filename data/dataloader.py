@@ -92,7 +92,7 @@ class Voxceleb2_dataset(Dataset):
                     warnings.warn(f"Failed to preload {file_path}: {e}. Skipping.")
         return loaded_data
 
-    def _load_data_list(self, dataset_paths, data_list_path, num_samples_target=3000):
+    def _load_data_list(self, dataset_paths, data_list_path, num_people=500):
         """
         讀取包含 (audio_path, identity_id, age_group_id) 的列表。
         優化：在初始化時就確定每個樣本的具體音頻文件路徑，並確保說話者唯一性。
@@ -106,31 +106,34 @@ class Voxceleb2_dataset(Dataset):
             speaker_id = full_key[:7] # 提取說話者 ID
             speaker_to_utterance_keys[speaker_id].append(full_key)
         
+        # 隨機打亂speaker_to_utterance_keys裡面的順序，讓每次都能使用不同說話者來做訓練
+        
         all_unique_speaker_ids = list(speaker_to_utterance_keys.keys())
         
-        # --- 步驟 2: 隨機選擇 num_samples_target 個唯一的說話者 ID ---
+        # --- 步驟 2: 隨機選擇 num_people 個唯一的說話者 ID ---
         # 如果可用的獨立說話者數量不足，則選擇所有可用的說話者
-        if len(all_unique_speaker_ids) < num_samples_target:
-            warnings.warn(
-                f"Warning: Only {len(all_unique_speaker_ids)} unique speakers available "
-                f"in {data_list_path}, less than the requested {num_samples_target}. "
-                f"Sampling all {len(all_unique_speaker_ids)} unique speakers instead."
-            )
-            sampled_speaker_ids = all_unique_speaker_ids
-        else:
-            # 隨機抽取 num_samples_target 個獨立的說話者 ID
-            sampled_speaker_ids = random.sample(all_unique_speaker_ids, num_samples_target)
+        sampled_speaker_ids = random.sample(all_unique_speaker_ids, num_people)
         
-        # --- 步驟 3: 從每個被選中的說話者中隨機選擇一筆資料 (一個 utterance key) ---
-        selected_utterance_keys = []
+        # --- 步驟 3: 選擇 N 段語句 ---
+        selected_utterance_keys = {}
+        # 複製一個dict，但只保留sampled_speaker_ids的說話者的 utterance keys
         for speaker_id in sampled_speaker_ids:
-            # 從該說話者的所有 utterance key 中隨機選一個
-            selected_utterance_keys.append(random.choice(speaker_to_utterance_keys[speaker_id]))
+            if speaker_id in speaker_to_utterance_keys:
+                selected_utterance_keys[speaker_id] = speaker_to_utterance_keys[speaker_id]
+            
+        utterance_num = 0
+        for id in selected_utterance_keys:
+            utterance_num += len(selected_utterance_keys[id])
         
+        print(f"Selected {len(selected_utterance_keys)} unique speakers with a total of {utterance_num} utterances.")
         # 根據這些選定的 utterance key 構建 `data_dicts` 子集
-        # 這樣 `data_dicts` 就包含了 num_samples_target 筆資料，且來自 num_samples_target 個不同說話者
-        data_dicts = {key: data_list_raw[key] for key in selected_utterance_keys}
+        # 這樣 `data_dicts` 就包含了 N 筆資料，且來自 num_people 個不同說話者
+        data_dicts = {}
         
+        for speaker_id in selected_utterance_keys:
+            for utterance_key in selected_utterance_keys[speaker_id]:
+                data_dicts[utterance_key] = data_list_raw[utterance_key]
+
         data = []
         speaker_id_map = {} # 用於將字串 ID 映射到整數 ID
         next_speaker_int_id = 0 # 下一個可用的整數 ID
@@ -178,70 +181,10 @@ class Voxceleb2_dataset(Dataset):
             data.append((target_file, identity_id_int, age_group_id))
 
         print(f"Loaded {len(data)} samples from {len(speaker_id_map)} unique speakers for training mode.")
-        # 如果需要在類的其他地方使用這個 map，可以存起來
         self.speaker_id_map = speaker_id_map
-        
-        # 測試每個說話者ID只出現一次
-        # unique_speakers = []
-        # for path, id, age_group in data:
-        #     speakerID = path[42:49]
-        #     if speakerID not in unique_speakers:
-        #         unique_speakers.append(speakerID)
-        #     else:
-        #         print(f"Warning: Speaker ID {speakerID} appears multiple times in the dataset. This should not happen.")
+
         return data    
     
-    # def _load_data_list(self, dataset_path, data_list_path):
-    #     """
-    #     讀取包含 (audio_path, identity_id, age_group_id) 的列表。
-    #     優化：在初始化時就確定每個樣本的具體音頻文件路徑。
-    #     """
-    #     data_list_raw = np.load(data_list_path, allow_pickle=True).item()
-         
-    #     sample_keys = random.sample(list(data_list_raw.keys()), 3000)
-    #     data_dicts = {key: data_list_raw[key] for key in sample_keys}
-        
-    #     data = []
-    #     speaker_id_map = {} # 用於將字串 ID 映射到整數 ID
-    #     next_speaker_int_id = 0 # 下一個可用的整數 ID
-        
-    #     # 使用 tqdm 顯示進度條，因為這部分可能耗時
-    #     for key, years_old in tqdm(data_dicts.items(), desc=f"Loading train data list"):
-    #         speaker_id = key[:7]
-    #         utterance_id = key[8:] # 這是影片/語音段的 ID
-            
-    #         for folder in dataset_path:
-    #             full_audio_dir = os.path.join(folder, speaker_id, utterance_id)
-    #             if os.path.exists(full_audio_dir):
-    #                 break
-            
-    #         # **關鍵優化點：在初始化時遍歷資料夾，找到所有 .m4a/.wav 檔案的路徑**
-    #         m4a_files_in_dir = [
-    #             os.path.join(full_audio_dir, f)
-    #             for f in os.listdir(full_audio_dir) if f.endswith('.m4a') or f.endswith('.wav')
-    #         ]
-
-    #         if not m4a_files_in_dir:
-    #             warnings.warn(f"No .m4a files found in {full_audio_dir}. Skipping this utterance.")
-    #             continue
-
-    #         # 確保 speaker_id 是唯一的整數 ID
-    #         if speaker_id not in speaker_id_map:
-    #             speaker_id_map[speaker_id] = next_speaker_int_id
-    #             next_speaker_int_id += 1
-    #         identity_id_int = speaker_id_map[speaker_id] # 獲取對應的整數 ID
-            
-    #         # years_olds => {0~20: 0, 21~30: 1, ..., 70~100: 6}
-    #         bins = [20, 30, 40, 50, 60, 70]
-    #         age_group_id = next((i for i, b in enumerate(bins) if years_old <= b), 6)
-
-    #         # 將該 utterance_id 下所有找到的 .m4a 檔案作為單獨的樣本添加到數據列表中
-    #         target_file = random.choice(m4a_files_in_dir)  # 隨機選擇一個音訊檔案
-    #         data.append((target_file, identity_id_int, age_group_id))
-
-    #     print(f"Loaded {len(data)} samples for training mode.")
-    #     return data
-
     def __len__(self):
         return len(self.data_list)
 
@@ -567,16 +510,15 @@ class Voxceleb1_dataset(Dataset):
 #     data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy'
 #     musan_path = 'D:/Dataset/musan/musan'
 #     rir_path = 'D:/Dataset/sim_rir_16k/simulated_rirs_16k'
-    # val_dataset_path = ['D:/Dataset/VoxCeleb1/vox1_dev_wav/wav', "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
-    # val_data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA20/test.txt'
+#     val_dataset_path = ['D:/Dataset/VoxCeleb1/vox1_dev_wav/wav', "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
+#     val_data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA20/test.txt'
 
 #     print("Initializing training dataset (with augmentation)...")
-#     train_dataset = Voxceleb_dataset(
+#     train_dataset = Voxceleb2_dataset(
 #         dataset_path=dataset_path,
 #         data_list_file=data_list_file,
 #         musan_path=musan_path,
 #         rir_path=rir_path,
-#         mode='train',
 #         augment=False
 #     )
 #     print(f"Training Dataset size: {len(train_dataset)}")
@@ -592,17 +534,17 @@ class Voxceleb1_dataset(Dataset):
     # import time
     # import os
 
-#     print("\nCreating DataLoader...")
-#     # 建議 num_workers 設定為 CPU 核心數的 1/2 到 3/4，或者 os.cpu_count() - 1
-#     # pin_memory=True 對於 GPU 訓練至關重要
-#     train_loader = DataLoader(
-#         train_dataset,
-#         batch_size=32,
-#         shuffle=True,
-#         num_workers=0, # 根據你的 CPU 核心數調整
-#         pin_memory=True,
-#         collate_fn=train_dataset.collate_fn
-#     )
+    # print("\nCreating DataLoader...")
+    # 建議 num_workers 設定為 CPU 核心數的 1/2 到 3/4，或者 os.cpu_count() - 1
+    # pin_memory=True 對於 GPU 訓練至關重要
+    # train_loader = DataLoader(
+    #     train_dataset,
+    #     batch_size=32,
+    #     shuffle=True,
+    #     num_workers=0, # 根據你的 CPU 核心數調整
+    #     pin_memory=True,
+    #     collate_fn=train_dataset.collate_fn
+    # )
 
     # val_loader = DataLoader(
     #     val_dataset,
@@ -613,14 +555,14 @@ class Voxceleb1_dataset(Dataset):
     #     collate_fn=val_dataset.collate_fn
     # )
 
-#     print(f"Testing DataLoader (first {min(5, len(train_loader))} batches for train_loader):")
-#     start_time = time.time()
-#     for i, (mels, ident, age) in enumerate(train_loader):
-#         print(f"Batch {i+1}: Mel Spec Shape: {mels.shape}, Identity IDs: {ident.shape}, Age Group IDs: {age.shape}")
-#         if i >= 4: # 只測試前5個批次
-#             break
-#     end_time = time.time()
-#     print(f"Time to load 5 batches (train_loader): {end_time - start_time:.2f} seconds")
+    # print(f"Testing DataLoader (first {min(5, len(train_loader))} batches for train_loader):")
+    # start_time = time.time()
+    # for i, (mels, ident, age) in enumerate(train_loader):
+    #     print(f"Batch {i+1}: Mel Spec Shape: {mels.shape}, Identity IDs: {ident.shape}, Age Group IDs: {age.shape}")
+    #     if i >= 4: # 只測試前5個批次
+    #         break
+    # end_time = time.time()
+    # print(f"Time to load 5 batches (train_loader): {end_time - start_time:.2f} seconds")
 
     # print(f"\nTesting DataLoader (first {min(5, len(val_loader))} batches for val_loader):")
     # start_time = time.time()
