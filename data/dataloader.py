@@ -9,8 +9,15 @@ import librosa
 import warnings
 import math
 import glob
-from tqdm import tqdm # 導入 tqdm 以顯示進度條
+from tqdm import tqdm
 from collections import defaultdict
+from torchvision import transforms
+import torch.nn.functional as F
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from params import param
+import matplotlib.pyplot as plt
+
 
 # 忽略 librosa 可能發出的警告
 warnings.filterwarnings(
@@ -21,10 +28,11 @@ warnings.simplefilter("ignore", category=FutureWarning)
 
 
 class Voxceleb2_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file, musan_path, rir_path, augment=False):
+    def __init__(self, num_frames, dataset_path, data_list_file, musan_path, rir_path, augment=False):
         self.augment = augment
         self.sample_rate = 16000  # 假設採樣率為 16000 Hz
-        
+        self.frame_num = num_frames
+
         # MelSpectrogram 應保持在 CPU，因為輸入波形是 CPU Tensor
         self.mel_spectrogram = T.MelSpectrogram(
             sample_rate=self.sample_rate,
@@ -192,31 +200,46 @@ class Voxceleb2_dataset(Dataset):
         # 現在 self.data_list[idx] 已經是完整的音訊檔案路徑了
         audio_file_path, identity_id, age_group_id = self.data_list[idx]
         
-        # **優化點：直接載入確定的音訊檔案，不再需要 os.listdir 或 random.choice**
+        # 載入音訊檔案
         waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
-        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0)  # (1, samples)
+        length = self.frame_num * 160 + 240
+        
+        if waveform.shape[0] <= length:
+            shortage = length - waveform.shape[0]
+            waveform = np.pad(waveform, (0, shortage), 'wrap')
+        start_frame = np.int64(random.random()*(waveform.shape[0]-length))
+        waveform = waveform[start_frame:start_frame + length]
+        final_waveform = np.stack([waveform], axis=0)
         
         # --- 數據增強 ---
         if self.augment:
             final_waveform = self._apply_augmentation(final_waveform)
 
-        # 提取 Mel-filterbank energies
-        # waveform 可能是 (channels, samples)，MelSpectrogram 期望 (channels, samples)
+        # 將 waveform 轉換為 PyTorch Tensor
+        final_waveform = torch.from_numpy(final_waveform).float()
+
+        # 提取 Mel-filterbank energies (channels, samples)
         mel_spec = self.mel_spectrogram(final_waveform)
-        
-        # 轉換為論文中期望的形狀 (features, frames)
-        # 從 (channels, n_mels, n_frames) 轉為 (n_frames, n_mels)
-        # mel_spec.squeeze(0) 將 (1, 80, n_frames) 變成 (80, n_frames)
-        # .transpose(0, 1) 將 (80, n_frames) 變成 (n_frames, 80)
-        mel_spec = mel_spec.squeeze(0).transpose(0, 1)
+
+        # 轉換為論文中期望的形狀 (channels, n_mels, n_frames)
+        # mel_spec = mel_spec.squeeze(0).transpose(0, 1)
+        # mel_spec = mel_spec.squeeze(0).permute(1, 0)
         
         # 對數 Mel-filterbank energies
         mel_spec = torch.log(mel_spec + 1e-6)
 
-        # 通常會對特徵進行均值/方差歸一化 (CMVN)
-        # mel_spec = self._apply_cmvn(mel_spec)
+        # # 通常會對特徵進行均值/方差歸一化 (CMVN)
+        # # mel_spec = self._apply_cmvn(mel_spec)
 
         return mel_spec, identity_id, age_group_id
+    
+    def spec_to_rgb(self, spec):
+        """
+        將單通道 spectrogram 視覺化成 RGB image。
+        spec: 2D array (H, W)
+        return: 3D uint8 RGB image: shape (H, W, 3)
+        """
+        return spec.repeat(1, 3, 1, 1)
     
     def collate_fn(self, batch):
         """
@@ -227,28 +250,78 @@ class Voxceleb2_dataset(Dataset):
         
         mels, ident, age = zip(*batch)
         
-        # 獲取每個 Mel 譜的幀數 (長度)
-        lengths = [m.shape[0] for m in mels]
-        maxlen = max(lengths) # 找出批次中最長的 Mel 譜幀數
+        # # 獲取每個 Mel 譜的幀數 (長度)
+        # lengths = [m.shape[0] for m in mels]
+        # maxlen = max(lengths) # 找出批次中最長的 Mel 譜幀數
         
-        # 對所有 Mel 譜進行零填充，使其長度達到 maxlen
-        # (0,0) 對應最後兩個維度 (n_mels)，(0, maxlen-m.shape[0]) 對應第一個維度 (frames)
-        padded = [torch.nn.functional.pad(m, (0,0,0,maxlen-m.shape[0])) for m in mels]
+        # # 對所有 Mel 譜進行零填充，使其長度達到 maxlen
+        # # (0,0) 對應最後兩個維度 (n_mels)，(0, maxlen-m.shape[0]) 對應第一個維度 (frames)
+        # padded = [torch.nn.functional.pad(m, (0,0,0,maxlen-m.shape[0])) for m in mels]
         
-        # 將填充後的 Mel 譜堆疊成一個批次的 Tensor
-        # 原始：torch.stack(padded) 的形狀是 (batch_size, max_frames, n_mels=80)
-        stacked_mels = torch.stack(padded) # (B, Max_Frames, 80)
+        # # 將填充後的 Mel 譜堆疊成一個批次的 Tensor
+        # # 原始：torch.stack(padded) 的形狀是 (batch_size, max_frames, n_mels=80)
+        # stacked_mels = torch.stack(padded) # (B, Max_Frames, 80)
         
-        # 1. 轉置 Mel 譜，使 n_mels (80) 成為高度 (H)，max_frames 成為寬度 (W)
-        #    從 (B, Max_Frames, 80) 變為 (B, 80, Max_Frames)
-        permuted_mels = stacked_mels.permute(0, 2, 1) 
+        # # 1. 轉置 Mel 譜，使 n_mels (80) 成為高度 (H)，max_frames 成為寬度 (W)
+        # #    從 (B, Max_Frames, 80) 變為 (B, 80, Max_Frames)
+        # permuted_mels = stacked_mels.permute(0, 2, 1) 
         
-        # 2. 插入通道維度 (channels=1)，模型通常期望 (B, C, H, W) 格式
-        #    從 (B, 80, Max_Frames) 變為 (B, 1, 80, Max_Frames)
-        final_input_mels = permuted_mels.unsqueeze(1)
+        # # 2. 插入通道維度 (channels=1)，模型通常期望 (B, C, H, W) 格式
+        # #    從 (B, 80, Max_Frames) 變為 (B, 1, 80, Max_Frames)
+        # final_input_mels = permuted_mels.unsqueeze(1)
         
+        mels = torch.stack(mels)  # 將 Mel 譜堆疊成一個批次的 Tensor (B, C, H, W)
+        resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
+        norm_mels = self.min_max_normalize(resize_mels)  # 對 Mel 譜進行 Min-Max 正規化
+
+        final_input_mels = norm_mels.numpy()  # 如果需要轉換為 NumPy 陣列
+        # 將 RGB 圖像轉換為 Tensor
+        final_input_mels = torch.tensor(final_input_mels, dtype=torch.float32)
+        final_input_mels = self.spec_to_rgb(final_input_mels)  # 將 Mel 譜轉換為 RGB 圖像
+
         # 將身份和年齡 ID 轉換為 Tensor
         return final_input_mels, torch.tensor(ident, dtype=torch.long), torch.tensor(age, dtype=torch.long)
+
+    def min_max_normalize(self, spec):
+        """
+        將 PyTorch Tensor (B, C, H, W) 中的每個 (H, W) 頻譜圖獨立進行 Min-Max 正規化到 [0, 1]。
+        
+        Args:
+            spec: PyTorch Tensor, shape (B, C, H, W).
+                          通常 dtype 會是 float32 或 float64.
+        
+        Returns:
+            PyTorch Tensor, shape (B, C, H, W), 正規化後的頻譜圖，值在 [0, 1] 範圍。
+        """
+        
+        normalized_tensors = []
+        
+        # 遍歷批次中的每個樣本
+        for b in range(spec.shape[0]): # 批次維度
+            channel_tensors = []
+            # 遍歷每個通道
+            for c in range(spec.shape[1]): # 通道維度
+                spec_2d = spec[b, c, :, :] # 獲取單個 (H, W) 頻譜圖
+
+                min_val = spec_2d.min()
+                max_val = spec_2d.max()
+
+                # 處理所有值都相同的情況，避免除以零
+                if max_val - min_val == 0:
+                    # 如果所有值都相同，直接返回全零或全一，這裡返回原值（或全零如果想正規化到0）
+                    normalized_spec = spec_2d 
+                    # 或者如果您希望常量值正規化為0：
+                    # normalized_spec = torch.zeros_like(spec_2d)
+                else:
+                    normalized_spec = (spec_2d - min_val) / (max_val - min_val)
+                
+                channel_tensors.append(normalized_spec)
+            
+            # 將所有通道的頻譜圖堆疊回 (C, H, W)
+            normalized_tensors.append(torch.stack(channel_tensors, dim=0))
+        
+        # 將所有批次樣本堆疊回 (B, C, H, W)
+        return torch.stack(normalized_tensors, dim=0)
 
     def _apply_augmentation(self, waveform):
         """
@@ -394,6 +467,12 @@ class Voxceleb1_dataset(Dataset):
             n_mels=80          # 80 維 Mel-filterbank energies
         )
         
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),     # 調整為 224×224，順序為 (height, width)
+            transforms.ToTensor(),             # 轉為 Tensor
+            # transforms.Normalize(...)        # 如果需要 normalize，也可以放這裡
+        ])
+
         # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
         self.data_list = self._load_data_list(dataset_path, data_list_file)
         
@@ -408,7 +487,7 @@ class Voxceleb1_dataset(Dataset):
             # read txt
             data_list_raw = f.readlines()
         data_list_raw = [line.strip().split() for line in data_list_raw]
-        data_list_raw = random.sample(data_list_raw, 500)  # 隨機選擇 1000 條數據
+        data_list_raw = random.sample(data_list_raw, 1000)  # 隨機選擇 1000 條數據
         
         data = []
         
@@ -431,7 +510,57 @@ class Voxceleb1_dataset(Dataset):
 
             data.append((int(line[0]), audio1_path, audio2_path))  # (label, audio1, audio2)
         return data
+    
+    
+    def spec_to_rgb(self, spec):
+        """
+        將單通道 spectrogram 視覺化成 RGB image。
+        spec: 2D array (H, W)
+        return: 3D uint8 RGB image: shape (H, W, 3)
+        """
+        return spec.repeat(1, 3, 1, 1)
+    
+    def min_max_normalize(self, spec):
+        """
+        將 PyTorch Tensor (B, C, H, W) 中的每個 (H, W) 頻譜圖獨立進行 Min-Max 正規化到 [0, 1]。
+        
+        Args:
+            spec: PyTorch Tensor, shape (B, C, H, W).
+                          通常 dtype 會是 float32 或 float64.
+        
+        Returns:
+            PyTorch Tensor, shape (B, C, H, W), 正規化後的頻譜圖，值在 [0, 1] 範圍。
+        """
+        
+        normalized_tensors = []
+        
+        # 遍歷批次中的每個樣本
+        for b in range(spec.shape[0]): # 批次維度
+            channel_tensors = []
+            # 遍歷每個通道
+            for c in range(spec.shape[1]): # 通道維度
+                spec_2d = spec[b, c, :, :] # 獲取單個 (H, W) 頻譜圖
 
+                min_val = spec_2d.min()
+                max_val = spec_2d.max()
+
+                # 處理所有值都相同的情況，避免除以零
+                if max_val - min_val == 0:
+                    # 如果所有值都相同，直接返回全零或全一，這裡返回原值（或全零如果想正規化到0）
+                    normalized_spec = spec_2d 
+                    # 或者如果您希望常量值正規化為0：
+                    # normalized_spec = torch.zeros_like(spec_2d)
+                else:
+                    normalized_spec = (spec_2d - min_val) / (max_val - min_val)
+                
+                channel_tensors.append(normalized_spec)
+            
+            # 將所有通道的頻譜圖堆疊回 (C, H, W)
+            normalized_tensors.append(torch.stack(channel_tensors, dim=0))
+        
+        # 將所有批次樣本堆疊回 (B, C, H, W)
+        return torch.stack(normalized_tensors, dim=0)
+    
     def __getitem__(self, idx):
         # 現在 self.data_list[idx] 已經是完整的音訊檔案路徑了
         label, audio1_path, audio2_path = self.data_list[idx]
@@ -477,8 +606,24 @@ class Voxceleb1_dataset(Dataset):
         
         mel1 = self.padding_mel(mel1)  # 對 mel1 進行填充
         mel2 = self.padding_mel(mel2)  # 對 mel2 進行填充
+        
+        final_input_mels1 = F.interpolate(mel1, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
+        final_input_mels2 = F.interpolate(mel2, size=(224, 224), mode="bilinear", align_corners=False)
 
-        return mel1, mel2, torch.tensor(label, dtype=torch.long)
+        final_input_mels1 = self.min_max_normalize(final_input_mels1)  # 對 Mel 譜進行 Min-Max 正規化
+        final_input_mels2 = self.min_max_normalize(final_input_mels2)
+
+        final_input_mels1 = final_input_mels1.numpy()  # 如果需要轉換為 NumPy 陣列
+        final_input_mels2 = final_input_mels2.numpy()
+
+        # 將 RGB 圖像轉換為 Tensor
+        final_input_mels1 = torch.tensor(final_input_mels1, dtype=torch.float32)
+        final_input_mels1 = self.spec_to_rgb(final_input_mels1)  # 將 Mel 譜轉換為 RGB 圖像
+
+        final_input_mels2 = torch.tensor(final_input_mels2, dtype=torch.float32)
+        final_input_mels2 = self.spec_to_rgb(final_input_mels2)
+
+        return final_input_mels1, final_input_mels2, torch.tensor(label, dtype=torch.long)
     
     def padding_mel(self, mel):
         # 獲取每個 Mel 譜的幀數 (長度)
@@ -504,24 +649,25 @@ class Voxceleb1_dataset(Dataset):
         return final_input_mels
         
 # Testing
-# if __name__ == "__main__":
-#     # 請根據您的實際路徑修改這裡
-#     dataset_path = ['D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac']
-#     data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy'
-#     musan_path = 'D:/Dataset/musan/musan'
-#     rir_path = 'D:/Dataset/sim_rir_16k/simulated_rirs_16k'
-#     val_dataset_path = ['D:/Dataset/VoxCeleb1/vox1_dev_wav/wav', "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
-#     val_data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA20/test.txt'
+if __name__ == "__main__":
+    # 請根據您的實際路徑修改這裡
+    dataset_path = ['D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac']
+    data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy'
+    musan_path = 'D:/Dataset/musan/musan'
+    rir_path = 'D:/Dataset/sim_rir_16k/simulated_rirs_16k'
+    val_dataset_path = ['D:/Dataset/VoxCeleb1/vox1_dev_wav/wav', "D:/Dataset/VoxCeleb1/vox1_test_wav/wav"]
+    val_data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA20/test.txt'
 
-#     print("Initializing training dataset (with augmentation)...")
-#     train_dataset = Voxceleb2_dataset(
-#         dataset_path=dataset_path,
-#         data_list_file=data_list_file,
-#         musan_path=musan_path,
-#         rir_path=rir_path,
-#         augment=False
-#     )
-#     print(f"Training Dataset size: {len(train_dataset)}")
+    print("Initializing training dataset (with augmentation)...")
+    train_dataset = Voxceleb2_dataset(
+        num_frames=param.NUM_FRAMES,
+        dataset_path=dataset_path,
+        data_list_file=data_list_file,
+        musan_path=musan_path,
+        rir_path=rir_path,
+        augment=False
+    )
+    print(f"Training Dataset size: {len(train_dataset)}")
 
     # print("\nInitializing validation dataset (no augmentation)...")
     # val_dataset = Voxceleb1_dataset(
@@ -530,21 +676,20 @@ class Voxceleb1_dataset(Dataset):
     # )
     # print(f"Validation Dataset size: {len(val_dataset)}")
 
-    # from torch.utils.data import DataLoader
-    # import time
-    # import os
+    from torch.utils.data import DataLoader
+    import time
+    import os
 
-    # print("\nCreating DataLoader...")
-    # 建議 num_workers 設定為 CPU 核心數的 1/2 到 3/4，或者 os.cpu_count() - 1
+    print("\nCreating DataLoader...")
     # pin_memory=True 對於 GPU 訓練至關重要
-    # train_loader = DataLoader(
-    #     train_dataset,
-    #     batch_size=32,
-    #     shuffle=True,
-    #     num_workers=0, # 根據你的 CPU 核心數調整
-    #     pin_memory=True,
-    #     collate_fn=train_dataset.collate_fn
-    # )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=32,
+        shuffle=True,
+        num_workers=0, # 根據你的 CPU 核心數調整
+        pin_memory=True,
+        collate_fn=train_dataset.collate_fn
+    )
 
     # val_loader = DataLoader(
     #     val_dataset,
@@ -555,14 +700,14 @@ class Voxceleb1_dataset(Dataset):
     #     collate_fn=val_dataset.collate_fn
     # )
 
-    # print(f"Testing DataLoader (first {min(5, len(train_loader))} batches for train_loader):")
-    # start_time = time.time()
-    # for i, (mels, ident, age) in enumerate(train_loader):
-    #     print(f"Batch {i+1}: Mel Spec Shape: {mels.shape}, Identity IDs: {ident.shape}, Age Group IDs: {age.shape}")
-    #     if i >= 4: # 只測試前5個批次
-    #         break
-    # end_time = time.time()
-    # print(f"Time to load 5 batches (train_loader): {end_time - start_time:.2f} seconds")
+    print(f"Testing DataLoader (first {min(5, len(train_loader))} batches for train_loader):")
+    start_time = time.time()
+    for i, (mels, ident, age) in enumerate(train_loader):
+        print(f"Batch {i+1}: Mel Spec Shape: {mels.shape}, Identity IDs: {ident.shape}, Age Group IDs: {age.shape}")
+        if i >= 4: # 只測試前5個批次
+            break
+    end_time = time.time()
+    print(f"Time to load 5 batches (train_loader): {end_time - start_time:.2f} seconds")
 
     # print(f"\nTesting DataLoader (first {min(5, len(val_loader))} batches for val_loader):")
     # start_time = time.time()

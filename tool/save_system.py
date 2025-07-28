@@ -46,7 +46,8 @@ class Save_system:
             self.count += 1
         with open(file_path, 'w') as f:
             if filename == "result":
-                f.write("Epoch, lr, L_id, L_age, L_grl, Total Loss, EER, minDCF\n")  # 寫入表頭
+                # f.write("Epoch, lr, L_id, L_age, L_grl, Total Loss, EER, minDCF\n")  # 寫入表頭
+                f.write("Epoch, lr, L_id, acc_id, EER, minDCF\n")  # 寫入表頭
             else:
                 f.write("")
             
@@ -61,9 +62,11 @@ class Save_system:
         :param content: 要寫入的內容
         """
         file_path = os.path.join(path, f"{filename}{self.count}.txt")
-        epoch, lr, l_id, l_age, l_grl, total_loss, eer, min_dcf = content
+        # epoch, lr, l_id, l_age, l_grl, total_loss, eer, min_dcf = content
+        epoch, lr, l_id, acc_id, eer, min_dcf = content
         with open(file_path, 'a') as f:
-            f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
+            # f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
+            f.write(f"{epoch}, {lr}, {l_id:.4f}, {acc_id:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
         print(f"結果已寫入: {file_path}")
             
     def write_parameters_to_file(self, path, filename):
@@ -144,8 +147,8 @@ class Save_system:
     #         writer.add_scalar('minDCF', min_dcf, epoch)
 
     
-if __name__ == "__main__":
-    SS = save_system()  # 初始化保存系統，確保目錄存在並創建初始文件
+# if __name__ == "__main__":
+    # SS = save_system()  # 初始化保存系統，確保目錄存在並創建初始文件
     # SS.write_result_to_file(param.SCORE_DIR, "result", (1, 0.1234, 0.5678, 0.9101, 1.2345, 0.1234, 0.5678))
     # SS.write_parameters_to_file(param.LOG_DIR, "setup")  # 寫入參數到 setup.txt
-    print("保存系統已初始化。")
+    # print("保存系統已初始化。")

@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 
-class GlobalStatisticalPooling(nn.Module):
+class GlobalStatisticalPooling(nn.Module):    
     def __init__(self):
         super(GlobalStatisticalPooling, self).__init__()
+        
+        self.linear = nn.Linear(512 * 2, 512)
 
     def forward(self, x):
         # x 的形狀是 (batch_size, channels, height, width_frames)

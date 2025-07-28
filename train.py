@@ -13,6 +13,8 @@ from params import param
 from model import ADAL_Model 
 from tool.eval_metric import *
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import transforms
+
 
 # --- 設定隨機種子，確保可重現性 ---
 def set_seed(seed):
@@ -27,6 +29,25 @@ def set_seed(seed):
 
 set_seed(param.RANDOM_SEED)
 
+def data_weight(dataset):
+    """
+    計算數據集的權重。
+    這裡可以根據需要進行數據增強或其他處理。
+    """
+    # 假設 dataset 是一個列表或其他可迭代對象
+    age_counts = {}
+    
+    for _, _, age_label in dataset.data_list:
+        if age_label not in age_counts:
+            age_counts[age_label] = 1
+        age_counts[age_label] += 1
+    age_weights = np.array([age_counts[i] for i in range(param.NUM_AGE_GROUPS)])
+    age_weights = torch.tensor(age_weights, dtype=torch.float32)
+
+    return age_weights
+
+
+
 def prepare_dataloader():
     """
     準備數據集和數據加載器。
@@ -34,6 +55,7 @@ def prepare_dataloader():
     """
     # 數據集初始化
     train_dataset = Voxceleb2_dataset(
+        num_frames=param.NUM_FRAMES,
         data_list_file=param.DATA_LIST_FILE,
         dataset_path=param.DATA_ROOT,
         musan_path=param.MUSAN_DIR,
@@ -43,6 +65,9 @@ def prepare_dataloader():
     
     print(f"Training dataset loaded with {len(train_dataset)} samples.")
     
+    # 計算數據集權重
+    age_weights = data_weight(train_dataset)
+    
     # 數據加載器
     train_loader = DataLoader(
         train_dataset,
@@ -51,7 +76,7 @@ def prepare_dataloader():
         num_workers=0,
         # pin_memory=True if param.DEVICE == 'cuda' else False,
         drop_last=True,  # 確保每個批次的數據量相同(會丟棄最後一個不完整批次)
-        collate_fn=train_dataset.collate_fn  # 使用自定義的 collate_fn 來處理變長序列
+        collate_fn=train_dataset.collate_fn,  # 使用自定義的 collate_fn 來處理變長序列
     )
     
     val_dataset = Voxceleb1_dataset(
@@ -68,11 +93,10 @@ def prepare_dataloader():
         num_workers=0,  # 根據實際情況調整
         # pin_memory=True if param.DEVICE == 'cuda' else False,
         drop_last=False,  # 驗證集可以不需要確保每個批次的數據量相同
-        collate_fn=val_dataset.collate_fn  # 使用自定義的 collate_fn 來處理變長序列
+        collate_fn=val_dataset.collate_fn,  # 使用自定義的 collate_fn 來處理變長序列
     )
     
-    
-    return train_loader, val_loader
+    return train_loader, val_loader, age_weights
 
 
 def init_tensorboard():
@@ -146,7 +170,7 @@ def train_model():
     device = torch.device(param.DEVICE)
     
     # --- 1. 數據加載器 ---
-    train_loader, val_loader = prepare_dataloader()
+    train_loader, val_loader, age_weights = prepare_dataloader()
     save_system = Save_system()  # 初始化保存系統，確保目錄存在並創建初始文件
     writer = init_tensorboard()  # 初始化 TensorBoard 日誌
 
@@ -157,29 +181,36 @@ def train_model():
         identity_classes=param.NUM_SPEAKERS
     ).to(device)
 
-    optimizer = optim.SGD(
+    # optimizer = optim.SGD(
+    #     model.parameters(),
+    #     lr=param.INITIAL_LR,
+    #     momentum=0.9,
+    #     weight_decay=1e-4 # 常見的權重衰減，作為正則化
+    # )
+    
+    optimizer = optim.Adam(
         model.parameters(),
         lr=param.INITIAL_LR,
-        momentum=0.9,
-        weight_decay=1e-4 # 常見的權重衰減，作為正則化
+        weight_decay=1e-4
     )
 
     # --- 學習率調度器與預熱 ---
-    def lr_lambda(current_epoch):
-        # 線性預熱
-        if current_epoch < param.LR_WARMUP_EPOCHS:
-            return (current_epoch + 1) / param.LR_WARMUP_EPOCHS
-        # 多步衰減
-        else:
-            decay_factor = 1.0
-            for decay_step in param.LR_DECAY_STEPS:
-                if current_epoch >= decay_step:
-                    decay_factor *= param.LR_DECAY_FACTOR
-            return decay_factor
+    # def lr_lambda(current_epoch):
+    #     # 線性預熱
+    #     if current_epoch < param.LR_WARMUP_EPOCHS:
+    #         return (current_epoch + 1) / param.LR_WARMUP_EPOCHS
+    #     # 多步衰減
+    #     else:
+    #         decay_factor = 1.0
+    #         for decay_step in param.LR_DECAY_STEPS:
+    #             if current_epoch >= decay_step:
+    #                 decay_factor *= param.LR_DECAY_FACTOR
+    #         return decay_factor
 
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    # scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # 交叉熵損失用於年齡分類
+    # criterion_ce = nn.CrossEntropyLoss(weight=age_weights)
     criterion_ce = nn.CrossEntropyLoss()
 
     # --- 3. 訓練循環 ---   
@@ -190,8 +221,12 @@ def train_model():
         model.train() # 設置模型為訓練模式
         total_loss = 0.0
         total_loss_id = 0.0
+        total_loss_r_id = 0.0
         total_loss_age = 0.0
         total_loss_grl = 0.0
+        
+        total_acc_id = 0.0
+        total_acc_r_id = 0.0
 
         current_lr = optimizer.param_groups[0]['lr']
         # 檢查學習率是否達到停止條件
@@ -207,7 +242,8 @@ def train_model():
             optimizer.zero_grad() # 清除梯度
 
             # 前向傳播
-            z_id, loss_id, pred_age, pred_grl_age = model(mels, mode = "train", id_label = identity_labels)
+            # z_id, loss_id, pred_age, pred_grl_age = model(mels, mode = "train", id_label = identity_labels)
+            output = model(mels, mode = "train", id_label = identity_labels)
             
             # 計算損失
             # L_id: 身份分類損失
@@ -215,17 +251,28 @@ def train_model():
             # loss_id = criterion_ce(pred_ids, identity_labels) 
 
             # L_age: 年齡分類損失 (監督 z_age)
-            max_index_of_age = torch.argmax(pred_age, dim=1)
-            loss_age = criterion_ce(pred_age, age_labels)
+            # max_index_of_age = torch.argmax(pred_age, dim=1)
+            # loss_age = criterion_ce(pred_age, age_labels)
             
-            max_index_of_grl_age = torch.argmax(pred_grl_age, dim=1)
             # L_grl: 對抗年齡損失 (讓 z_id 無法預測年齡)
-            loss_grl = criterion_ce(pred_grl_age, age_labels)            
+            # max_index_of_grl_age = torch.argmax(pred_grl_age, dim=1)
+            # loss_grl = criterion_ce(pred_grl_age, age_labels)            
 
             # 總損失 (根據論文公式5)
-            loss = (param.LAMBDA_ID * loss_id +
-                    param.LAMBDA_AGE * loss_age +
-                    param.LAMBDA_GRL * loss_grl)
+            # loss = (param.LAMBDA_ID * loss_id +
+            #         param.LAMBDA_AGE * loss_age +
+            #         param.LAMBDA_GRL * loss_grl)
+            
+            max_index_of_id = torch.argmax(output, dim=1)
+            loss_id = criterion_ce(output, identity_labels)
+            
+            # max_index_of_r_id = torch.argmax(z_r_output, dim=1)
+            # loss_r_id = criterion_ce(z_r_output, identity_labels)
+            
+            loss1 = param.LAMBDA_ID * loss_id  # 目前只計算身份分類損失
+            # loss2 = param.LAMBDA_ID * loss_r_id  # 添加隨機張量的身份損失
+
+            loss = loss1  # 總損失
 
             # 反向傳播與優化
             loss.backward()
@@ -233,59 +280,87 @@ def train_model():
 
             total_loss += loss.item()
             total_loss_id += loss_id.item()
-            total_loss_age += loss_age.item()
-            total_loss_grl += loss_grl.item()
+            # total_loss_r_id += loss_r_id.item()
+            # total_loss_age += loss_age.item()
+            # total_loss_grl += loss_grl.item()
+            
+            batch_acc_id = (max_index_of_id == identity_labels).sum().item() / identity_labels.size(0)
+            # total_acc_r_id = (max_index_of_r_id == identity_labels).sum().item() / identity_labels.size(0)
+            total_acc_id += (max_index_of_id == identity_labels).sum().item()
 
             pbar.set_postfix({
                 'Total_L': f'{loss.item():.4f}',
                 'L_id': f'{loss_id.item():.4f}',
-                'L_age': f'{loss_age.item():.4f}',
-                'L_grl': f'{loss_grl.item():.4f}'
+                # 'L_r_id': f'{loss_r_id.item():.4f}',
+                'acc_id': f'{batch_acc_id:.4f}',
+                # 'acc_r_id': f'{total_acc_r_id:.4f}',
+                # 'L_age': f'{loss_age.item():.4f}',
+                # 'L_grl': f'{loss_grl.item():.4f}'
             })
             
             # --- 4. 保存模型檢查點 ---
-            if step % 640 == 0:
-                # --- 執行驗證/評估 ---
-                val_eer, val_mDCF = evaluate(model, val_loader, device)
-                if val_eer < best_val_eer:
-                    best_val_eer = val_eer
-                    best_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, 'best_adal_model.pth')
-                    torch.save(model.state_dict(), best_checkpoint_path)
-                log_tensorboard(
-                    writer, 
-                    step,
-                    loss_id.item(),
-                    loss_age.item(),
-                    loss_grl.item(),
-                    None,  # 這裡可以添加準確率或其他指標
-                    val_eer,  # EER
-                    val_mDCF   # minDCF
-                )
+            # if step % 640 == 0:
+            #     # --- 執行驗證/評估 ---
+            #     val_eer, val_mDCF = evaluate(model, val_loader, device)
+            #     if val_eer < best_val_eer:
+            #         best_val_eer = val_eer
+            #         best_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, 'best_adal_model.pth')
+            #         torch.save(model.state_dict(), best_checkpoint_path)
+            #     log_tensorboard(
+            #         writer, 
+            #         step,
+            #         loss_id.item(),
+            #         loss_age.item(),
+            #         loss_grl.item(),
+            #         None,  # 這裡可以添加準確率或其他指標
+            #         val_eer,  # EER
+            #         val_mDCF   # minDCF
+            #     )
             
             step += param.BATCH_SIZE
                 
         avg_loss = total_loss / len(train_loader)
         avg_loss_id = total_loss_id / len(train_loader)
-        avg_loss_age = total_loss_age / len(train_loader)
-        avg_loss_grl = total_loss_grl / len(train_loader)
+        # avg_loss_r_id = total_loss_r_id / len(train_loader)
+        # avg_loss_age = total_loss_age / len(train_loader)
+        # avg_loss_grl = total_loss_grl / len(train_loader)
+
+        avg_acc_id = total_acc_id / (len(train_loader) * param.BATCH_SIZE)
+        # avg_acc_r_id = total_acc_r_id / len(train_loader)
 
         # 在每個 epoch 結束後更新學習率
-        scheduler.step()
+        # scheduler.step()
             
         # 保存訓練結果到文件
-        save_system.write_result_to_file(
-            param.SCORE_DIR, 
-            "result", 
-            (epoch + 1, current_lr, avg_loss_id, avg_loss_age, avg_loss_grl, avg_loss, val_eer, val_mDCF)
-        )
+        # save_system.write_result_to_file(
+        #     param.SCORE_DIR, 
+        #     "result", 
+        #     (epoch + 1, current_lr, avg_loss_id, None, None, avg_loss, val_eer, val_mDCF)
+        # )
+        
+        
+        # model.eval()  # 設置模型為評估模式
+        # val_eer, val_mDCF = evaluate(model, val_loader, device)
+        
+        # save_system.write_result_to_file(
+        #     param.SCORE_DIR, 
+        #     "result", 
+        #     (epoch + 1, current_lr, avg_loss_id, avg_acc_id, val_eer, val_mDCF)
+        # )
 
         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
               f"Avg Loss: {avg_loss:.4f}, "
               f"Avg L_id: {avg_loss_id:.4f}, "
-              f"Avg L_age: {avg_loss_age:.4f}, "
-              f"Avg L_grl: {avg_loss_grl:.4f}, "
-              f"Val EER: {val_eer:.4f}, "
-              f"Val minDCF: {val_mDCF.item():.4f}")
+            #   f"Avg L_r_id: {avg_loss_r_id:.4f}, "
+              f"Avg Acc_id: {avg_acc_id:.4f}, "
+            #   f"Avg Acc_r_id: {avg_acc_r_id:.4f}, "
+            #   f"Val EER: {val_eer:.4f}, "
+            #   f"Val minDCF: {val_mDCF:.4f}"
+            #   f"Avg L_age: {avg_loss_age:.4f}, "
+            #   f"Avg L_grl: {avg_loss_grl:.4f}, "
+            #   f"Val EER: {val_eer:.4f}, "
+            #   f"Val minDCF: {val_mDCF.item():.4f}"
+            )
         
         if epoch == param.EPOCHS - 1:
             # 在最後一個 epoch 結束時保存模型

@@ -6,16 +6,51 @@ import torchvision.models as models
 from modules.GSP import GlobalStatisticalPooling
 from modules.ARE import ARE_Module 
 from modules.GRL import GradientReversalLayer
+import torchaudio
 from tool.ArcFaceLoss import AAMsoftmax
 from params import param
 
+
+class PreEmphasis(torch.nn.Module):
+
+    def __init__(self, coef: float = 0.97):
+        super().__init__()
+        self.coef = coef
+        self.register_buffer(
+            'flipped_filter', torch.FloatTensor([-self.coef, 1.]).unsqueeze(0).unsqueeze(0)
+        )
+
+    def forward(self, input: torch.tensor) -> torch.tensor:
+        # input = input.unsqueeze(1)
+        # padding 的〈反射〉方式可以減少邊界處突兀的「全零填充」效應，保持邊緣訊號的連續性
+        input = F.pad(input, (1, 0), 'reflect')
+        return F.conv1d(input, self.flipped_filter).squeeze(1)
 
 class ADAL_Model(nn.Module):
     def __init__(self, feature_dim, age_classes, identity_classes):
         super(ADAL_Model, self).__init__()
         
+        self.torchfbank = torch.nn.Sequential(
+            PreEmphasis(),            
+            torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_fft=512, win_length=400, hop_length=160, \
+                                                 f_min = 20, f_max = 7600, window_fn=torch.hamming_window, n_mels=80),
+        )
+        
          # 特徵提取器
         self.model = models.shufflenet_v2_x0_5(weights=torchvision.models.ShuffleNet_V2_X0_5_Weights.DEFAULT)  # 加載在 ImageNet 上預訓練的權重
+        self.model.fc = nn.Identity()  # 去除最後的全連接層
+
+        # 根據 backbone 最後輸出特徵維度
+        feature_dim = self.model.fc.in_features if hasattr(self.model.fc, 'in_features') else 1024
+        # self.model.requires_grad_(False)  # 冻結預訓練權重
+
+        # # 定義你要的分類頭
+        self.identity_classifier = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feature_dim, identity_classes)
+        )
+        
         # self.resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT) 
         # self.resnet = models.resnet34(weights=models.ResNet34_Weights.DEFAULT) 
         
@@ -32,26 +67,26 @@ class ADAL_Model(nn.Module):
         #     self.resnet.layer3,
         #     self.resnet.layer4 # layer4 的輸出通道數是 512
         # )
-        self.conv1 = nn.Conv2d(1, 24, kernel_size=3, stride=2, padding=1, bias=False)
+        # self.conv1 = nn.Conv2d(1, 24, kernel_size=3, stride=2, padding=1, bias=False)
         
-        self.feature_extractor = nn.Sequential(
-            self.conv1,  # 替換第一個卷積層
-            self.model.conv1[1],  # BatchNorm
-            self.model.conv1[2],  # ReLU
-            self.model.maxpool,
+        # self.feature_extractor = nn.Sequential(
+        #     self.conv1,  # 替換第一個卷積層
+        #     self.model.conv1[1],  # BatchNorm
+        #     self.model.conv1[2],  # ReLU
+        #     self.model.maxpool,
 
-            # ShuffleNet 的三個 stage
-            self.model.stage2,
-            self.model.stage3,
-            self.model.stage4,
+        #     # ShuffleNet 的三個 stage
+        #     self.model.stage2,
+        #     self.model.stage3,
+        #     self.model.stage4,
 
-            # conv5 將通道升至1024，接著再用1×1降至512
-            self.model.conv5,  # 預設升到1024
+        #     # conv5 將通道升至1024，接著再用1×1降至512
+        #     self.model.conv5,  # 預設升到1024
 
-            nn.Conv2d(1024, 512, kernel_size=1, bias=False),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True)
-        )
+        #     nn.Conv2d(1024, 512, kernel_size=1, bias=False),
+        #     nn.BatchNorm2d(512),
+        #     nn.ReLU(inplace=True)
+        # )
         
         # 全局統計池化層 + 說話者嵌入層 => 提取出 z
         self.speaker_embedding_layer = nn.Sequential(
@@ -69,11 +104,18 @@ class ADAL_Model(nn.Module):
         self.age_classifier_on_id = nn.Sequential(
             nn.Linear(feature_dim, feature_dim),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
             nn.Linear(feature_dim, age_classes)  # 最終輸出類別數
         )
 
         # 身份分類器 (基於 z_id)
-        self.identity_classifier = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
+        # self.ArcFace = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
+        # self.identity_classifier = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
+        # self.identity_classifier = nn.Sequential(
+        #     nn.Linear(feature_dim, feature_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(feature_dim, identity_classes)  # 最終輸出類別數
+        # )
 
         # 年齡分類器 (基於 z_age)
         self.age_classifier_on_age = nn.Sequential(
@@ -86,35 +128,55 @@ class ADAL_Model(nn.Module):
 
     def forward(self, audio, mode=None, id_label=None):
         # 1. 提取整體特徵 x (論文中的 Feature maps)
-        features = self.feature_extractor(audio) # features 現在是 (B, 512, H_feat, W_feat)
-        
+        # with torch.no_grad():
+        #     # audio = self.torchfbank(audio)  # audio 現在是 (B, 1, 80, T)
+        #     audio = self.torchfbank(audio)+1e-6
+        #     audio = audio.log()  # 將 Mel 頻譜轉換為對數尺度
+        #     audio -= audio.mean(dim=-1, keepdim=True)  # 對時間軸進行均值歸一化
+        #     audio = audio.unsqueeze(1)  # 增加一個維度，變成 (B, 1, 80, T)
+
+
+        # feature = self.feature_extractor(audio)  # features 現在是 (B, 512, H_feat, W_feat)
+        z = self.model(audio)  # features 現在是 (B, 512, H_feat, W_feat)
         # 2. 提取 z (整個說話者嵌入)
-        z = self.speaker_embedding_layer(features) # z 現在是 (B, feature_dim)
+        # z = self.speaker_embedding_layer(feature) # z 現在是 (B, feature_dim)
+        
+        # 複製一個與z相同的隨機張量 z_r
+        z_r = torch.randn_like(z)
 
         # 3. 提取年齡特徵 z_age
-        z_age = self.age_extractor_module(features) # z_age 現在是 (B, feature_dim)
+        # z_age = self.age_extractor_module(features) # z_age 現在是 (B, feature_dim)
 
         # 3. 計算身份特徵 z_id = z - z_age
-        z_id = z - z_age
+        # z_id = z - z_age
 
         if mode == "train":
             # 4. 計算身份分類損失
-            loss_id, pred_id = self.identity_classifier(z_id, id_label)
+            
+            # z = self.ArcFace(z, id_label)
+            # output = self.identity_classifier(z, id_label)
+            output = self.identity_classifier(z)
+            
+            # z_r = self.ArcFace(z_r, id_label)
+            # z_r_output = self.identity_classifier(z_r)
+            # z_r_output = self.identity_classifier(z_r, id_label)
+            # loss_id, pred_id = self.identity_classifier(z_id, id_label)
             
             # 5. 預測年齡
-            pred_age = self.age_classifier_on_age(z_age)
+            # pred_age = self.age_classifier_on_age(z_age)
             
             # 6. 計算年齡對抗
-            z_age_grl = self.grl(z_id)
+            # z_age_grl = self.grl(z_id)
             
             # 7. 預測年齡 (對抗性)
-            pred_grl_age = self.age_classifier_on_id(z_age_grl)
+            # pred_grl_age = self.age_classifier_on_id(z_age_grl)
             
-            return z_id, loss_id, pred_age, pred_grl_age
-        
-        else:
-            return z_id
+            # return z_id, loss_id, pred_age, pred_grl_age
+            return output
 
+        else:
+            # return z_id
+            return z
 
 # if __name__ == "__main__":
     # # 測試模型

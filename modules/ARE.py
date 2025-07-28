@@ -56,15 +56,15 @@ class ARE_Module(nn.Module):
         # 第一部分: σ(x) - 注意力模組 (Attention Module)
         # 根據論文公式 `x ⊙ σ(x)`，σ(x) 應該是一個與 x 空間維度相同的注意力權重圖。
         # 典型的注意力機制會用卷積層來學習這些權重。
-        # self.attention_layer = nn.Sequential(
-        #     # 先用 1x1 卷積減少通道數，提高效率，同時學習跨通道的關係
-        #     nn.Conv2d(input_channels, input_channels // 4, kernel_size=1),
-        #     nn.ReLU(inplace=True),
-        #     # 再用 1x1 卷積將通道數縮減到 1，得到空間注意力圖
-        #     nn.Conv2d(input_channels // 4, 1, kernel_size=1),
-        #     # Sigmoid 函數將輸出值映射到 (0, 1) 範圍，作為注意力權重
-        #     nn.Sigmoid() 
-        # )
+        self.attention_layer = nn.Sequential(
+            # 先用 1x1 卷積減少通道數，提高效率，同時學習跨通道的關係
+            nn.Conv2d(input_channels, input_channels // 4, kernel_size=1),
+            nn.ReLU(inplace=True),
+            # 再用 1x1 卷積將通道數縮減到 1，得到空間注意力圖
+            nn.Conv2d(input_channels // 4, 1, kernel_size=1),
+            # Sigmoid 函數將輸出值映射到 (0, 1) 範圍，作為注意力權重
+            nn.Sigmoid() 
+        )
 
         # 第二部分: pool(...) - Attentive Statistical Pooling (ASP)
         self.asp_pooling = AttentiveStatisticalPooling(input_channels)
@@ -84,14 +84,14 @@ class ARE_Module(nn.Module):
             torch.Tensor: 年齡嵌入 z_age，形狀為 (batch_size, output_dim)。
         """
         # 1. 獲取注意力權重 σ(x)
-        # attention_weights = self.attention_layer(x) # 形狀: (B, 1, F_reduced, T_reduced)
+        attention_weights = self.attention_layer(x) # 形狀: (B, 1, F_reduced, T_reduced)
 
         # 2. 將注意力權重應用到原始特徵圖上 (x ⊙ σ(x))
         # attention_weights 會自動廣播到 x 的所有通道
-        # x_attended = x * attention_weights # 形狀: (B, input_channels, F_reduced, T_reduced)
+        x_attended = x * attention_weights # 形狀: (B, input_channels, F_reduced, T_reduced)
 
         # 3. 執行注意力統計池化
-        pooled_features = self.asp_pooling(x) # 形狀: (B, input_channels * 2)
+        pooled_features = self.asp_pooling(x_attended) # 形狀: (B, input_channels * 2)
 
         # 4. 透過全連接層得到最終的年齡嵌入 z_age
         z_age = self.fc_layer(pooled_features) # 形狀: (B, output_dim)

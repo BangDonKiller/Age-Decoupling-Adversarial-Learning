@@ -33,6 +33,7 @@ RIR_NOISE_DIR = 'D:/Dataset/sim_rir_16k/simulated_rirs_16k'
 # --- 3. 音頻特徵提取參數 (Audio Feature Extraction Parameters) ---
 # 音頻採樣率 (Hz) - 論文中未明確提及，常用值
 SAMPLE_RATE = 16000
+NUM_FRAMES = 200  # 每個音頻片段的幀數
 # 梅爾濾波器組數量 (80維對數梅爾濾波器組能量)
 N_MELS = 80
 # 幀長 (毫秒)
@@ -64,7 +65,7 @@ RESNET_BLOCK_WIDTHS = [32, 64, 128, 256]
 # 說話者嵌入向量的維度 (池化層後接128維全連接層)
 EMBEDDING_DIM = 128
 # 身份分類器的輸出類別數 (即數據集中說話者的總數)
-NUM_SPEAKERS = 5994 # 已被標記年齡的VoxCeleb2說話者數量(原始為5994)
+NUM_SPEAKERS = 500 # 已被標記年齡的VoxCeleb2說話者數量(原始為5994)
 # 年齡分類器的年齡組數量 (0-20, 21-30, ..., 70-100，共7組)
 NUM_AGE_GROUPS = 7
 
@@ -81,7 +82,7 @@ LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此
 # 訓練輪數
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 # 每批次訓練樣本數
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 # 優化器類型
 OPTIMIZER = 'SGD'
 # 初始學習率

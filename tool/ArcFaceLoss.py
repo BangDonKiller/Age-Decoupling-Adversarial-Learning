@@ -98,9 +98,10 @@ class AAMsoftmax(nn.Module):
         output = output * self.s
         
         # 8. 計算交叉熵損失
-        loss = self.ce(output, label)
+        # loss = self.ce(output, label)
         
         # 9. 計算 Top-1 準確度
-        prec1 = accuracy(output.detach(), label.detach(), topk=(1,))[0]
+        # prec1 = accuracy(output.detach(), label.detach(), topk=(1,))[0]
 
-        return loss, prec1
+        # return loss, prec1
+        return output
