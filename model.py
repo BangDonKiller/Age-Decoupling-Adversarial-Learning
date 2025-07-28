@@ -30,12 +30,6 @@ class ADAL_Model(nn.Module):
     def __init__(self, feature_dim, age_classes, identity_classes):
         super(ADAL_Model, self).__init__()
         
-        self.torchfbank = torch.nn.Sequential(
-            PreEmphasis(),            
-            torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_fft=512, win_length=400, hop_length=160, \
-                                                 f_min = 20, f_max = 7600, window_fn=torch.hamming_window, n_mels=80),
-        )
-        
          # 特徵提取器
         self.model = models.shufflenet_v2_x0_5(weights=torchvision.models.ShuffleNet_V2_X0_5_Weights.DEFAULT)  # 加載在 ImageNet 上預訓練的權重
         self.model.fc = nn.Identity()  # 去除最後的全連接層

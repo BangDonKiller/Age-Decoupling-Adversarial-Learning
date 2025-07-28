@@ -342,11 +342,11 @@ def train_model():
         # model.eval()  # 設置模型為評估模式
         # val_eer, val_mDCF = evaluate(model, val_loader, device)
         
-        # save_system.write_result_to_file(
-        #     param.SCORE_DIR, 
-        #     "result", 
-        #     (epoch + 1, current_lr, avg_loss_id, avg_acc_id, val_eer, val_mDCF)
-        # )
+        save_system.write_result_to_file(
+            param.SCORE_DIR, 
+            "result", 
+            (epoch + 1, current_lr, avg_loss_id, avg_acc_id)
+        )
 
         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
               f"Avg Loss: {avg_loss:.4f}, "
