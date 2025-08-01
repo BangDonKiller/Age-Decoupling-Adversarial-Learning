@@ -190,6 +190,27 @@ class Voxceleb2_dataset(Dataset):
 
         print(f"Loaded {len(data)} samples from {len(speaker_id_map)} unique speakers for training mode.")
         self.speaker_id_map = speaker_id_map
+        
+        with open("speaker_probability.txt", "w") as f:
+            f.write("Speaker, Probability\n")
+        with open("age_group_probability.txt", "w") as f:
+            f.write("Age Group, Probability\n")
+        
+        # 計算原資料集中每個說話者的出現次數和年齡組的分佈
+        speaker_utterance_count = defaultdict(int)
+        for _, identity_id, _ in data:
+            speaker_utterance_count[identity_id] += 1
+        for speaker_id, count in speaker_utterance_count.items():
+            with open("speaker_probability.txt", "a") as f:
+                f.write(f"{speaker_id}, {count / len(data):.4f}\n")
+
+        speaker_age_count = defaultdict(int)
+        for _, _, age_group_id in data:
+            speaker_age_count[age_group_id] += 1
+        for age_group_id, count in speaker_age_count.items():
+            with open("age_group_probability.txt", "a") as f:
+                f.write(f"{age_group_id}, {count / len(data):.4f}\n")
+            
 
         return data    
     

@@ -63,7 +63,7 @@ BACKBONE_NAME = 'ResNet34'
 # ResNet殘差塊的通道數
 RESNET_BLOCK_WIDTHS = [32, 64, 128, 256]
 # 說話者嵌入向量的維度 (池化層後接128維全連接層)
-EMBEDDING_DIM = 128
+EMBEDDING_DIM = 1024
 # 身份分類器的輸出類別數 (即數據集中說話者的總數)
 NUM_SPEAKERS = 500 # 已被標記年齡的VoxCeleb2說話者數量(原始為5994)
 # 年齡分類器的年齡組數量 (0-20, 21-30, ..., 70-100，共7組)
@@ -82,7 +82,7 @@ LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此
 # 訓練輪數
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 # 每批次訓練樣本數
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 # 優化器類型
 OPTIMIZER = 'SGD'
 # 初始學習率
