@@ -38,11 +38,6 @@ class ADAL_Model(nn.Module):
         feature_dim = self.model.fc.in_features if hasattr(self.model.fc, 'in_features') else 1024
         # self.model.requires_grad_(False)  # 冻結預訓練權重
         
-        self.identity_classifier = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(feature_dim, identity_classes)
-        )
         # 年齡特徵提取模塊 (ARE)
         # self.age_extractor_module = ARE_Module(input_channels=512, output_dim=feature_dim)
         self.age_extractor = nn.Sequential(
@@ -57,9 +52,22 @@ class ADAL_Model(nn.Module):
 
         # 身份分類器 (基於 z_id)
         # self.ArcFace = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
+        self.identity_classifier = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feature_dim, identity_classes)
+        )
 
         # 年齡分類器 (基於 z_age)
         self.age_classifier_on_age = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(feature_dim // 2, age_classes)
+        )
+        
+        # 年齡分類器 (基於 z_id 的對抗性年齡預測)
+        self.age_classifier_on_grl_age = nn.Sequential(
             nn.Linear(feature_dim, feature_dim // 2),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
@@ -70,16 +78,13 @@ class ADAL_Model(nn.Module):
     def forward(self, audio, mode=None, id_label=None):
         # 1. 提取整體特徵 x (embedding)
         z = self.model(audio)
-        
-        # 複製一個與z相同的隨機張量 z_r
-        # z_r = torch.randn_like(z)
 
         # 3. 提取年齡特徵 z_age
         z_age = self.age_extractor(z)
 
         # 3. 計算身份特徵 z_id = z - z_age
         z_id = z - z_age
-        z_id_RG = torch.randn_like(z_id)  # 隨機生成與 z_id 相同形狀的張量
+        # z_id_RG = torch.randn_like(z_id)
 
         if mode == "train":
             # 4. 計算身份分類損失
@@ -89,11 +94,11 @@ class ADAL_Model(nn.Module):
             age = self.age_classifier_on_age(z_age)
             
             # 6. 計算年齡對抗
-            z_age_grl = self.grl(z_id_RG)
-            # z_age_grl = self.grl(z_id)
+            z_age_grl = self.grl(z_id)
             
             # 7. 預測年齡 (對抗性)
-            pred_grl_age = self.age_classifier_on_age(z_age_grl)
+            # pred_grl_age = self.age_classifier_on_grl_age(z_id_RG)
+            pred_grl_age = self.age_classifier_on_grl_age(z_age_grl)
 
             return id, age, pred_grl_age
 
