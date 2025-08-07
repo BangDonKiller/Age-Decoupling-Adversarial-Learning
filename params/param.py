@@ -76,7 +76,7 @@ ARC_FACE_M = 0.2
 # ADAL損失函數中各損失項的權重
 LAMBDA_ID = 1.0   # 身份分類損失的權重 (通常為1.0，因為其他損失是相對於它的權重)
 LAMBDA_AGE = 0.1  # 年齡分類損失的權重
-LAMBDA_GRL = 0.5  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此設定)
+LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此設定)
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
 # 訓練輪數

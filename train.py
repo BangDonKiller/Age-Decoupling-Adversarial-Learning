@@ -13,8 +13,8 @@ from params import param
 from model import ADAL_Model 
 from tool.eval_metric import *
 from torch.utils.tensorboard import SummaryWriter
-from torchvision import transforms
 from collections import defaultdict
+from dlordinal.losses.cdw import CDWCELoss
 
 
 # --- 設定隨機種子，確保可重現性 ---
@@ -204,7 +204,11 @@ def train_model():
     # scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # 交叉熵損失用於年齡分類
-    criterion_ce = nn.CrossEntropyLoss()        
+    criterion_ce = nn.CrossEntropyLoss()
+    age_criterion_ce = CDWCELoss(
+        num_classes=param.NUM_AGE_GROUPS,
+        alpha=2,
+    )        
 
     # --- 3. 訓練循環 ---   
     best_val_eer = float('inf') 
@@ -262,14 +266,12 @@ def train_model():
 
             # L_age: 年齡分類損失 (監督 z_age)
             max_index_of_age = torch.argmax(pred_age, dim=1)
-            loss_age = criterion_ce(pred_age, age_labels)
+            loss_age = age_criterion_ce(pred_age, age_labels)
 
             # L_grl: 對抗年齡損失 (讓 z_id 無法預測年齡)
             max_index_of_grl_age = torch.argmax(pred_grl_age, dim=1)
-            loss_grl = criterion_ce(pred_grl_age, age_labels)
+            loss_grl = age_criterion_ce(pred_grl_age, age_labels)
             
-
-                
             # 計算每個batch，模型預測的ID以及AGE數量 
             for i in range(len(max_index_of_grl_age)):
                 batch_id_count[max_index_of_id[i].item()] += 1
