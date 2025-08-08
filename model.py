@@ -1,109 +1,165 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 import torchvision.models as models
-from modules.GSP import GlobalStatisticalPooling
-from modules.ARE import ARE_Module 
-from modules.GRL import GradientReversalLayer
-import torchaudio
-from tool.ArcFaceLoss import AAMsoftmax
 from params import param
+from dlordinal.losses.cdw import CDWCELoss
 
-
-class PreEmphasis(torch.nn.Module):
-
-    def __init__(self, coef: float = 0.97):
+# --- 1. 輔助網絡 (Auxiliary Network) ---
+# 這是論文的核心，負責計算「表示分離損失」。
+# 它內部包含三個小組件來估計互信息 I(h,x), I(h,y), I(h,z)。
+class AuxiliaryNetwork(nn.Module):
+    def __init__(self, embedding_dim, num_main_classes, num_attribute_classes, input_channels=1, input_size=128):
+        """
+        初始化輔助網絡。
+        Args:
+            embedding_dim (int): 提取器輸出的 embedding 維度 (h)。
+            num_main_classes (int): 主要任務的類別數 (y, 即說話者數量)。
+            num_attribute_classes (int): 要遺忘屬性的類別數 (z, 即年齡段數量)。
+            input_channels (int): 原始輸入的通道數 (例如梅爾頻譜圖為1)。
+            input_size (int): 原始輸入的尺寸 (假設為正方形，用於解碼器)。
+        """
         super().__init__()
-        self.coef = coef
-        self.register_buffer(
-            'flipped_filter', torch.FloatTensor([-self.coef, 1.]).unsqueeze(0).unsqueeze(0)
+        self.embedding_dim = embedding_dim
+        self.input_channels = input_channels
+        self.input_size = input_size
+
+        # 1a. 用於估計 I(h, y) 的輔助分類器 (y 是主要任務標籤)
+        # 根據 h 預測 y
+        self.y_classifier = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim // 2),
+            nn.ReLU(),
+            nn.Linear(embedding_dim // 2, num_main_classes)
         )
 
-    def forward(self, input: torch.tensor) -> torch.tensor:
-        # input = input.unsqueeze(1)
-        # padding 的〈反射〉方式可以減少邊界處突兀的「全零填充」效應，保持邊緣訊號的連續性
-        input = F.pad(input, (1, 0), 'reflect')
-        return F.conv1d(input, self.flipped_filter).squeeze(1)
-
-class ADAL_Model(nn.Module):
-    def __init__(self, feature_dim, age_classes, identity_classes):
-        super(ADAL_Model, self).__init__()
-        
-         # 特徵提取器
-        self.model = models.shufflenet_v2_x0_5(weights=torchvision.models.ShuffleNet_V2_X0_5_Weights.DEFAULT)
-        self.model.fc = nn.Identity()  # 去除最後的全連接層  
-
-        # 根據 backbone 最後輸出特徵維度
-        feature_dim = self.model.fc.in_features if hasattr(self.model.fc, 'in_features') else 1024
-        # self.model.requires_grad_(False)  # 冻結預訓練權重
-        
-        # 年齡特徵提取模塊 (ARE)
-        # self.age_extractor_module = ARE_Module(input_channels=512, output_dim=feature_dim)
-        self.age_extractor = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(feature_dim, feature_dim)
+        # 1b. 用於估計 I(h, z) 的輔助分類器 (z 是屬性標籤)
+        # 根據 h 預測 z
+        self.z_classifier = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim // 2),
+            nn.ReLU(),
+            nn.Linear(embedding_dim // 2, num_attribute_classes)
         )
 
-        # 這裡的 GRL 是用在身份特徵 z_id 上，讓 z_id 變得年齡不相關
-        self.grl = GradientReversalLayer()
-
-        # 身份分類器 (基於 z_id)
-        # self.ArcFace = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
-        self.identity_classifier = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(feature_dim, identity_classes)
-        )
-
-        # 年齡分類器 (基於 z_age)
-        self.age_classifier_on_age = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim // 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(feature_dim // 2, age_classes)
+        # 1c. 用於估計 I(h, x) 的解碼器 (Decoder)
+        # 根據 h 重建原始輸入 x。論文中提到用重建誤差來近似 I(h,x)。
+        # 這裡我們使用一個簡單的轉置卷積網絡。
+        self.decoder = nn.Sequential(
+            nn.Linear(embedding_dim, 256 * (input_size // 16) * (input_size // 16)),
+            nn.ReLU(),
+            View((-1, 256, input_size // 16, input_size // 16)),
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1), # -> size*8
+            nn.ReLU(),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1), # -> size*4
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1), # -> size*2
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, input_channels, kernel_size=4, stride=2, padding=1), # -> size
+            nn.Sigmoid() # 將輸出壓縮到 [0, 1]
         )
         
-        # 年齡分類器 (基於 z_id 的對抗性年齡預測)
-        self.age_classifier_on_grl_age = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim // 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(feature_dim // 2, age_classes)
-        )
+        # 用於計算損失的標準
+        self.criterion_ce = nn.CrossEntropyLoss()
+        # self.ID_criterion_ce = CDWCELoss(num_classes=num_main_classes, alpha=1.0)
+        # self.Age_criterion_ce = CDWCELoss(num_classes=num_attribute_classes, alpha=1.0)
+        self.criterion_recon = nn.MSELoss()
+
+    def forward(self, h, x, y, z, alpha, beta, gamma):
+        """
+        計算表示分離損失 L_bar (論文公式3的變體)。
+        L_bar = -λ1*I(h,x) + λ2*I(h,y) + λ3*I(h,z)
+        我們的目標是最小化 I(h,z) 和 I(h,y)，最大化 I(h,x)。
+        因此，損失應該是: L_detach = λ1*I(h,x) - λ2*I(h,y) - λ3*I(h,z)
+        其中 I(h,x) 近似為 -ReconstructionError。
+        所以 L_detach = -λ1*ReconError - λ2*I(h,y) - λ3*I(h,z)
+        為了方便優化器最小化，我們取負號：
+        L_detach_to_minimize = λ1*ReconError + λ2*I(h,y) + λ3*I(h,z)
+
+        Args:
+            h: 來自提取器的 embedding。
+            x: 原始輸入數據 (梅爾頻譜圖)。
+            y: 主要任務的標籤 (說話者ID)。
+            z: 屬性標籤 (年齡)。
+            alpha, beta, gamma: 論文中的超參數。
+        Returns:
+            torch.Tensor: 表示分離損失。
+        """
+        # 計算 λ 參數
+        lambda1 = alpha * (1 - beta)
+        lambda2 = alpha * beta
+        lambda3 = alpha * (beta - gamma) # 注意論文公式3有個印刷錯誤，這裡是推導後的正確形式
+
+        # 估計 I(h, x) -> 最小化重建誤差
+        reconstructed_x = self.decoder(h)
+        loss_recon = self.criterion_recon(reconstructed_x, x)
+        
+        # 估計 I(h, y) -> 訓練分類器預測 y
+        # H(y|h) 的近似就是交叉熵損失
+        y_pred = self.y_classifier(h)
+        loss_y_clf = self.criterion_ce(y_pred, y)
+
+        # 估計 I(h, z) -> 訓練分類器預測 z
+        # H(z|h) 的近似就是交叉熵損失
+        z_pred = self.z_classifier(h)
+        loss_z_clf = self.criterion_ce(z_pred, z)
+
+        # 組合總的表示分離損失
+        # 根據論文，目標是消除屬性信息 (z) 和不必要的任務信息 (y)，保留原始信息 (x)
+        # 我們要最小化這個損失，所以符號要對應調整
+        detachment_loss = -lambda1 * (-loss_recon) + lambda2 * loss_y_clf + lambda3 * loss_z_clf
+        
+        return detachment_loss, loss_recon, y_pred, loss_y_clf, z_pred, loss_z_clf
 
 
-    def forward(self, audio, mode=None, id_label=None):
-        # 1. 提取整體特徵 x (embedding)
-        z = self.model(audio)
+# 輔助類，用於在 nn.Sequential 中改變張量形狀
+class View(nn.Module):
+    def __init__(self, shape):
+        super().__init__()
+        self.shape = shape
+    def forward(self, x):
+        return x.view(*self.shape)
 
-        # 3. 提取年齡特徵 z_age
-        z_age = self.age_extractor(z)
+# --- 2. 模型組件 ---
+# 將 ShuffleNet 分割為提取器和分類器
 
-        # 3. 計算身份特徵 z_id = z - z_age
-        z_id = z - z_age
-        # z_id_RG = torch.randn_like(z_id)
+class RepresentationDetachmentExtractor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # 載入預訓練的 ShuffleNet v2
+        shufflenet = models.shufflenet_v2_x1_0(weights=models.ShuffleNet_V2_X1_0_Weights.DEFAULT)
+        # 移除原始的分類頭
+        self.features = nn.Sequential(*list(shufflenet.children())[:-1])
 
-        if mode == "train":
-            # 4. 計算身份分類損失
-            id = self.identity_classifier(z_id)
-            
-            # 5. 預測年齡
-            age = self.age_classifier_on_age(z_age)
-            
-            # 6. 計算年齡對抗
-            z_age_grl = self.grl(z_id)
-            
-            # 7. 預測年齡 (對抗性)
-            # pred_grl_age = self.age_classifier_on_grl_age(z_id_RG)
-            pred_grl_age = self.age_classifier_on_grl_age(z_age_grl)
+    def forward(self, x):
+        # 提取特徵
+        x = self.features(x)
+        # 全局平均池化得到 embedding
+        x = x.mean([2, 3]) 
+        return x
 
-            return id, age, pred_grl_age
+class MainTaskClassifier(nn.Module):
+    def __init__(self, embedding_dim, num_main_classes):
+        super().__init__()
+        # 簡單的線性分類器用於聲紋識別
+        self.fc = nn.Linear(embedding_dim, num_main_classes)
 
-        else:
-            return z_id
+    def forward(self, h):
+        return self.fc(h)
+    
+# --- 3. 完整的屬性遺忘模型 ---
+class AttributeUnlearningModel(nn.Module):
+    def __init__(self, num_main_classes, num_attribute_classes, input_channels=1, input_size=128):
+        super().__init__()
+        self.extractor = RepresentationDetachmentExtractor()
+        # ShuffleNet v2 x1.0 輸出的 embedding 維度是 1024
+        embedding_dim = 1024 
+        self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
+        self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
+
+    def forward(self, x):
+        h = self.extractor(x)
+        main_task_output = self.classifier(h)
+        return main_task_output, h
+
 
 # if __name__ == "__main__":
     # # 測試模型

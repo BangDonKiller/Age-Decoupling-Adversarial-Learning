@@ -47,7 +47,7 @@ class Save_system:
         with open(file_path, 'w') as f:
             if filename == "result":
                 # f.write("Epoch, lr, L_id, L_age, L_grl, Total Loss, EER, minDCF\n")  # 寫入表頭
-                f.write("Epoch, lr, L_id, Acc_id, L_age, Acc_age, L_grl, Acc_age_grl\n")  # 寫入表頭
+                f.write("Epoch, lr, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID\n")  # 寫入表頭
             else:
                 f.write("")
             
@@ -63,10 +63,10 @@ class Save_system:
         """
         file_path = os.path.join(path, f"{filename}{self.count}.txt")
         # epoch, lr, l_id, l_age, l_grl, total_loss, eer, min_dcf = content
-        epoch, lr, l_id, acc_id, l_age, acc_age, l_grl, acc_grl_age = content
+        epoch, lr, l_id, acc_id, loss_detach, acc_age, loss_age, loss_recon, detachment_ID_loss, detach_acc_ID = content
         with open(file_path, 'a') as f:
             # f.write(f"{epoch}, {lr}, {l_id:.4f}, {l_age:.4f}, {l_grl:.4f}, {total_loss:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
-            f.write(f"{epoch}, {lr}, {l_id:.4f}, {acc_id:.4f}, {l_age:.4f}, {acc_age:.4f}, {l_grl:.4f}, {acc_grl_age:.4f}\n")
+            f.write(f"{epoch}, {lr}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}\n")
         print(f"結果已寫入: {file_path}")
             
     def write_parameters_to_file(self, path, filename):

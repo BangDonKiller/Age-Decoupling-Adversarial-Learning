@@ -77,6 +77,10 @@ ARC_FACE_M = 0.2
 LAMBDA_ID = 1.0   # 身份分類損失的權重 (通常為1.0，因為其他損失是相對於它的權重)
 LAMBDA_AGE = 0.1  # 年齡分類損失的權重
 LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此設定)
+ALPHA = 0.5
+BETA = 0.3
+GAMMA = 0.1
+
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
 # 訓練輪數
@@ -87,6 +91,7 @@ BATCH_SIZE = 64
 OPTIMIZER = 'SGD'
 # 初始學習率
 INITIAL_LR = 0.001
+LEARNING_RATE_DETACH = 0.0001  # 提取器和輔助網絡的學習率
 # 學習率調度器設定 (多步學習率調度器)
 LR_SCHEDULER_TYPE = 'MultiStepLR'
 LR_DECAY_STEPS = [10, 20, 30] # 學習率在哪個epoch衰減 (論文寫10，但通常是多個點)

@@ -10,11 +10,10 @@ from tool.save_system import Save_system
 import random
 from data.dataloader import Voxceleb2_dataset, Voxceleb1_dataset
 from params import param
-from model import ADAL_Model 
+from model import AttributeUnlearningModel 
 from tool.eval_metric import *
 from torch.utils.tensorboard import SummaryWriter
 from collections import defaultdict
-from dlordinal.losses.cdw import CDWCELoss
 
 
 # --- 設定隨機種子，確保可重現性 ---
@@ -176,39 +175,29 @@ def train_model():
     writer = init_tensorboard()  # 初始化 TensorBoard 日誌
 
     # --- 2. 模型、優化器、損失函數 ---
-    model = ADAL_Model(
-        feature_dim=param.EMBEDDING_DIM,
-        age_classes=param.NUM_AGE_GROUPS,
-        identity_classes=param.NUM_SPEAKERS
+    model = AttributeUnlearningModel(
+        num_main_classes=param.NUM_SPEAKERS,
+        num_attribute_classes=param.NUM_AGE_GROUPS,
+        input_channels=3,  # 假設輸入是三通道的 (例如 RGB 圖像)
+        input_size=224
     ).to(device)
     
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=param.INITIAL_LR,
-        weight_decay=1e-4
+    # 論文核心：解耦更新
+    # 優化器1：用於主要任務，更新提取器和分類器
+    optimizer_main = optim.Adam(
+        list(model.extractor.parameters()) + list(model.classifier.parameters()),
+        lr=param.INITIAL_LR
     )
 
-    # --- 學習率調度器與預熱 ---
-    # def lr_lambda(current_epoch):
-    #     # 線性預熱
-    #     if current_epoch < param.LR_WARMUP_EPOCHS:
-    #         return (current_epoch + 1) / param.LR_WARMUP_EPOCHS
-    #     # 多步衰減
-    #     else:
-    #         decay_factor = 1.0
-    #         for decay_step in param.LR_DECAY_STEPS:
-    #             if current_epoch >= decay_step:
-    #                 decay_factor *= param.LR_DECAY_FACTOR
-    #         return decay_factor
-
-    # scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    # 優化器2：用於表示分離任務，只更新提取器和輔助網絡
+    # 這會對提取器產生一個對抗性的梯度，迫使它忘記屬性信息
+    optimizer_detach = optim.Adam(
+        list(model.extractor.parameters()) + list(model.aux_network.parameters()),
+        lr=param.LEARNING_RATE_DETACH
+    )
 
     # 交叉熵損失用於年齡分類
-    criterion_ce = nn.CrossEntropyLoss()
-    age_criterion_ce = CDWCELoss(
-        num_classes=param.NUM_AGE_GROUPS,
-        alpha=2,
-    )        
+    ID_criterion_ce = nn.CrossEntropyLoss()     
 
     # --- 3. 訓練循環 ---   
     best_val_eer = float('inf') 
@@ -216,34 +205,32 @@ def train_model():
 
     id_count = defaultdict(list)
     age_count = defaultdict(list)
-    age_grl_count = defaultdict(list)
 
     for epoch in range(param.EPOCHS):
         model.train() # 設置模型為訓練模式
-        total_loss = 0.0
         total_loss_id = 0.0
-        total_loss_age = 0.0
-        total_loss_grl = 0.0
-        
+        total_detach_loss = 0.0
+        total_loss_recon = 0.0
+        total_detach_loss_y = 0.0
+        total_detach_loss_age = 0.0
+
         total_acc_id = 0.0
         total_acc_age = 0.0
-        total_acc_age_grl = 0.0
+        total_detach_acc_ID = 0.0
 
         # 計算模型預測分布
         batch_id_count = defaultdict(int)
         batch_age_count = defaultdict(int)
-        batch_age_grl_count = defaultdict(int)
         
-        current_lr = optimizer.param_groups[0]['lr']
-        # 檢查學習率是否達到停止條件
-        if current_lr < param.MIN_LR:
-            break
+        # current_lr = optimizer.param_groups[0]['lr']
+        # # 檢查學習率是否達到停止條件
+        # if current_lr < param.MIN_LR:
+        #     break
 
             
         # 初始化 batch 計數器
         for index in range(param.NUM_AGE_GROUPS):
             batch_age_count[index] = 0
-            batch_age_grl_count[index] = 0
         for index in range(param.NUM_SPEAKERS):
             batch_id_count[index] = 0
 
@@ -252,63 +239,59 @@ def train_model():
             mels = mels.to(device)
             identity_labels = identity_labels.to(device)
             age_labels = age_labels.to(device)
-
-            optimizer.zero_grad() # 清除梯度
-
-            # 前向傳播
-            pred_id, pred_age, pred_grl_age = model(mels, mode = "train", id_label = identity_labels)
-            # pred_id, pred_age, pred_grl_age = model(mels, mode = "train", id_label = identity_labels)
             
-            # 計算損失
-            # L_id: 身份分類損失
-            max_index_of_id = torch.argmax(pred_id, dim=1)
-            loss_id = criterion_ce(pred_id, identity_labels)
+            optimizer_main.zero_grad()
 
-            # L_age: 年齡分類損失 (監督 z_age)
+
+            # 順向傳播
+            main_output, h = model(mels)
+            
+            # 計算主要任務損失
+            loss_main = ID_criterion_ce(main_output, identity_labels)
+            
+            # 反向傳播並更新
+            # `retain_graph=True` 是必須的，因為我們稍後要對同一個計算圖再次反向傳播
+            loss_main.backward(retain_graph=True)
+            optimizer_main.step()
+
+
+            loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h.detach(), mels, identity_labels, age_labels, param.ALPHA, param.BETA, param.GAMMA)
+
+            # 反向傳播並更新
+            # 這次的梯度只會影響 optimizer_detach 所管理的參數 (提取器和輔助網絡)
+            loss_detach.backward()
+            optimizer_detach.step()
+
+            max_index_of_id = torch.argmax(main_output, dim=1)
             max_index_of_age = torch.argmax(pred_age, dim=1)
-            loss_age = age_criterion_ce(pred_age, age_labels)
+            max_index_of_detach_ID = torch.argmax(pred_y, dim=1)
 
-            # L_grl: 對抗年齡損失 (讓 z_id 無法預測年齡)
-            max_index_of_grl_age = torch.argmax(pred_grl_age, dim=1)
-            loss_grl = age_criterion_ce(pred_grl_age, age_labels)
-            
             # 計算每個batch，模型預測的ID以及AGE數量 
-            for i in range(len(max_index_of_grl_age)):
+            for i in range(len(max_index_of_id)):
                 batch_id_count[max_index_of_id[i].item()] += 1
                 batch_age_count[max_index_of_age[i].item()] += 1
-                batch_age_grl_count[max_index_of_grl_age[i].item()] += 1
 
-            # 總損失 (根據論文公式5)
-            loss = (param.LAMBDA_ID * loss_id +
-                    param.LAMBDA_AGE * loss_age +
-                    param.LAMBDA_GRL * loss_grl)
 
-            # 反向傳播與優化
-            loss.backward()
-            optimizer.step()
+            total_loss_id += loss_main.item()
+            total_detach_loss += loss_detach.item()
+            total_loss_recon += loss_recon.item()
+            total_detach_loss_y += loss_y.item()
+            total_detach_loss_age += pred_detach_age_loss.item()
 
-            total_loss += loss.item()
-            total_loss_id += loss_id.item()
-            total_loss_age += loss_age.item()
-            total_loss_grl += loss_grl.item()
-            
             batch_acc_id = (max_index_of_id == identity_labels).sum().item() / identity_labels.size(0)
             total_acc_id += (max_index_of_id == identity_labels).sum().item()
 
             batch_acc_age = (max_index_of_age == age_labels).sum().item() / age_labels.size(0)
             total_acc_age += (max_index_of_age == age_labels).sum().item()
-            
-            batch_acc_grl_age = (max_index_of_grl_age == age_labels).sum().item() / age_labels.size(0)
-            total_acc_age_grl += (max_index_of_grl_age == age_labels).sum().item()
+
+            batch_detach_acc_age = (max_index_of_detach_ID == age_labels).sum().item() / age_labels.size(0)
+            total_detach_acc_ID = (max_index_of_detach_ID == identity_labels).sum().item()
 
             pbar.set_postfix({
-                'Total_L': f'{loss.item():.4f}',
-                'L_id': f'{loss_id.item():.4f}',
+                'L_id': f'{loss_main.item():.4f}',
                 'acc_id': f'{batch_acc_id:.4f}',
-                'L_age': f'{loss_age.item():.4f}',
+                'L_age': f'{loss_detach.item():.4f}',
                 'acc_age': f'{batch_acc_age:.4f}',
-                'L_grl': f'{loss_grl.item():.4f}',
-                'acc_grl_age': f'{batch_acc_grl_age:.4f}',
             })
             
             # --- 4. 保存模型檢查點 ---
@@ -331,26 +314,22 @@ def train_model():
             #     )
             
             step += param.BATCH_SIZE
-                
-        avg_loss = total_loss / len(train_loader)
+
         avg_loss_id = total_loss_id / len(train_loader)
-        avg_loss_age = total_loss_age / len(train_loader)
-        avg_loss_grl = total_loss_grl / len(train_loader)
+        avg_detach_loss = total_detach_loss / len(train_loader)
+        avg_loss_recon = total_loss_recon / len(train_loader)
+        avg_detach_loss_y = total_detach_loss_y / len(train_loader)
+        avg_detach_loss_age = total_detach_loss_age / len(train_loader)
 
         avg_acc_id = total_acc_id / (len(train_loader) * param.BATCH_SIZE)
         avg_acc_age = total_acc_age / (len(train_loader) * param.BATCH_SIZE)
-        avg_acc_age_grl = total_acc_age_grl / (len(train_loader) * param.BATCH_SIZE)
-        
-        
+        avg_detach_acc_ID = total_detach_acc_ID / (len(train_loader) * param.BATCH_SIZE)
+
         for key, value in batch_id_count.items():
             id_count[key].append(value)
         for key, value in batch_age_count.items():
             age_count[key].append(value)
-        for key, value in batch_age_grl_count.items():
-            age_grl_count[key].append(value)
         
-
-
         denominator = len(train_loader) * param.BATCH_SIZE
         
         with open("model_id_prediction.txt", "w") as f:
@@ -367,13 +346,6 @@ def train_model():
                 normalized_values = [f"{v / denominator:.4f}" for v in value]
                 line = f"{key}, " + "-> ".join(normalized_values) + "\n"
                 f.write(line)
-        with open("model_age_grl_prediction.txt", "w") as f:
-            f.write("Age Group, Probability\n")
-            for key in sorted(age_grl_count.keys()):  # 按照 key 由小到大排序
-                value = age_grl_count[key]
-                normalized_values = [f"{v / denominator:.4f}" for v in value]
-                line = f"{key}, " + "-> ".join(normalized_values) + "\n"
-                f.write(line)   
 
         # 在每個 epoch 結束後更新學習率
         # scheduler.step()
@@ -392,17 +364,18 @@ def train_model():
         save_system.write_result_to_file(
             param.SCORE_DIR, 
             "result", 
-            (epoch + 1, current_lr, avg_loss_id, avg_acc_id, avg_loss_age, avg_acc_age, avg_loss_grl, avg_acc_age_grl)  # 保存訓練結果
+            (epoch + 1, param.INITIAL_LR, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID)  # 保存訓練結果
         )
 
         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
-              f"Avg Loss: {avg_loss:.4f}, "
-              f"Avg L_id: {avg_loss_id:.4f}, "
-              f"Avg Acc_id: {avg_acc_id:.4f}, "
-              f"Avg L_age: {avg_loss_age:.4f}, "
-              f"Avg Acc_age: {avg_acc_age:.4f}, "
-              f"Avg L_grl: {avg_loss_grl:.4f}, "
-              f"Avg Acc_grl_age: {avg_acc_age_grl:.4f}"
+              f"主要任務損失: {avg_loss_id:.4f}, "
+              f"主要任務準確率: {avg_acc_id:.4f}, "
+              f"輔助任務總損失: {avg_detach_loss:.4f}, "
+              f"輔助任務Age損失: {avg_detach_loss_age:.4f}, "
+              f"輔助任務Age準確率: {avg_acc_age:.4f}, "
+              f"輔助任務重建損失: {avg_loss_recon:.4f}, "
+              f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
+              f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
             #   f"Val EER: {val_eer:.4f}, "
             #   f"Val minDCF: {val_mDCF:.4f}"
             )
