@@ -46,8 +46,6 @@ def data_weight(dataset):
 
     return age_weights
 
-
-
 def prepare_dataloader():
     """
     準備數據集和數據加載器。
@@ -165,6 +163,25 @@ def evaluate(model, val_loader, device):
 
     return EER, minDCF
 
+
+# --- 新增的輔助函數，用於計算梯度的範數 ---
+def get_grad_norm(model_part):
+    """
+    計算一個模型部分所有參數梯度的總L2範數。
+    Args:
+        model_part (nn.Module): 模型的特定部分，例如 model.extractor。
+    Returns:
+        float: 梯度的總L2範數。如果沒有梯度，返回0。
+    """
+    total_norm = 0.0
+    for p in model_part.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.detach().data.norm(2)
+            total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** 0.5
+    return total_norm
+
+
 # --- 訓練主函數 ---
 def train_model():
     device = torch.device(param.DEVICE)
@@ -185,9 +202,13 @@ def train_model():
     # 論文核心：解耦更新
     # 優化器1：用於主要任務，更新提取器和分類器
     optimizer_main = optim.Adam(
-        list(model.extractor.parameters()) + list(model.classifier.parameters()),
+        model.classifier.parameters(),
         lr=param.INITIAL_LR
     )
+    # optimizer_main = optim.Adam(
+    #     list(model.extractor.parameters()) + list(model.classifier.parameters()),
+    #     lr=param.INITIAL_LR
+    # )
 
     # 優化器2：用於表示分離任務，只更新提取器和輔助網絡
     # 這會對提取器產生一個對抗性的梯度，迫使它忘記屬性信息
@@ -240,26 +261,25 @@ def train_model():
             identity_labels = identity_labels.to(device)
             age_labels = age_labels.to(device)
             
+            # 在每次迭代開始時清空所有梯度
             optimizer_main.zero_grad()
+            optimizer_detach.zero_grad()
 
-
-            # 順向傳播
+            # --- 步驟 1: 只做一次順向傳播，計算所有損失 ---
             main_output, h = model(mels)
-            
-            # 計算主要任務損失
             loss_main = ID_criterion_ce(main_output, identity_labels)
-            
-            # 反向傳播並更新
-            # `retain_graph=True` 是必須的，因為我們稍後要對同一個計算圖再次反向傳播
-            loss_main.backward(retain_graph=True)
+            loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, param.ALPHA, param.BETA, param.GAMMA)
+
+            # --- 步驟 2: 計算並應用主要任務的梯度 ---
+            loss_main.backward(retain_graph=True) # retain_graph=True 是必須的，因為 loss_detach 還要用
+            grad_norm_main = get_grad_norm(model.extractor) 
             optimizer_main.step()
 
+            optimizer_main.zero_grad()
+            optimizer_detach.zero_grad()
 
-            loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h.detach(), mels, identity_labels, age_labels, param.ALPHA, param.BETA, param.GAMMA)
-
-            # 反向傳播並更新
-            # 這次的梯度只會影響 optimizer_detach 所管理的參數 (提取器和輔助網絡)
             loss_detach.backward()
+            grad_norm_detach_and_main = get_grad_norm(model.extractor)
             optimizer_detach.step()
 
             max_index_of_id = torch.argmax(main_output, dim=1)
@@ -292,6 +312,8 @@ def train_model():
                 'acc_id': f'{batch_acc_id:.4f}',
                 'L_age': f'{loss_detach.item():.4f}',
                 'acc_age': f'{batch_acc_age:.4f}',
+                'G_main_only': f'{grad_norm_main:.2e}', # loss_main 單獨產生的梯度
+                'G_total': f'{grad_norm_detach_and_main:.2e}' # 最終作用在 extractor 上的總梯度
             })
             
             # --- 4. 保存模型檢查點 ---

@@ -77,9 +77,9 @@ ARC_FACE_M = 0.2
 LAMBDA_ID = 1.0   # 身份分類損失的權重 (通常為1.0，因為其他損失是相對於它的權重)
 LAMBDA_AGE = 0.1  # 年齡分類損失的權重
 LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此設定)
-ALPHA = 0.5
-BETA = 0.3
-GAMMA = 0.1
+ALPHA = 1
+BETA = 0.5
+GAMMA = 0.3
 
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
@@ -88,7 +88,7 @@ EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 # 每批次訓練樣本數
 BATCH_SIZE = 64
 # 優化器類型
-OPTIMIZER = 'SGD'
+OPTIMIZER = 'Adam'
 # 初始學習率
 INITIAL_LR = 0.001
 LEARNING_RATE_DETACH = 0.0001  # 提取器和輔助網絡的學習率
@@ -109,33 +109,7 @@ P_TARGET = 1e-2
 C_FA = 1
 C_MISS = 1
 
-# 測試集列表 (根據論文中定義的各種測試集)
-# 這將用於測試腳本，定義要評估哪些測試集
-TEST_SETS = {
-    'Vox-E': {'type': 'standard'},
-    'Vox-H': {'type': 'standard', 'nationality_gender_matched': True},
-    'Vox-CA5': {'type': 'cross_age', 'min_age_gap': 5, 'nationality_gender_matched': True},
-    'Vox-CA10': {'type': 'cross_age', 'min_age_gap': 10, 'nationality_gender_matched': True},
-    'Vox-CA15': {'type': 'cross_age', 'min_age_gap': 15, 'nationality_gender_matched': True},
-    'Vox-CA20': {'type': 'cross_age', 'min_age_gap': 20, 'nationality_gender_matched': True},
-    # 論文中提到的 'Only-CA' 類型，可能作為子集
-    'Only-CA5': {'type': 'cross_age', 'min_age_gap': 5, 'nationality_gender_matched': False},
-    'Only-CA10': {'type': 'cross_age', 'min_age_gap': 10, 'nationality_gender_matched': False},
-    'Only-CA15': {'type': 'cross_age', 'min_age_gap': 15, 'nationality_gender_matched': False},
-    'Only-CA20': {'type': 'cross_age', 'min_age_gap': 20, 'nationality_gender_matched': False},
-}
-
-# --- 9. 其他模型特定參數 (Other Model Specific Parameters) ---
-# ARE 模組的類型 (論文中提到 ASP)
-ARE_MODULE_TYPE = 'ASP'
-# 年齡分類器結構 (FC-ReLU-FC)
-AGE_CLASSIFIER_ARCH = [EMBEDDING_DIM, 64, NUM_AGE_GROUPS] # 示例：中間層64，輸出7個年齡組
-
-# --- 10. 數據集相關參數 (Dataset Specific Parameters) ---
+# --- 9. 數據集相關參數 (Dataset Specific Parameters) ---
 # VoxCeleb1/2 的使用設定 (例如，哪個用於訓練，哪個用於測試集構建)
 VOXCELEB_TRAIN_SET = 'VoxCeleb2'
 VOXCELEB_TEST_SET_CONSTRUCTION = 'VoxCeleb1'
-# 構建CA測試集時所需的最小說話者數量 (80個說話者)
-MIN_SPEAKERS_FOR_CA = 80
-# 面部年齡估計模型路徑 (用於數據預處理，生成年齡標籤)
-# FACE_AGE_MODEL_PATH = '/path/to/your/dex_model.pth' # Dex [28] 模型
