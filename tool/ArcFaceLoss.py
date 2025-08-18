@@ -31,7 +31,7 @@ class AAMsoftmax(nn.Module):
         self.s = s  # 縮放因子
 
         # 可訓練的權重矩陣，每個類別對應一個嵌入向量
-        self.weight = torch.nn.Parameter(torch.FloatTensor(n_class, 128), requires_grad=True)
+        self.weight = torch.nn.Parameter(torch.FloatTensor(n_class, 1024), requires_grad=True)
         
         # 交叉熵損失函數，用於計算最終的損失
         self.ce = nn.CrossEntropyLoss()
@@ -98,10 +98,10 @@ class AAMsoftmax(nn.Module):
         output = output * self.s
         
         # 8. 計算交叉熵損失
-        # loss = self.ce(output, label)
+        loss = self.ce(output, label)
         
         # 9. 計算 Top-1 準確度
-        # prec1 = accuracy(output.detach(), label.detach(), topk=(1,))[0]
+        prec1 = accuracy(output.detach(), label.detach(), topk=(1,))[0]
 
-        # return loss, prec1
-        return output
+        return loss, prec1
+        # return output

@@ -71,27 +71,34 @@ NUM_AGE_GROUPS = 7
 
 # --- 6. 損失函數參數 (Loss Function Parameters) ---
 # ArcFace損失參數 (s: 縮放因子, m: 邊距)
-ARC_FACE_S = 64
-ARC_FACE_M = 0.2
+ARC_FACE_S = 32 # 64
+ARC_FACE_M = 0.02
 # ADAL損失函數中各損失項的權重
 LAMBDA_ID = 1.0   # 身份分類損失的權重 (通常為1.0，因為其他損失是相對於它的權重)
 LAMBDA_AGE = 0.1  # 年齡分類損失的權重
 LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此設定)
-ALPHA = 1
-BETA = 0.5
-GAMMA = 0.3
+ALPHA = 0.1
+BETA = 0.05
+GAMMA = 0.03
+ALPHA_SCHEDULE = {
+    10: 0.1,
+    20: 0.5,
+    30: 1.0
+}
+
 
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
 # 訓練輪數
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
+WARM_UP_EPOCHS = 10
 # 每批次訓練樣本數
 BATCH_SIZE = 64
 # 優化器類型
 OPTIMIZER = 'Adam'
 # 初始學習率
-INITIAL_LR = 0.001
-LEARNING_RATE_DETACH = 0.0001  # 提取器和輔助網絡的學習率
+INITIAL_LR = 0.0001
+LEARNING_RATE_DETACH = 0.00005  # 提取器和輔助網絡的學習率
 # 學習率調度器設定 (多步學習率調度器)
 LR_SCHEDULER_TYPE = 'MultiStepLR'
 LR_DECAY_STEPS = [10, 20, 30] # 學習率在哪個epoch衰減 (論文寫10，但通常是多個點)

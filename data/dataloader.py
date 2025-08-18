@@ -218,39 +218,42 @@ class Voxceleb2_dataset(Dataset):
         return len(self.data_list)
 
     def __getitem__(self, idx):
-        # 現在 self.data_list[idx] 已經是完整的音訊檔案路徑了
         audio_file_path, identity_id, age_group_id = self.data_list[idx]
         
-        # 載入音訊檔案
+        # 1. 載入音訊檔案，得到 NumPy 陣列
         waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
-        length = self.frame_num * 160 + 240
         
-        if waveform.shape[0] <= length:
-            shortage = length - waveform.shape[0]
-            waveform = np.pad(waveform, (0, shortage), 'wrap')
-        start_frame = np.int64(random.random()*(waveform.shape[0]-length))
-        waveform = waveform[start_frame:start_frame + length]
-        final_waveform = np.stack([waveform], axis=0)
-        
-        # --- 數據增強 ---
+        # 將 NumPy 轉換為 PyTorch Tensor，因為我們的增強函式現在期望 Tensor
+        # 並且增強操作最好在 Tensor 上完成
+        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
+
+        # ==================== 核心修正：對調順序 ====================
+
+        # 2. 【先】進行資料增強。這一步驟可能會改變 final_waveform 的長度
         if self.augment:
             final_waveform = self._apply_augmentation(final_waveform)
 
-        # 將 waveform 轉換為 PyTorch Tensor
-        final_waveform = torch.from_numpy(final_waveform).float()
-
-        # 提取 Mel-filterbank energies (channels, samples)
-        mel_spec = self.mel_spectrogram(final_waveform)
-
-        # 轉換為論文中期望的形狀 (channels, n_mels, n_frames)
-        # mel_spec = mel_spec.squeeze(0).transpose(0, 1)
-        # mel_spec = mel_spec.squeeze(0).permute(1, 0)
+        # 3. 【後】對增強後的音訊進行固定長度處理
+        length = self.frame_num * 160 + 240
+        current_length = final_waveform.shape[1]
         
-        # 對數 Mel-filterbank energies
-        mel_spec = torch.log(mel_spec + 1e-6)
+        if current_length <= length:
+            shortage = length - current_length
+            # 使用 PyTorch 的 pad 函式來填充 Tensor
+            final_waveform = torch.nn.functional.pad(final_waveform, (0, shortage), 'constant', 0)
+        else:
+            # 隨機裁剪
+            start_frame = random.randint(0, current_length - length)
+            final_waveform = final_waveform[:, start_frame:start_frame + length]
+        
+        # ============================================================
 
-        # # 通常會對特徵進行均值/方差歸一化 (CMVN)
-        # # mel_spec = self._apply_cmvn(mel_spec)
+        # 4. 提取 Mel-filterbank energies
+        # 現在傳入 mel_spectrogram 的 final_waveform 保證是固定長度
+        mel_spec = self.mel_spectrogram(final_waveform)
+        
+        # 5. 對數 Mel-filterbank energies
+        mel_spec = torch.log(mel_spec + 1e-6)
 
         return mel_spec, identity_id, age_group_id
     
@@ -267,29 +270,8 @@ class Voxceleb2_dataset(Dataset):
         將批次數據填充到相同長度，並調整為模型期望的形狀。
         """
         # 過濾掉 __getitem__ 返回 None 的樣本 (如果有的話，雖然本次修改應該不會)
-        # batch = [item for item in batch if item is not None] # 確保 batch 不包含 None
         
         mels, ident, age = zip(*batch)
-        
-        # # 獲取每個 Mel 譜的幀數 (長度)
-        # lengths = [m.shape[0] for m in mels]
-        # maxlen = max(lengths) # 找出批次中最長的 Mel 譜幀數
-        
-        # # 對所有 Mel 譜進行零填充，使其長度達到 maxlen
-        # # (0,0) 對應最後兩個維度 (n_mels)，(0, maxlen-m.shape[0]) 對應第一個維度 (frames)
-        # padded = [torch.nn.functional.pad(m, (0,0,0,maxlen-m.shape[0])) for m in mels]
-        
-        # # 將填充後的 Mel 譜堆疊成一個批次的 Tensor
-        # # 原始：torch.stack(padded) 的形狀是 (batch_size, max_frames, n_mels=80)
-        # stacked_mels = torch.stack(padded) # (B, Max_Frames, 80)
-        
-        # # 1. 轉置 Mel 譜，使 n_mels (80) 成為高度 (H)，max_frames 成為寬度 (W)
-        # #    從 (B, Max_Frames, 80) 變為 (B, 80, Max_Frames)
-        # permuted_mels = stacked_mels.permute(0, 2, 1) 
-        
-        # # 2. 插入通道維度 (channels=1)，模型通常期望 (B, C, H, W) 格式
-        # #    從 (B, 80, Max_Frames) 變為 (B, 1, 80, Max_Frames)
-        # final_input_mels = permuted_mels.unsqueeze(1)
         
         mels = torch.stack(mels)  # 將 Mel 譜堆疊成一個批次的 Tensor (B, C, H, W)
         resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
@@ -362,7 +344,7 @@ class Voxceleb2_dataset(Dataset):
         
         # 確保 waveform 在 CPU 上，因為 librosa 和 torchaudio 某些操作預設在 CPU
         # 並且在 worker 中進行，如果傳入 GPU Tensor，會在 worker 中造成額外複製到 CPU 的開銷
-        waveform_on_cpu = waveform.cpu() 
+        waveform_on_cpu = waveform
 
         if aug_type == 0:
             return waveform_on_cpu
@@ -448,6 +430,9 @@ class Voxceleb2_dataset(Dataset):
         speed_factor = random.uniform(0.7, 1.3) # 隨機選擇速度因子，例如 0.7 到 1.3 倍，避免極端速度
         if speed_factor == 1.0:
             return waveform # 不變速
+        
+        if isinstance(waveform, np.ndarray):
+            waveform = torch.from_numpy(waveform).float()
 
         new_sample_rate = int(self.sample_rate * speed_factor)
         
@@ -477,8 +462,9 @@ class Voxceleb2_dataset(Dataset):
     
 
 class Voxceleb1_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file):
+    def __init__(self, dataset_path, data_list_file, frame_num):
         self.sample_rate = 16000
+        self.frame_num = frame_num
 
         # MelSpectrogram 應保持在 CPU，因為輸入波形是 CPU Tensor
         self.mel_spectrogram = T.MelSpectrogram(
@@ -487,12 +473,6 @@ class Voxceleb1_dataset(Dataset):
             hop_length=160,    # 10ms hop_size
             n_mels=80          # 80 維 Mel-filterbank energies
         )
-        
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),     # 調整為 224×224，順序為 (height, width)
-            transforms.ToTensor(),             # 轉為 Tensor
-            # transforms.Normalize(...)        # 如果需要 normalize，也可以放這裡
-        ])
 
         # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
         self.data_list = self._load_data_list(dataset_path, data_list_file)
@@ -586,88 +566,53 @@ class Voxceleb1_dataset(Dataset):
         # 現在 self.data_list[idx] 已經是完整的音訊檔案路徑了
         label, audio1_path, audio2_path = self.data_list[idx]
         
-        audio1_mel = self.turn_to_mel(audio1_path)
-        audio2_mel = self.turn_to_mel(audio2_path)
+        # 使用一個輔助函數來處理單個音頻，確保邏輯一致
+        audio1_mel = self._process_audio(audio1_path)
+        audio2_mel = self._process_audio(audio2_path)
 
         return audio1_mel, audio2_mel, label
 
-    def turn_to_mel(self, audio_file_path):
-        """
-        將音訊檔案轉換為 Mel-filterbank energies。
-        """
-        # **優化點：直接載入確定的音訊檔案，不再需要 os.listdir 或 random.choice**
+    def _process_audio(self, audio_file_path):
+        # 【核心修改】這個函數現在完全模仿訓練集的 __getitem__ 邏輯
         waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
-        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0)  # (1, samples)
+        
+        # 計算與訓練集完全相同的目標長度
+        length = self.frame_num * 160 + 240
+        
+        if waveform.shape[0] <= length:
+            shortage = length - waveform.shape[0]
+            waveform = np.pad(waveform, (0, shortage), 'wrap')
+        else:
+            # 推論時使用中心裁剪 (Center Crop) 而不是隨機裁剪，確保結果的確定性
+            start_frame = (waveform.shape[0] - length) // 2
+            waveform = waveform[start_frame : start_frame + length]
+            
+        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0)
 
-        # 提取 Mel-filterbank energies
-        # waveform 可能是 (channels, samples)，MelSpectrogram 期望 (channels, samples)
         mel_spec = self.mel_spectrogram(final_waveform)
-        
-        # 轉換為論文中期望的形狀 (features, frames)
-        # 從 (channels, n_mels, n_frames) 轉為 (n_frames, n_mels)
-        # mel_spec.squeeze(0) 將 (1, 80, n_frames) 變成 (80, n_frames)
-        # .transpose(0, 1) 將 (80, n_frames) 變成 (n_frames, 80)
-        mel_spec = mel_spec.squeeze(0).transpose(0, 1)
-        
-        # 對數 Mel-filterbank energies
         mel_spec = torch.log(mel_spec + 1e-6)
-
-        # 通常會對特徵進行均值/方差歸一化 (CMVN)
-        # mel_spec = self._apply_cmvn(mel_spec)
+        
         return mel_spec
     
     def collate_fn(self, batch):
-        """
-        將批次數據填充到相同長度，並調整為模型期望的形狀。
-        """
-        # 過濾掉 __getitem__ 返回 None 的樣本 (如果有的話，雖然本次修改應該不會)
-        # batch = [item for item in batch if item is not None] # 確保 batch 不包含 None
+        # 【核心修改】collate_fn 現在變得和訓練集一樣簡單
+        mel1_list, mel2_list, label_list = zip(*batch)
         
-        mel1, mel2, label = zip(*batch)
-        
-        mel1 = self.padding_mel(mel1)  # 對 mel1 進行填充
-        mel2 = self.padding_mel(mel2)  # 對 mel2 進行填充
-        
-        final_input_mels1 = F.interpolate(mel1, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
-        final_input_mels2 = F.interpolate(mel2, size=(224, 224), mode="bilinear", align_corners=False)
+        # 直接堆疊，因為 __getitem__ 保證了大小一致
+        mels1 = torch.stack(mel1_list)
+        mels2 = torch.stack(mel2_list)
 
-        final_input_mels1 = self.min_max_normalize(final_input_mels1)  # 對 Mel 譜進行 Min-Max 正規化
-        final_input_mels2 = self.min_max_normalize(final_input_mels2)
+        # 應用與訓練集完全相同的處理流程
+        def process_batch(mels):
+            resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)
+            norm_mels = self.min_max_normalize(resize_mels)
+            # 複製成3通道
+            return self.spec_to_rgb(norm_mels)
 
-        final_input_mels1 = final_input_mels1.numpy()  # 如果需要轉換為 NumPy 陣列
-        final_input_mels2 = final_input_mels2.numpy()
+        final_input_mels1 = process_batch(mels1)
+        final_input_mels2 = process_batch(mels2)
 
-        # 將 RGB 圖像轉換為 Tensor
-        final_input_mels1 = torch.tensor(final_input_mels1, dtype=torch.float32)
-        final_input_mels1 = self.spec_to_rgb(final_input_mels1)  # 將 Mel 譜轉換為 RGB 圖像
-
-        final_input_mels2 = torch.tensor(final_input_mels2, dtype=torch.float32)
-        final_input_mels2 = self.spec_to_rgb(final_input_mels2)
-
-        return final_input_mels1, final_input_mels2, torch.tensor(label, dtype=torch.long)
-    
-    def padding_mel(self, mel):
-        # 獲取每個 Mel 譜的幀數 (長度)
-        lengths = [m.shape[0] for m in mel]
-        maxlen = max(lengths) # 找出批次中最長的 Mel 譜幀數
-        
-        # 對所有 Mel 譜進行零填充，使其長度達到 maxlen
-        # (0,0) 對應最後兩個維度 (n_mels)，(0, maxlen-m.shape[0]) 對應第一個維度 (frames)
-        padded = [torch.nn.functional.pad(m, (0,0,0,maxlen-m.shape[0])) for m in mel]
-        
-        # 將填充後的 Mel 譜堆疊成一個批次的 Tensor
-        # 原始：torch.stack(padded) 的形狀是 (batch_size, max_frames, n_mels=80)
-        stacked_mels = torch.stack(padded) # (B, Max_Frames, 80)
-        
-        # 1. 轉置 Mel 譜，使 n_mels (80) 成為高度 (H)，max_frames 成為寬度 (W)
-        #    從 (B, Max_Frames, 80) 變為 (B, 80, Max_Frames)
-        permuted_mels = stacked_mels.permute(0, 2, 1) 
-        
-        # 2. 插入通道維度 (channels=1)，模型通常期望 (B, C, H, W) 格式
-        #    從 (B, 80, Max_Frames) 變為 (B, 1, 80, Max_Frames)
-        final_input_mels = permuted_mels.unsqueeze(1)
-        
-        return final_input_mels
+        return final_input_mels1, final_input_mels2, torch.tensor(label_list, dtype=torch.long)
         
 # Testing
 if __name__ == "__main__":

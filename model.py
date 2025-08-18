@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 from params import param
 from dlordinal.losses.cdw import CDWCELoss
+from tool.ArcFaceLoss import AAMsoftmax
 
 # --- 1. 輔助網絡 (Auxiliary Network) ---
 # 這是論文的核心，負責計算「表示分離損失」。
@@ -105,7 +106,8 @@ class AuxiliaryNetwork(nn.Module):
         # 組合總的表示分離損失
         # 根據論文，目標是消除屬性信息 (z) 和不必要的任務信息 (y)，保留原始信息 (x)
         # 我們要最小化這個損失，所以符號要對應調整
-        detachment_loss = -lambda1 * (-loss_recon) + lambda2 * loss_y_clf + lambda3 * loss_z_clf
+        detachment_loss = lambda1 * loss_recon - lambda2 * loss_y_clf - lambda3 * loss_z_clf
+        # detachment_loss = -lambda1 * (-loss_recon) + lambda2 * loss_y_clf + lambda3 * loss_z_clf
         
         return detachment_loss, loss_recon, y_pred, loss_y_clf, z_pred, loss_z_clf
 
@@ -152,14 +154,20 @@ class AttributeUnlearningModel(nn.Module):
         self.extractor = RepresentationDetachmentExtractor()
         # ShuffleNet v2 x1.0 輸出的 embedding 維度是 1024
         embedding_dim = 1024 
-        self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
+        # self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
+        self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
         self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
 
-    def forward(self, x):
-        h = self.extractor(x)
-        main_task_output = self.classifier(h)
-        return main_task_output, h
-
+    def forward(self, x, id_label=None, mode=None):
+        if mode == "train":
+            h = self.extractor(x)
+            # main_task_output = self.classifier(h)
+            loss, acc = self.classifier(h, label=id_label)
+            # return loss, acc, h
+            return loss, acc, h
+        else:
+            h = self.extractor(x)
+            return h
 
 # if __name__ == "__main__":
     # # 測試模型
