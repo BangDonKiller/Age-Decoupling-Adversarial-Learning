@@ -106,8 +106,8 @@ class AuxiliaryNetwork(nn.Module):
         # 組合總的表示分離損失
         # 根據論文，目標是消除屬性信息 (z) 和不必要的任務信息 (y)，保留原始信息 (x)
         # 我們要最小化這個損失，所以符號要對應調整
-        detachment_loss = lambda1 * loss_recon - lambda2 * loss_y_clf - lambda3 * loss_z_clf
-        # detachment_loss = -lambda1 * (-loss_recon) + lambda2 * loss_y_clf + lambda3 * loss_z_clf
+        detachment_loss = - lambda3 * loss_z_clf
+        # detachment_loss = lambda1 * loss_recon - lambda2 * loss_y_clf - lambda3 * loss_z_clf
         
         return detachment_loss, loss_recon, y_pred, loss_y_clf, z_pred, loss_z_clf
 
@@ -163,7 +163,7 @@ class AttributeUnlearningModel(nn.Module):
             h = self.extractor(x)
             # main_task_output = self.classifier(h)
             loss, acc = self.classifier(h, label=id_label)
-            # return loss, acc, h
+            # return main_task_output, h
             return loss, acc, h
         else:
             h = self.extractor(x)
