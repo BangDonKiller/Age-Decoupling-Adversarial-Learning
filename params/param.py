@@ -13,7 +13,7 @@ DATA_ROOT = ['/app/dataset/VoxCeleb2/vox2_dev_wav/dev/aac']
 # 數據列表文件路徑 (包含音頻路徑、身份ID、年齡組ID)
 DATA_LIST_FILE = "/app/dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy"
 # 訓練數據列表文件路徑
-VAL_DATA_ROOT = ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "app/dataset/VoxCeleb1/vox1_test_wav/wav"]
+VAL_DATA_ROOT = ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"]
 # 驗證數據列表文件路徑
 VAL_DATA_LIST_FILE = "/app/dataset/Cross-Age_Speaker_Verification/trials/Vox-CA20/test.txt"
 # 訓練日誌、模型檢查點的儲存目錄
@@ -77,9 +77,9 @@ ARC_FACE_M = 0.2
 LAMBDA_ID = 1.0   # 身份分類損失的權重 (通常為1.0，因為其他損失是相對於它的權重)
 LAMBDA_AGE = 0.1  # 年齡分類損失的權重
 LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此設定)
-ALPHA = 0 # 0.0
-BETA = 0.05
-GAMMA = 0.03
+ALPHA = 0.001 # 0.0
+BETA = 0.005
+GAMMA = 0.003
 ALPHA_SCHEDULE = {
     10: 0.1,
     20: 0.5,
@@ -93,12 +93,13 @@ ALPHA_SCHEDULE = {
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 WARM_UP_EPOCHS = 10
 # 每批次訓練樣本數
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 # 優化器類型
 OPTIMIZER = 'Adam'
 # 初始學習率
 INITIAL_LR = 0.001
 LEARNING_RATE_DETACH = 0.0001  # 提取器和輔助網絡的學習率
+FINETUNE_LR = 0.001
 # 學習率調度器設定 (多步學習率調度器)
 LR_SCHEDULER_TYPE = 'MultiStepLR'
 LR_DECAY_STEPS = [10, 20, 30] # 學習率在哪個epoch衰減 (論文寫10，但通常是多個點)

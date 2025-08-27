@@ -147,6 +147,18 @@ class MainTaskClassifier(nn.Module):
     def forward(self, h):
         return self.fc(h)
     
+class SNNClassifier(nn.Module):
+    def __init__(self, embedding_dim, output_dim):
+        self.fc = nn.Linear(embedding_dim * 2, output_dim)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x1, x2):
+        x = torch.cat([x1, x2], dim=1)
+        x = self.fc(x)
+        output = self.sigmoid(x)
+        return output
+
+    
 # --- 3. 完整的屬性遺忘模型 ---
 class AttributeUnlearningModel(nn.Module):
     def __init__(self, num_main_classes, num_attribute_classes, input_channels=1, input_size=128):
@@ -157,6 +169,7 @@ class AttributeUnlearningModel(nn.Module):
         # self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
         self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
         self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
+        self.SNN_classifier = SNNClassifier(embedding_dim, 1)
 
     def forward(self, x, id_label=None, mode=None):
         if mode == "train":

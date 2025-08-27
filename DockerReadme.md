@@ -2,7 +2,7 @@ Build image
 docker build -t adal .
 
 Run container
-docker run -d --rm -it --name adal -v C:/vscode/Age-Decoupling-Adversarial-Learning:/app -v C:/Dataset:/app/dataset adal
+docker run --gpus 'device=0' -d --rm -it --name adal -v C:/vscode/Age-Decoupling-Adversarial-Learning:/app -v C:/Dataset:/app/dataset adal
 
 顯示出目前正在執行的所有container
 docker ps (+ -a 可查看包含未執行的container)

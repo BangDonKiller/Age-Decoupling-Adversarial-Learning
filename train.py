@@ -28,7 +28,6 @@ def set_seed(seed):
 
 set_seed(param.RANDOM_SEED)
 
-# ... (data_weight, prepare_dataloader, init_tensorboard, log_tensorboard, evaluate, get_grad_norm 函數保持不變) ...
 def data_weight(dataset):
     """
     計算數據集的權重。
@@ -162,23 +161,48 @@ def evaluate(model, val_loader, device):
 
     return EER, minDCF
 
-
-# --- 新增的輔助函數，用於計算梯度的範數 ---
-def get_grad_norm(model_part):
+def finetune(model, train_loader, device):
     """
-    計算一個模型部分所有參數梯度的總L2範數。
+    微調模型以適應新數據集。
     Args:
-        model_part (nn.Module): 模型的特定部分，例如 model.extractor。
-    Returns:
-        float: 梯度的總L2範數。如果沒有梯度，返回0。
+        model: 要微調的模型。
+        train_loader: 訓練數據加載器。
+        val_loader: 驗證數據加載器。
+        device: 設備 (CPU 或 GPU)。
     """
-    total_norm = 0.0
-    for p in model_part.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.detach().data.norm(2)
-            total_norm += param_norm.item() ** 2
-    total_norm = total_norm ** 0.5
-    return total_norm
+    model.train()
+    optimizer = optim.Adam(model.parameters(), lr=param.FINETUNE_LR)
+
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    for audio1, audio2, label in tqdm(train_loader, desc="Evaluating", unit="batch"):
+        audio1 = audio1.to(device)
+        audio2 = audio2.to(device)
+
+        embedding1 = model(audio1, mode="val") # 輸出形狀: (batch_size, feature_dim)
+        embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
+
+        embedding1 = F.normalize(embedding1, p=2, dim=1)
+        embedding2 = F.normalize(embedding2, p=2, dim=1)
+
+        output = model.SNN_classifier(embedding1, embedding2)
+
+        loss = F.binary_cross_entropy(output, label.float())
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        total_correct += (output.argmax(dim=1) == label).sum().item()
+        total_samples += label.size(0)
+
+    avg_loss = total_loss / len(train_loader)
+    avg_acc = total_correct / total_samples
+
+    return avg_loss, avg_acc
+
 
 def lr_lambda(current_epoch):
     if current_epoch < param.WARM_UP_EPOCHS:
@@ -216,12 +240,11 @@ def train_model():
     # )
 
     optimizer = optim.Adam(model.parameters(), lr=param.INITIAL_LR)
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-
-    # scheduler_main = optim.lr_scheduler.LambdaLR(optimizer_main, lr_lambda=warmup_lambda)
-    # scheduler_detach = optim.lr_scheduler.LambdaLR(optimizer_detach, lr_lambda=warmup_lambda)
 
     criterion_main = nn.CrossEntropyLoss()
+
+    # check if gpu is available
+    print("torch GPU available:", torch.cuda.is_available())
 
     for epoch in range(param.EPOCHS):
         model.train()
@@ -242,9 +265,6 @@ def train_model():
         total_detach_acc_ID = 0.0
         
         current_alpha = param.ALPHA
-        # for e_threshold, alpha_val in sorted(param.ALPHA_SCHEDULE.items()):
-        #     if epoch + 1 >= e_threshold:
-        #         current_alpha = alpha_val
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", unit="batch")
         for batch_idx, (mels, identity_labels, age_labels) in enumerate(pbar):
@@ -262,10 +282,8 @@ def train_model():
             
             # loss_main = criterion_main(output, identity_labels)
 
-            # ... (輔助網絡的損失計算保持不變) ...
             loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
-            
-            # --- 總損失計算和反向傳播保持不變 ---
+
             total_loss_for_extractor = loss_main + loss_detach
             total_loss_for_extractor.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
@@ -314,12 +332,10 @@ def train_model():
         avg_detach_acc_ID = total_detach_acc_ID / (len(train_loader) * param.BATCH_SIZE)
         avg_acc_id = (total_correct_id / total_samples_id) * 100.0 if total_samples_id > 0 else 0.0
 
-        # scheduler_main.step()
-        # scheduler_detach.step()
-        # scheduler.step()
+        # model.eval()
+        # val_eer, val_mDCF = evaluate(model, val_loader, device)
 
-        model.eval()
-        val_eer, val_mDCF = evaluate(model, val_loader, device)
+        finetune_error, finetune_acc = finetune(model, val_loader, device)
 
         # 【修改點】在保存和打印日誌時，使用新的 avg_acc_id
         # current_main_lr = optimizer_main.param_groups[0]['lr']
@@ -331,107 +347,26 @@ def train_model():
         save_system.write_result_to_file(
             param.SCORE_DIR,
             "result",
-            (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID, val_eer, val_mDCF)
+            (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID, finetune_error, finetune_acc)
         )
 
         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
               f"主要任務損失: {avg_loss_id:.4f}, "
-              f"主要任務準確率: {avg_acc_id:.4f}%, " # <-- 使用新的準確率
+              f"主要任務準確率: {avg_acc_id:.4f}%, "
               f"輔助任務總損失: {avg_detach_loss:.4f}, "
               f"輔助任務Age損失: {avg_detach_loss_age:.4f}, "
               f"輔助任務Age準確率: {avg_acc_age:.4f}, "
               f"輔助任務重建損失: {avg_loss_recon:.4f}, "
               f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
               f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
-              f"Val EER: {val_eer:.4f}, "
-              f"Val minDCF: {val_mDCF:.4f}")
+            #   f"Val EER: {val_eer:.4f}, "
+            #   f"Val minDCF: {val_mDCF:.4f}")
+              f"微調損失: {finetune_error:.4f}, "
+              f"微調準確率: {finetune_acc:.4f}%"
+              )
 
         if epoch == param.EPOCHS - 1:
             save_system.save_model(model, epoch + 1)
-
-# train.py -> train_model()
-
-# def train_model():
-#     device = torch.device(param.DEVICE)
-#     train_loader, val_loader, _ = prepare_dataloader()
-#     save_system = Save_system()
-
-#     model = AttributeUnlearningModel(
-#         num_main_classes=param.NUM_SPEAKERS,
-#         num_attribute_classes=param.NUM_AGE_GROUPS,
-#         input_channels=3,
-#         input_size=224
-#     ).to(device)
-
-#     # --- 【核心】只用一個優化器，管理所有參數 ---
-#     optimizer = optim.Adam(model.parameters(), lr=param.INITIAL_LR)
-    
-#     criterion = nn.CrossEntropyLoss()
-    
-#     total_acc = []
-
-#     for epoch in range(param.EPOCHS):
-#         model.train()
-#         total_loss_id = 0.0
-#         total_correct_id = 0
-#         total_samples = 0
-
-#         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", unit="batch")
-#         for batch_idx, (mels, identity_labels, age_labels) in enumerate(pbar):
-#             mels = mels.to(device)
-#             identity_labels = identity_labels.to(device)
-
-#             optimizer.zero_grad()
-
-#             # --- 【核心】只計算和反向傳播主要任務損失 ---
-#             loss_main, acc_main, h = model(mels, mode="train", id_label=identity_labels)
-#             loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
-
-#             # output, _ = model(mels, mode="train", id_label=identity_labels)
-
-#             # loss_main = criterion(output, identity_labels)
-#             loss_main.backward()
-#             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0) # 可以稍微放寬 max_norm
-#             optimizer.step()
-
-#             # pred_ID = output.argmax(dim=1)
-#             # acc_main = (pred_ID == identity_labels).float().mean() * 100.0
-
-#             # --- 累加損失和準確率 ---
-#             total_loss_id += loss_main.item()
-            
-#             batch_size = identity_labels.size(0)
-#             total_correct_id += (acc_main.item() / 100.0) * batch_size
-#             total_samples += batch_size
-
-#             pbar.set_postfix({
-#                 'L_id': f'{loss_main.item():.4f}',
-#                 'Acc_id': f'{acc_main.item():.2f}%',
-#             })
-        
-#         avg_loss_id = total_loss_id / len(train_loader)
-#         avg_acc_id = (total_correct_id / total_samples) * 100.0 if total_samples > 0 else 0.0
-
-#         # --- 驗證階段（可選，但強烈推薦）---
-#         # 在這個基線階段，我們希望看到 Acc_id 上升的同時，EER 也在下降
-#         model.eval()
-#         val_eer, val_mDCF = evaluate(model, val_loader, device)
-
-#         # --- 打印和保存日誌 ---
-#         current_lr = optimizer.param_groups[0]['lr']
-#         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. LR: {current_lr:.6f}, "
-#               f"Avg ID Loss: {avg_loss_id:.4f}, "
-#               f"Avg ID Acc: {avg_acc_id:.2f}%, "
-#               f"Val EER: {val_eer:.4f}, "
-#               f"Val minDCF: {val_mDCF:.4f}")
-        
-#         save_system.write_result_to_file(
-#             param.SCORE_DIR,
-#             "result",
-#             (epoch + 1, param.INITIAL_LR, 0.0, param.ALPHA, avg_loss_id, avg_acc_id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, val_eer, val_mDCF)
-#         )
-
-
 
 if __name__ == '__main__':
     train_model()

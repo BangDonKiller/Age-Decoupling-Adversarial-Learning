@@ -277,10 +277,10 @@ class Voxceleb2_dataset(Dataset):
         resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
         norm_mels = self.min_max_normalize(resize_mels)  # 對 Mel 譜進行 Min-Max 正規化
 
-        final_input_mels = norm_mels.numpy()  # 如果需要轉換為 NumPy 陣列
-        # 將 RGB 圖像轉換為 Tensor
-        final_input_mels = torch.tensor(final_input_mels, dtype=torch.float32)
-        final_input_mels = self.spec_to_rgb(final_input_mels)  # 將 Mel 譜轉換為 RGB 圖像
+        # final_input_mels = norm_mels.numpy()  # 如果需要轉換為 NumPy 陣列
+        # # 將 RGB 圖像轉換為 Tensor
+        # final_input_mels = torch.tensor(final_input_mels, dtype=torch.float32)
+        final_input_mels = self.spec_to_rgb(norm_mels)  # 將 Mel 譜轉換為 RGB 圖像
 
         # 將身份和年齡 ID 轉換為 Tensor
         return final_input_mels, torch.tensor(ident, dtype=torch.long), torch.tensor(age, dtype=torch.long)
@@ -575,19 +575,20 @@ class Voxceleb1_dataset(Dataset):
     def _process_audio(self, audio_file_path):
         # 【核心修改】這個函數現在完全模仿訓練集的 __getitem__ 邏輯
         waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
+
+        waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
         
         # 計算與訓練集完全相同的目標長度
         length = self.frame_num * 160 + 240
         
         if waveform.shape[0] <= length:
             shortage = length - waveform.shape[0]
-            waveform = np.pad(waveform, (0, shortage), 'wrap')
+            # final_waveform = np.pad(waveform, (0, shortage), 'wrap')
+            final_waveform = torch.nn.functional.pad(waveform, (0, shortage), 'constant', 0)
         else:
             # 推論時使用中心裁剪 (Center Crop) 而不是隨機裁剪，確保結果的確定性
             start_frame = (waveform.shape[0] - length) // 2
-            waveform = waveform[start_frame : start_frame + length]
-            
-        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0)
+            final_waveform = waveform[start_frame : start_frame + length]
 
         mel_spec = self.mel_spectrogram(final_waveform)
         mel_spec = torch.log(mel_spec + 1e-6)
