@@ -171,9 +171,6 @@ def finetune(model, train_loader, device):
         device: 設備 (CPU 或 GPU)。
     """
 
-    with open('finetune_log.txt', 'w') as f:
-        f.write("Epoch, Loss, Accuracy\n")
-
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=param.FINETUNE_LR)
 
@@ -340,10 +337,10 @@ def train_model():
         avg_detach_acc_ID = total_detach_acc_ID / (len(train_loader) * param.BATCH_SIZE)
         avg_acc_id = (total_correct_id / total_samples_id) * 100.0 if total_samples_id > 0 else 0.0
 
-        # model.eval()
-        # val_eer, val_mDCF = evaluate(model, val_loader, device)
+        model.eval()
+        val_eer, val_mDCF = evaluate(model, val_loader, device)
 
-        finetune_error, finetune_acc = finetune(model, val_loader, device)
+        # finetune_error, finetune_acc = finetune(model, val_loader, device)
 
         # 【修改點】在保存和打印日誌時，使用新的 avg_acc_id
         # current_main_lr = optimizer_main.param_groups[0]['lr']
@@ -367,10 +364,10 @@ def train_model():
               f"輔助任務重建損失: {avg_loss_recon:.4f}, "
               f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
               f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
-            #   f"Val EER: {val_eer:.4f}, "
-            #   f"Val minDCF: {val_mDCF:.4f}")
-              f"微調損失: {finetune_error:.4f}, "
-              f"微調準確率: {finetune_acc:.4f}%"
+              f"Val EER: {val_eer:.4f}, "
+              f"Val minDCF: {val_mDCF:.4f}"
+            #   f"微調損失: {finetune_error:.4f}, "
+            #   f"微調準確率: {finetune_acc:.4f}%"
               )
 
         if epoch == param.EPOCHS - 1:

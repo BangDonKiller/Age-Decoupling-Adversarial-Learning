@@ -169,7 +169,7 @@ class AttributeUnlearningModel(nn.Module):
         # self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
         self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
         self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
-        self.SNN_classifier = SNNClassifier(embedding_dim, 1)
+        # self.SNN_classifier = SNNClassifier(embedding_dim, 1)
 
     def forward(self, x, id_label=None, mode=None):
         if mode == "train":

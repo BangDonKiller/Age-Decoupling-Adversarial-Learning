@@ -47,10 +47,12 @@ class Save_system:
         with open(file_path, 'w') as f:
             if filename == "result":
                 # f.write("Epoch, lr, L_id, L_age, L_grl, Total Loss, EER, minDCF\n")  # 寫入表頭
-                f.write("Epoch, main_lr, detach_lr, alpha, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID, Finetune_Err, Finetune_Acc\n")  # 寫入表頭
+                f.write("Epoch, main_lr, detach_lr, alpha, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID, EER, minDCF\n")  # 寫入表頭
             else:
                 f.write("")
-            
+        
+        # with open('finetune_log.txt', 'w') as f:
+        #     f.write("Epoch, Loss, Accuracy\n")
         print(f"文件已創建: {file_path}")
         
     def write_result_to_file(self, path, filename, content):
@@ -62,9 +64,9 @@ class Save_system:
         :param content: 要寫入的內容
         """
         file_path = os.path.join(path, f"{filename}{self.count}.txt")
-        epoch, main_lr, detach_lr, alpha, l_id, acc_id, loss_detach, acc_age, loss_age, loss_recon, detachment_ID_loss, detach_acc_ID, finetune_error, finetune_acc = content
+        epoch, main_lr, detach_lr, alpha, l_id, acc_id, loss_detach, acc_age, loss_age, loss_recon, detachment_ID_loss, detach_acc_ID, EER, minDCF = content
         with open(file_path, 'a') as f:
-            f.write(f"{epoch}, {main_lr}, {detach_lr}, {alpha:.4f}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}, {finetune_error:.4f}, {finetune_acc:.4f}\n")
+            f.write(f"{epoch}, {main_lr}, {detach_lr}, {alpha:.4f}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}, {EER:.4f}, {minDCF:.4f}\n")
         print(f"結果已寫入: {file_path}")
             
     def write_parameters_to_file(self, path, filename):
