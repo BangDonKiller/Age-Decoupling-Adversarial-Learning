@@ -77,7 +77,7 @@ ARC_FACE_M = 0.2
 LAMBDA_ID = 1.0   # 身份分類損失的權重 (通常為1.0，因為其他損失是相對於它的權重)
 LAMBDA_AGE = 0.1  # 年齡分類損失的權重
 LAMBDA_GRL = 0.1  # 對抗年齡損失的權重 (GRL的lambda_val也可能在此設定)
-ALPHA = 0.001 # 0.0
+ALPHA = 0.0 # 0.0
 BETA = 0.005
 GAMMA = 0.003
 ALPHA_SCHEDULE = {
@@ -92,6 +92,7 @@ ALPHA_SCHEDULE = {
 # 訓練輪數
 EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
 WARM_UP_EPOCHS = 10
+FINETUNE_EPOCHS = 5
 # 每批次訓練樣本數
 BATCH_SIZE = 128
 # 優化器類型

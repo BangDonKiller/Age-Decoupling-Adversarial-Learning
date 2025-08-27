@@ -170,6 +170,10 @@ def finetune(model, train_loader, device):
         val_loader: 驗證數據加載器。
         device: 設備 (CPU 或 GPU)。
     """
+
+    with open('finetune_log.txt', 'w') as f:
+        f.write("Epoch, Loss, Accuracy\n")
+
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=param.FINETUNE_LR)
 
@@ -177,31 +181,35 @@ def finetune(model, train_loader, device):
     total_correct = 0
     total_samples = 0
 
-    for audio1, audio2, label in tqdm(train_loader, desc="Evaluating", unit="batch"):
-        audio1 = audio1.to(device)
-        audio2 = audio2.to(device)
+    for epoch in range(param.FINETUNE_EPOCHS):
+        for audio1, audio2, label in tqdm(train_loader, desc="Evaluating", unit="batch"):
+            audio1 = audio1.to(device)
+            audio2 = audio2.to(device)
 
-        embedding1 = model(audio1, mode="val") # 輸出形狀: (batch_size, feature_dim)
-        embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
+            embedding1 = model(audio1, mode="val") # 輸出形狀: (batch_size, feature_dim)
+            embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
 
-        embedding1 = F.normalize(embedding1, p=2, dim=1)
-        embedding2 = F.normalize(embedding2, p=2, dim=1)
+            embedding1 = F.normalize(embedding1, p=2, dim=1)
+            embedding2 = F.normalize(embedding2, p=2, dim=1)
 
-        output = model.SNN_classifier(embedding1, embedding2)
+            output = model.SNN_classifier(embedding1, embedding2)
 
-        loss = F.binary_cross_entropy(output, label.float())
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            loss = F.binary_cross_entropy(output, label.float())
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        total_loss += loss.item()
-        total_correct += (output.argmax(dim=1) == label).sum().item()
-        total_samples += label.size(0)
+            total_loss += loss.item()
+            total_correct += (output.argmax(dim=1) == label).sum().item()
+            total_samples += label.size(0)
 
-    avg_loss = total_loss / len(train_loader)
-    avg_acc = total_correct / total_samples
+        avg_loss = total_loss / len(train_loader)
+        avg_acc = total_correct / total_samples
 
-    return avg_loss, avg_acc
+        with open('finetune_log.txt', 'a') as f:
+            f.write(f"{epoch+1}, {avg_loss:.4f}, {avg_acc:.4f}\n")
+
+    return avg_loss, avg_acc * 100.0
 
 
 def lr_lambda(current_epoch):
