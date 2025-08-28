@@ -282,10 +282,10 @@ def train_model():
             optimizer.zero_grad()
 
             # 【修改點】模型前向傳播，接收 loss 和 acc
-            # output, h = model(mels, mode="train", id_label=identity_labels)
-            loss_main, acc_main, h = model(mels, mode="train", id_label=identity_labels)
+            output, h = model(mels, mode="train", id_label=identity_labels)
+            # loss_main, acc_main, h = model(mels, mode="train", id_label=identity_labels)
             
-            # loss_main = criterion_main(output, identity_labels)
+            loss_main = criterion_main(output, identity_labels)
 
             loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
 
@@ -303,12 +303,12 @@ def train_model():
             total_detach_loss_y += loss_y.item()
             total_detach_loss_age += pred_detach_age_loss.item()
             
-            # max_index_of_id = torch.argmax(output, dim=1)
-            # total_correct_id += (max_index_of_id == identity_labels).sum().item()
-            # total_samples_id += identity_labels.size(0)
-            batch_size = identity_labels.size(0)
-            total_correct_id += (acc_main.item() / 100.0) * batch_size
-            total_samples_id += batch_size
+            max_index_of_id = torch.argmax(output, dim=1)
+            total_correct_id += (max_index_of_id == identity_labels).sum().item()
+            total_samples_id += identity_labels.size(0)
+            # batch_size = identity_labels.size(0)
+            # total_correct_id += (acc_main.item() / 100.0) * batch_size
+            # total_samples_id += batch_size
 
             max_index_of_age = torch.argmax(pred_age, dim=1)
             total_acc_age += (max_index_of_age == age_labels).sum().item()
@@ -318,7 +318,7 @@ def train_model():
 
             pbar.set_postfix({
                 'L_id': f'{loss_main.item():.4f}',
-                'Acc_id': f'{acc_main.item():.2f}%',
+                'Acc_id': f'{total_correct_id / total_samples_id * 100:.2f}%',
                 'L_detach': f'{loss_detach.item():.4f}',
             })
         

@@ -168,18 +168,18 @@ class AttributeUnlearningModel(nn.Module):
         self.extractor = RepresentationDetachmentExtractor()
         # ShuffleNet v2 x1.0 輸出的 embedding 維度是 1024
         embedding_dim = 1024 
-        # self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
-        self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
+        self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
+        # self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
         self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
         # self.SNN_classifier = SNNClassifier(embedding_dim, 1)
 
     def forward(self, x, id_label=None, mode=None):
         if mode == "train":
             h = self.extractor(x)
-            # main_task_output = self.classifier(h)
-            loss, acc = self.classifier(h, label=id_label)
-            # return main_task_output, h
-            return loss, acc, h
+            main_task_output = self.classifier(h)
+            # loss, acc = self.classifier(h, label=id_label)
+            return main_task_output, h
+            # return loss, acc, h
         else:
             h = self.extractor(x)
             return h
