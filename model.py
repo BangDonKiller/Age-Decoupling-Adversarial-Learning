@@ -90,13 +90,15 @@ class AuxiliaryNetwork(nn.Module):
         lambda3 = alpha * (beta - gamma) # 注意論文公式3有個印刷錯誤，這裡是推導後的正確形式
 
         # 估計 I(h, x) -> 最小化重建誤差
-        reconstructed_x = self.decoder(h)
-        loss_recon = self.criterion_recon(reconstructed_x, x)
+        # reconstructed_x = self.decoder(h)
+        # loss_recon = self.criterion_recon(reconstructed_x, x)
+        loss_recon = torch.tensor(0.0).to(h.device)  # 這裡不計算 I(h,x)，因為我們不想保留 x 的信息
         
         # 估計 I(h, y) -> 訓練分類器預測 y
         # H(y|h) 的近似就是交叉熵損失
         y_pred = self.y_classifier(h)
-        loss_y_clf = self.criterion_ce(y_pred, y)
+        # loss_y_clf = self.criterion_ce(y_pred, y)
+        loss_y_clf = torch.tensor(0.0).to(h.device)  # 這裡不計算 I(h,y)，因為我們不想保留 y 的信息
 
         # 估計 I(h, z) -> 訓練分類器預測 z
         # H(z|h) 的近似就是交叉熵損失
@@ -108,7 +110,7 @@ class AuxiliaryNetwork(nn.Module):
         # 我們要最小化這個損失，所以符號要對應調整
         detachment_loss = - lambda3 * loss_z_clf
         # detachment_loss = lambda1 * loss_recon - lambda2 * loss_y_clf - lambda3 * loss_z_clf
-        
+
         return detachment_loss, loss_recon, y_pred, loss_y_clf, z_pred, loss_z_clf
 
 

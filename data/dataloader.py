@@ -274,13 +274,13 @@ class Voxceleb2_dataset(Dataset):
         mels, ident, age = zip(*batch)
         
         mels = torch.stack(mels)  # 將 Mel 譜堆疊成一個批次的 Tensor (B, C, H, W)
-        resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
-        norm_mels = self.min_max_normalize(resize_mels)  # 對 Mel 譜進行 Min-Max 正規化
+        # resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
+        # norm_mels = self.min_max_normalize(resize_mels)  # 對 Mel 譜進行 Min-Max 正規化
 
         # final_input_mels = norm_mels.numpy()  # 如果需要轉換為 NumPy 陣列
         # # 將 RGB 圖像轉換為 Tensor
         # final_input_mels = torch.tensor(final_input_mels, dtype=torch.float32)
-        final_input_mels = self.spec_to_rgb(norm_mels)  # 將 Mel 譜轉換為 RGB 圖像
+        final_input_mels = self.spec_to_rgb(mels)  # 將 Mel 譜轉換為 RGB 圖像
 
         # 將身份和年齡 ID 轉換為 Tensor
         return final_input_mels, torch.tensor(ident, dtype=torch.long), torch.tensor(age, dtype=torch.long)
@@ -580,15 +580,16 @@ class Voxceleb1_dataset(Dataset):
         
         # 計算與訓練集完全相同的目標長度
         length = self.frame_num * 160 + 240
+        current_length = waveform.shape[1]
         
-        if waveform.shape[0] <= length:
-            shortage = length - waveform.shape[0]
-            # final_waveform = np.pad(waveform, (0, shortage), 'wrap')
+        if current_length <= length:
+            shortage = length - current_length
+            # 使用 PyTorch 的 pad 函式來填充 Tensor
             final_waveform = torch.nn.functional.pad(waveform, (0, shortage), 'constant', 0)
         else:
-            # 推論時使用中心裁剪 (Center Crop) 而不是隨機裁剪，確保結果的確定性
-            start_frame = (waveform.shape[0] - length) // 2
-            final_waveform = waveform[start_frame : start_frame + length]
+            # 隨機裁剪
+            start_frame = random.randint(0, current_length - length)
+            final_waveform = waveform[:, start_frame:start_frame + length]
 
         mel_spec = self.mel_spectrogram(final_waveform)
         mel_spec = torch.log(mel_spec + 1e-6)
@@ -605,10 +606,10 @@ class Voxceleb1_dataset(Dataset):
 
         # 應用與訓練集完全相同的處理流程
         def process_batch(mels):
-            resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)
-            norm_mels = self.min_max_normalize(resize_mels)
+            # resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)
+            # norm_mels = self.min_max_normalize(resize_mels)
             # 複製成3通道
-            return self.spec_to_rgb(norm_mels)
+            return self.spec_to_rgb(mels)
 
         final_input_mels1 = process_batch(mels1)
         final_input_mels2 = process_batch(mels2)

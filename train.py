@@ -352,7 +352,7 @@ def train_model():
         save_system.write_result_to_file(
             param.SCORE_DIR,
             "result",
-            (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID, finetune_error, finetune_acc)
+            (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID, val_eer, val_mDCF)
         )
 
         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
@@ -366,8 +366,6 @@ def train_model():
               f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
               f"Val EER: {val_eer:.4f}, "
               f"Val minDCF: {val_mDCF:.4f}"
-            #   f"微調損失: {finetune_error:.4f}, "
-            #   f"微調準確率: {finetune_acc:.4f}%"
               )
 
         if epoch == param.EPOCHS - 1:
