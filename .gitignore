@@ -6,3 +6,4 @@ checkpoints/
 scores/
 tensorboard_logs/
 training_result/
+finetune/

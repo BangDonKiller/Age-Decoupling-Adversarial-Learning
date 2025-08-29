@@ -13,7 +13,6 @@ from params import param
 from model import AttributeUnlearningModel
 from tool.eval_metric import *
 from torch.utils.tensorboard import SummaryWriter
-from collections import defaultdict
 
 # --- 設定隨機種子，確保可重現性 ---
 def set_seed(seed):
@@ -28,29 +27,13 @@ def set_seed(seed):
 
 set_seed(param.RANDOM_SEED)
 
-def data_weight(dataset):
-    """
-    計算數據集的權重。
-    這裡可以根據需要進行數據增強或其他處理。
-    """
-    # 假設 dataset 是一個列表或其他可迭代對象
-    age_counts = {}
-    
-    for _, _, age_label in dataset.data_list:
-        if age_label not in age_counts:
-            age_counts[age_label] = 1
-        age_counts[age_label] += 1
-    age_weights = np.array([age_counts[i] for i in range(param.NUM_AGE_GROUPS)])
-    age_weights = torch.tensor(age_weights, dtype=torch.float32)
-
-    return age_weights
+from torch.utils.data import DataLoader, random_split
 
 def prepare_dataloader():
     """
     準備數據集和數據加載器。
-    這裡可以根據需要進行數據增強或其他處理。
     """
-    # 數據集初始化
+    # 預訓練的 train dataset
     train_dataset = Voxceleb2_dataset(
         num_frames=param.NUM_FRAMES,
         data_list_file=param.DATA_LIST_FILE,
@@ -59,13 +42,8 @@ def prepare_dataloader():
         rir_path=param.RIR_NOISE_DIR,
         augment=False,
     )
-    
     print(f"Training dataset loaded with {len(train_dataset)} samples.")
-    
-    # 計算數據集權重
-    age_weights = data_weight(train_dataset)
-    
-    # 數據加載器
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=param.BATCH_SIZE,
@@ -74,25 +52,41 @@ def prepare_dataloader():
         drop_last=True,
         collate_fn=train_dataset.collate_fn,
     )
-    
-    val_dataset = Voxceleb1_dataset(
+
+    # finetune dataset (用於微調 + 驗證)
+    finetune_dataset = Voxceleb1_dataset(
         data_list_file=param.VAL_DATA_LIST_FILE,
         dataset_path=param.VAL_DATA_ROOT,
         frame_num=param.NUM_FRAMES,
     )
-    
-    print(f"Validation dataset loaded with {len(val_dataset)} samples.")
-    
-    val_loader = DataLoader(
-        val_dataset,
+    print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
+
+    # 切分出 70% 用於 finetune 訓練, 30% 用於 evaluate
+    total_len = len(finetune_dataset)
+    eval_len = int(total_len * 0.3)
+    finetune_len = total_len - eval_len
+    finetune_subset, eval_subset = random_split(finetune_dataset, [finetune_len, eval_len])
+
+    # DataLoader
+    finetune_loader = DataLoader(
+        finetune_subset,
+        batch_size=param.BATCH_SIZE,
+        shuffle=True,
+        num_workers=0,
+        drop_last=False,
+        collate_fn=finetune_dataset.collate_fn,
+    )
+
+    eval_loader = DataLoader(
+        eval_subset,
         batch_size=param.BATCH_SIZE,
         shuffle=False,
         num_workers=0,
         drop_last=False,
-        collate_fn=val_dataset.collate_fn,
+        collate_fn=finetune_dataset.collate_fn,
     )
-    
-    return train_loader, val_loader, age_weights
+
+    return train_loader, finetune_loader, eval_loader
 
 
 def init_tensorboard():
@@ -161,7 +155,7 @@ def evaluate(model, val_loader, device):
 
     return EER, minDCF
 
-def finetune(model, train_loader, device):
+def finetune(model, train_loader, eval_loader, device, save_system):
     """
     微調模型以適應新數據集。
     Args:
@@ -170,60 +164,65 @@ def finetune(model, train_loader, device):
         val_loader: 驗證數據加載器。
         device: 設備 (CPU 或 GPU)。
     """
+    # model.eval()
+    # val_eer, val_mDCF = evaluate(model, eval_loader, device)
+    # print(f"Validation EER: {val_eer:.4f}, Validation minDCF: {val_mDCF:.4f}")
 
-    model.train()
     optimizer = optim.Adam(model.parameters(), lr=param.FINETUNE_LR)
 
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
-
     for epoch in range(param.FINETUNE_EPOCHS):
+        model.train()
+        total_loss = 0.0
+        total_correct = 0
+        total_samples = 0
+        
         for audio1, audio2, label in tqdm(train_loader, desc="Evaluating", unit="batch"):
             audio1 = audio1.to(device)
             audio2 = audio2.to(device)
+            label = label.to(device)
 
-            embedding1 = model(audio1, mode="val") # 輸出形狀: (batch_size, feature_dim)
-            embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
+            embedding1 = model(audio1, mode="finetune") # 輸出形狀: (batch_size, feature_dim)
+            embedding2 = model(audio2, mode="finetune") # 輸出形狀: (batch_size, feature_dim)
 
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
 
-            output = model.SNN_classifier(embedding1, embedding2)
+            output = model.SNN_classifier.forward(embedding1, embedding2)
 
-            loss = F.binary_cross_entropy(output, label.float())
+            loss = F.binary_cross_entropy(output.squeeze(), label.float())
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
-            total_correct += (output.argmax(dim=1) == label).sum().item()
+            # total_correct += ((output > 0.5).long() == label).sum().item()
+            # total_samples += label.size(0)
+            pred = (output.view(-1) > 0.5).long()
+            correct = (pred == label.view(-1)).sum().item()
+            total_correct += correct
             total_samples += label.size(0)
+
 
         avg_loss = total_loss / len(train_loader)
         avg_acc = total_correct / total_samples
+        
+        model.eval()
+        val_eer, val_mDCF = evaluate(model, eval_loader, device)
 
-        with open('finetune_log.txt', 'a') as f:
-            f.write(f"{epoch+1}, {avg_loss:.4f}, {avg_acc:.4f}\n")
+        save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, val_eer, val_mDCF))
+        save_system.save_model(model, epoch + 1, mode="finetune")
+        
+        if epoch == param.EPOCHS - 1:
+            save_system.save_model(model, epoch + 1, mode="finetune")
 
-    return avg_loss, avg_acc * 100.0
+
+    return avg_loss, avg_acc * 100.0, val_eer, val_mDCF
 
 
-def lr_lambda(current_epoch):
-    if current_epoch < param.WARM_UP_EPOCHS:
-        # 线性预热
-        return float(current_epoch + 1) / float(param.WARM_UP_EPOCHS)
-    # 查找当前 epoch 应该对应的衰减因子
-    decay_factor = 1.0
-    for milestone in sorted(param.LR_DECAY_STEPS, reverse=True):
-        if current_epoch >= milestone:
-            decay_factor = param.LR_DECAY_FACTOR ** sorted(param.LR_DECAY_STEPS).index(milestone)
-            break
-    return decay_factor
 
 def train_model():
     device = torch.device(param.DEVICE)
-    train_loader, val_loader, _ = prepare_dataloader()
+    train_loader, finetune_loader, eval_loader = prepare_dataloader()
     save_system = Save_system()
     # writer = init_tensorboard() # 如果需要TensorBoard可以取消註釋
 
@@ -257,10 +256,7 @@ def train_model():
         # 【新增】用於累加整個 epoch 準確率的變量
         total_correct_id = 0
         total_samples_id = 0
-        index = 0
-        top1 = 0
-        
-        # ... (其他損失和準確率的累加變量保持不變) ...
+
         total_loss_id = 0.0
         total_detach_loss = 0.0
         total_loss_recon = 0.0
@@ -337,26 +333,16 @@ def train_model():
         avg_detach_acc_ID = total_detach_acc_ID / (len(train_loader) * param.BATCH_SIZE)
         avg_acc_id = (total_correct_id / total_samples_id) * 100.0 if total_samples_id > 0 else 0.0
 
-        model.eval()
-        val_eer, val_mDCF = evaluate(model, val_loader, device)
-
-        # finetune_error, finetune_acc = finetune(model, val_loader, device)
-
-        # 【修改點】在保存和打印日誌時，使用新的 avg_acc_id
-        # current_main_lr = optimizer_main.param_groups[0]['lr']
-        # current_detach_lr = optimizer_detach.param_groups[0]['lr']
-
         current_main_lr = optimizer.param_groups[0]['lr']
         current_detach_lr = optimizer.param_groups[0]['lr']
-
         save_system.write_result_to_file(
             param.SCORE_DIR,
             "result",
-            (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID, val_eer, val_mDCF)
+            (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID)
         )
 
         print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
-              f"主要任務損失: {avg_loss_id:.4f}, "
+              f"預訓練主要任務損失: {avg_loss_id:.4f}, "
               f"主要任務準確率: {avg_acc_id:.4f}%, "
               f"輔助任務總損失: {avg_detach_loss:.4f}, "
               f"輔助任務Age損失: {avg_detach_loss_age:.4f}, "
@@ -364,12 +350,13 @@ def train_model():
               f"輔助任務重建損失: {avg_loss_recon:.4f}, "
               f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
               f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
-              f"Val EER: {val_eer:.4f}, "
-              f"Val minDCF: {val_mDCF:.4f}"
               )
-
+        
         if epoch == param.EPOCHS - 1:
-            save_system.save_model(model, epoch + 1)
+            save_system.save_model(model, epoch + 1, mode="train")
+
+    finetune_loss, finetune_acc, eer, mDCF = finetune(model, finetune_loader, eval_loader, device, save_system)
+    print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", eer, "minDCF:", mDCF)
 
 if __name__ == '__main__':
     train_model()

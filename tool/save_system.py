@@ -28,8 +28,8 @@ class Save_system:
         
         self.create_save_file(param.SCORE_DIR, "result")  # 創建一個初始的保存模型訓練結果文件
         self.create_save_file(param.LOG_DIR, "setup")  # 創建一個初始的保存模型參數文件
+        self.create_save_file(param.FINETUNE_DIR, "finetune")  # 創建一個初始的保存微調結果文件
         self.write_parameters_to_file(param.LOG_DIR, "setup")  # 寫入參數到 setup.txt
-        # self.create_tensor_board(param.TENSOR_BOARD_DIR)  # 創建 TensorBoard 日誌目錄
         
     def create_save_file(self, path, filename):
         """
@@ -46,13 +46,11 @@ class Save_system:
             self.count += 1
         with open(file_path, 'w') as f:
             if filename == "result":
-                # f.write("Epoch, lr, L_id, L_age, L_grl, Total Loss, EER, minDCF\n")  # 寫入表頭
-                f.write("Epoch, main_lr, detach_lr, alpha, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID, EER, minDCF\n")  # 寫入表頭
+                f.write("Epoch, main_lr, detach_lr, alpha, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID\n")  # 寫入表頭
+            elif filename == "finetune":
+                f.write("Epoch, Loss, Accuracy, EER, minDCF\n")
             else:
                 f.write("")
-        
-        # with open('finetune_log.txt', 'w') as f:
-        #     f.write("Epoch, Loss, Accuracy\n")
         print(f"文件已創建: {file_path}")
         
     def write_result_to_file(self, path, filename, content):
@@ -64,9 +62,16 @@ class Save_system:
         :param content: 要寫入的內容
         """
         file_path = os.path.join(path, f"{filename}{self.count}.txt")
-        epoch, main_lr, detach_lr, alpha, l_id, acc_id, loss_detach, acc_age, loss_age, loss_recon, detachment_ID_loss, detach_acc_ID, EER, minDCF = content
-        with open(file_path, 'a') as f:
-            f.write(f"{epoch}, {main_lr}, {detach_lr}, {alpha:.4f}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}, {EER:.4f}, {minDCF:.4f}\n")
+        
+        if filename == "result":
+            epoch, main_lr, detach_lr, alpha, l_id, acc_id, loss_detach, acc_age, loss_age, loss_recon, detachment_ID_loss, detach_acc_ID= content
+            with open(file_path, 'a') as f:
+                f.write(f"{epoch}, {main_lr}, {detach_lr}, {alpha:.4f}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}\n")
+        elif filename == "finetune":
+            epoch, loss, accuracy, eer, min_dcf = content
+            with open(file_path, 'a') as f:
+                f.write(f"{epoch}, {loss:.4f}, {accuracy:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
+
         print(f"結果已寫入: {file_path}")
             
     def write_parameters_to_file(self, path, filename):
@@ -101,17 +106,29 @@ class Save_system:
 
         print(f"參數已寫入：{file_path}")
         
-    def save_model(self, model, epoch):
+    def save_model(self, model, epoch, mode):
         """
         保存模型的狀態字典到指定的檔案。
 
         :param model: 要保存的模型
         :param epoch: 當前訓練的 epoch
         """
-        checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'model_step_{epoch}.pth')
-        torch.save(model.state_dict(), checkpoint_path)
-        print(f"模型已保存到：{checkpoint_path}")
-        
+        if mode == "train":
+            model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'pretrain_model_{epoch}.pth')
+            torch.save(model.state_dict(), model_checkpoint_path)
+            # only save feature extractor weight
+            feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'feature_extractor_{epoch}.pth')
+            torch.save(model.extractor.state_dict(), feature_extractor_path)
+        elif mode == "finetune":
+            model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'finetune_model_{epoch}.pth')
+            torch.save(model.state_dict(), model_checkpoint_path)
+            feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'finetune_feature_extractor_{epoch}.pth')
+            torch.save(model.extractor.state_dict(), feature_extractor_path)
+        else:
+            pass
+        print(f"模型已保存到：{model_checkpoint_path}")
+        print(f"特徵提取器已保存到：{feature_extractor_path}")
+
     # def create_tensor_board(self, path):
     #     """
     #     根據 count 創建一個 TensorBoard 日誌資料夾。

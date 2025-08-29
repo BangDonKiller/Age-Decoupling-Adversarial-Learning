@@ -21,10 +21,12 @@ LOG_DIR = './logs'
 CHECKPOINT_DIR = './checkpoints'
 SCORE_DIR = './scores' # 儲存驗證結果 (EER, mDCF)
 TENSOR_BOARD_DIR = './tensorboard_logs'  # TensorBoard 日誌目錄
+FINETUNE_DIR = './finetune'
 # 確保目錄存在
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(SCORE_DIR, exist_ok=True)
+os.makedirs(FINETUNE_DIR, exist_ok=True)
 
 # 數據增強所需的外部數據集路徑
 MUSAN_DIR = 'D:/Dataset/musan/musan'
@@ -90,11 +92,11 @@ ALPHA_SCHEDULE = {
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
 # 訓練輪數
-EPOCHS = 100 # 實際訓練可能更多，這裡是一個示例
+EPOCHS = 50 # 實際訓練可能更多，這裡是一個示例
 WARM_UP_EPOCHS = 10
-FINETUNE_EPOCHS = 5
+FINETUNE_EPOCHS = 50
 # 每批次訓練樣本數
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 # 優化器類型
 OPTIMIZER = 'Adam'
 # 初始學習率

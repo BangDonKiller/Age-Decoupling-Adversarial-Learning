@@ -151,12 +151,17 @@ class MainTaskClassifier(nn.Module):
     
 class SNNClassifier(nn.Module):
     def __init__(self, embedding_dim, output_dim):
-        self.fc = nn.Linear(embedding_dim * 2, output_dim)
+        super().__init__()
+        self.fc1 = nn.Linear(embedding_dim * 2, embedding_dim)
+        self.fc2 = nn.Linear(embedding_dim, output_dim)
+        self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x1, x2):
         x = torch.cat([x1, x2], dim=1)
-        x = self.fc(x)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
         output = self.sigmoid(x)
         return output
 
@@ -171,7 +176,7 @@ class AttributeUnlearningModel(nn.Module):
         self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
         # self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
         self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
-        # self.SNN_classifier = SNNClassifier(embedding_dim, 1)
+        self.SNN_classifier = SNNClassifier(embedding_dim, 1)
 
     def forward(self, x, id_label=None, mode=None):
         if mode == "train":
@@ -180,9 +185,14 @@ class AttributeUnlearningModel(nn.Module):
             # loss, acc = self.classifier(h, label=id_label)
             return main_task_output, h
             # return loss, acc, h
+        # elif mode == "finetune":
+        #     h = self.extractor(x)
+            # output = self.SNN_classifier(h, id_label)
+        #     return output
         else:
             h = self.extractor(x)
             return h
+
 
 # if __name__ == "__main__":
     # # 測試模型

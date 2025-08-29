@@ -488,7 +488,7 @@ class Voxceleb1_dataset(Dataset):
             # read txt
             data_list_raw = f.readlines()
         data_list_raw = [line.strip().split() for line in data_list_raw]
-        data_list_raw = random.sample(data_list_raw, 1000)  # 隨機選擇 1000 條數據
+        data_list_raw = random.sample(data_list_raw, 10000)  # 隨機選擇 10000 條數據
         
         data = []
         
