@@ -92,9 +92,9 @@ ALPHA_SCHEDULE = {
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
 # 訓練輪數
-EPOCHS = 50 # 實際訓練可能更多，這裡是一個示例
+EPOCHS = 2 # 實際訓練可能更多，這裡是一個示例
 WARM_UP_EPOCHS = 10
-FINETUNE_EPOCHS = 50
+FINETUNE_EPOCHS = 5
 # 每批次訓練樣本數
 BATCH_SIZE = 128
 # 優化器類型

@@ -157,13 +157,16 @@ class SNNClassifier(nn.Module):
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x1, x2):
+    def forward(self, x1, x2, mode=None):
         x = torch.cat([x1, x2], dim=1)
         x = self.fc1(x)
         x = self.relu(x)
         x = self.fc2(x)
-        output = self.sigmoid(x)
-        return output
+        if mode == "val":
+            return x
+        else:
+            output = self.sigmoid(x)
+            return output
 
     
 # --- 3. 完整的屬性遺忘模型 ---

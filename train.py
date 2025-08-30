@@ -138,9 +138,12 @@ def evaluate(model, val_loader, device):
             # L2 正則化 (這部分是正確的)
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
+            
+            scores_batch = model.SNN_classifier.forward(embedding1, embedding2, mode="val")
+            # scores_batch = F.normalize(scores_batch, p=2, dim=1)
 
             # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
-            scores_batch = F.cosine_similarity(embedding1, embedding2, dim=1)
+    #         scores_batch = F.cosine_similarity(embedding1, embedding2, dim=1)
             
             all_scores.extend(scores_batch.cpu().numpy().tolist())
             all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
@@ -187,7 +190,7 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
 
-            output = model.SNN_classifier.forward(embedding1, embedding2)
+            output = model.SNN_classifier.forward(embedding1, embedding2, mode="finetune")
 
             loss = F.binary_cross_entropy(output.squeeze(), label.float())
             optimizer.zero_grad()
@@ -195,8 +198,6 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             optimizer.step()
 
             total_loss += loss.item()
-            # total_correct += ((output > 0.5).long() == label).sum().item()
-            # total_samples += label.size(0)
             pred = (output.view(-1) > 0.5).long()
             correct = (pred == label.view(-1)).sum().item()
             total_correct += correct
