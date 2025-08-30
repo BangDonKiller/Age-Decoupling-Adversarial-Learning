@@ -278,10 +278,10 @@ def train_model():
             optimizer.zero_grad()
 
             # 【修改點】模型前向傳播，接收 loss 和 acc
-            output, h = model(mels, mode="train", id_label=identity_labels)
-            # loss_main, acc_main, h = model(mels, mode="train", id_label=identity_labels)
+            # output, h = model(mels, mode="train", id_label=identity_labels)
+            loss_main, acc_main, h = model(mels, mode="train", id_label=identity_labels)
             
-            loss_main = criterion_main(output, identity_labels)
+            # loss_main = criterion_main(output, identity_labels)
 
             loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
 
@@ -299,12 +299,12 @@ def train_model():
             total_detach_loss_y += loss_y.item()
             total_detach_loss_age += pred_detach_age_loss.item()
             
-            max_index_of_id = torch.argmax(output, dim=1)
-            total_correct_id += (max_index_of_id == identity_labels).sum().item()
-            total_samples_id += identity_labels.size(0)
-            # batch_size = identity_labels.size(0)
-            # total_correct_id += (acc_main.item() / 100.0) * batch_size
-            # total_samples_id += batch_size
+            # max_index_of_id = torch.argmax(output, dim=1)
+            # total_correct_id += (max_index_of_id == identity_labels).sum().item()
+            # total_samples_id += identity_labels.size(0)
+            batch_size = identity_labels.size(0)
+            total_correct_id += (acc_main.item() / 100.0) * batch_size
+            total_samples_id += batch_size
 
             max_index_of_age = torch.argmax(pred_age, dim=1)
             total_acc_age += (max_index_of_age == age_labels).sum().item()
@@ -320,9 +320,6 @@ def train_model():
         
         # --- 計算整個 epoch 的平均損失和準確率 ---
         avg_loss_id = total_loss_id / len(train_loader)
-        
-        # 【修改點】計算 epoch 的平均 ID 準確率
-        avg_acc_id = (total_correct_id / total_samples_id * 100.0) if total_samples_id > 0 else 0.0
 
         # ... (其他平均值的計算保持不變) ...
         avg_detach_loss = total_detach_loss / len(train_loader)
