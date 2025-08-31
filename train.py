@@ -170,6 +170,8 @@ def finetune(model, train_loader, eval_loader, device, save_system):
     # model.eval()
     # val_eer, val_mDCF = evaluate(model, eval_loader, device)
     # print(f"Validation EER: {val_eer:.4f}, Validation minDCF: {val_mDCF:.4f}")
+    
+    best_eer = float('inf')
 
     optimizer = optim.Adam(model.parameters(), lr=param.FINETUNE_LR)
 
@@ -211,8 +213,11 @@ def finetune(model, train_loader, eval_loader, device, save_system):
         val_eer, val_mDCF = evaluate(model, eval_loader, device)
 
         save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, val_eer, val_mDCF))
-        save_system.save_model(model, epoch + 1, mode="finetune")
-        
+
+        if val_eer < best_eer:
+            best_eer = val_eer
+            save_system.save_model(model, epoch + 1, mode="finetune")
+
         if epoch == param.EPOCHS - 1:
             save_system.save_model(model, epoch + 1, mode="finetune")
 
@@ -351,7 +356,7 @@ def train_model():
               )
         
         if epoch == param.EPOCHS - 1:
-            save_system.save_model(model, epoch + 1, mode="train")
+            save_system.save_model(model, epoch + 1, mode="pretrain")
 
     finetune_loss, finetune_acc, eer, mDCF = finetune(model, finetune_loader, eval_loader, device, save_system)
     print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", eer, "minDCF:", mDCF)

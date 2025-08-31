@@ -113,55 +113,25 @@ class Save_system:
         :param model: 要保存的模型
         :param epoch: 當前訓練的 epoch
         """
-        if mode == "train":
+        if mode == "pretrain":
             model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'pretrain_model_{epoch}.pth')
             torch.save(model.state_dict(), model_checkpoint_path)
-            # only save feature extractor weight
             feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'feature_extractor_{epoch}.pth')
-            torch.save(model.extractor.state_dict(), feature_extractor_path)
+            torch.save(model.extractor.state_dict(), feature_extractor_path)                
         elif mode == "finetune":
-            model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'finetune_model_{epoch}.pth')
-            torch.save(model.state_dict(), model_checkpoint_path)
-            feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'finetune_feature_extractor_{epoch}.pth')
-            torch.save(model.extractor.state_dict(), feature_extractor_path)
-        else:
-            pass
+            if epoch == param.FINETUNE_EPOCHS - 1:
+                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'last_finetune_model_{epoch}.pth')
+                torch.save(model.state_dict(), model_checkpoint_path)
+                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'last_finetune_feature_extractor_{epoch}.pth')
+                torch.save(model.extractor.state_dict(), feature_extractor_path)
+            else:
+                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'best_finetune_model_{epoch}.pth')
+                torch.save(model.state_dict(), model_checkpoint_path)
+                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'best_finetune_feature_extractor_{epoch}.pth')
+                torch.save(model.extractor.state_dict(), feature_extractor_path)
+                
         print(f"模型已保存到：{model_checkpoint_path}")
         print(f"特徵提取器已保存到：{feature_extractor_path}")
-
-    # def create_tensor_board(self, path):
-    #     """
-    #     根據 count 創建一個 TensorBoard 日誌資料夾。
-        
-    #     :param path: TensorBoard 根目錄
-    #     :return: SummaryWriter 實例
-    #     """
-    #     # 根據 count 建立子資料夾，例如 ./logs_tensorboard/run1/
-    #     tb_path = os.path.join(path, f"run{self.count}")
-    #     os.makedirs(tb_path, exist_ok=True)
-        
-    #     writer = SummaryWriter(log_dir=tb_path)
-    #     print(f"TensorBoard 事件文件已創建: {tb_path}")
-    #     return writer
-    
-    # def write_tensorboard_log(self, writer, state, epoch, l_id, l_age, l_grl, total_loss, eer, min_dcf):
-    #     """
-    #     將數據寫入 TensorBoard 日誌。
-
-    #     :param writer: SummaryWriter 實例
-    #     :param tag: 日誌標籤
-    #     :param value: 要寫入的值
-    #     :param step: 步驟或 epoch 編號
-    #     """
-    #     if state == "train":
-    #         writer.add_scalar('Loss/L_id', l_id, epoch)
-    #         writer.add_scalar('Loss/L_age', l_age, epoch)
-    #         writer.add_scalar('Loss/L_grl', l_grl, epoch)
-    #         writer.add_scalar('Loss/Total', total_loss, epoch)
-            
-    #     elif state == "val":
-    #         writer.add_scalar('EER', eer, epoch)
-    #         writer.add_scalar('minDCF', min_dcf, epoch)
 
     
 # if __name__ == "__main__":
