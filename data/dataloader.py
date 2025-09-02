@@ -462,7 +462,7 @@ class Voxceleb2_dataset(Dataset):
     
 
 class Voxceleb1_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file, frame_num):
+    def __init__(self, dataset_path, data_list_file,frame_num):
         self.sample_rate = 16000
         self.frame_num = frame_num
 
@@ -479,14 +479,14 @@ class Voxceleb1_dataset(Dataset):
         
     def __len__(self):
         return len(self.data_list)
-        
+
     def _load_data_list(self, dataset_path, data_list_path):
         """
         讀取包含 (audio1_path, audio2_path, label) 的列表。
         """
-        with open (data_list_path, 'r') as f:
-            # read txt
+        with open(data_list_path, 'r') as f:
             data_list_raw = f.readlines()
+
         data_list_raw = [line.strip().split() for line in data_list_raw]
         data_list_raw = random.sample(data_list_raw, 10000)  # 隨機選擇 10000 條數據
         
@@ -495,21 +495,29 @@ class Voxceleb1_dataset(Dataset):
         for line in data_list_raw:
             audio11_path = os.path.join(dataset_path[0], line[1])
             audio12_path = os.path.join(dataset_path[1], line[1])
+            audio13_path = os.path.join(dataset_path[2], line[1])
             
             audio21_path = os.path.join(dataset_path[0], line[2])
             audio22_path = os.path.join(dataset_path[1], line[2])
-            
+            audio23_path = os.path.join(dataset_path[2], line[2])
+
             # 確保音訊檔案存在
             if os.path.exists(audio11_path):
                 audio1_path = audio11_path
-            else:
+            elif os.path.exists(audio12_path):
                 audio1_path = audio12_path
+            else:
+                audio1_path = audio13_path
+            
             if os.path.exists(audio21_path):
                 audio2_path = audio21_path
-            else:
+            elif os.path.exists(audio22_path):
                 audio2_path = audio22_path
+            else:
+                audio2_path = audio23_path
+    
 
-            data.append((int(line[0]), audio1_path, audio2_path))  # (label, audio1, audio2)
+            data.append((int(line[0]), audio1_path, audio2_path))  # (label, audio1, audio2, audio3)
         return data
     
     

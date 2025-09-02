@@ -162,12 +162,8 @@ class SNNClassifier(nn.Module):
         x = self.fc1(x)
         x = self.relu(x)
         x = self.fc2(x)
-        if mode == "val":
-            return x
-        else:
-            output = self.sigmoid(x)
-            return output
-
+        output = self.sigmoid(x)
+        return output
     
 # --- 3. 完整的屬性遺忘模型 ---
 class AttributeUnlearningModel(nn.Module):

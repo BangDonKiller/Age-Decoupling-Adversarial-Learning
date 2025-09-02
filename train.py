@@ -55,30 +55,30 @@ def prepare_dataloader():
 
     # finetune dataset (用於微調 + 驗證)
     finetune_dataset = Voxceleb1_dataset(
-        data_list_file=param.VAL_DATA_LIST_FILE,
         dataset_path=param.VAL_DATA_ROOT,
+        data_list_file=param.FINETUNE_DATA_LIST_FILE,
         frame_num=param.NUM_FRAMES,
     )
     print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
 
-    # 切分出 70% 用於 finetune 訓練, 30% 用於 evaluate
-    total_len = len(finetune_dataset)
-    eval_len = int(total_len * 0.3)
-    finetune_len = total_len - eval_len
-    finetune_subset, eval_subset = random_split(finetune_dataset, [finetune_len, eval_len])
-
     # DataLoader
     finetune_loader = DataLoader(
-        finetune_subset,
+        finetune_dataset,
         batch_size=param.BATCH_SIZE,
         shuffle=True,
         num_workers=0,
         drop_last=False,
         collate_fn=finetune_dataset.collate_fn,
     )
+    
+    eval_dataset = Voxceleb1_dataset(
+        dataset_path=param.VAL_DATA_ROOT,
+        data_list_file=param.VAL_DATA_LIST_FILE,
+        frame_num=param.NUM_FRAMES,
+    )
 
     eval_loader = DataLoader(
-        eval_subset,
+        eval_dataset,
         batch_size=param.BATCH_SIZE,
         shuffle=False,
         num_workers=0,
@@ -139,7 +139,7 @@ def evaluate(model, val_loader, device):
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
             
-            scores_batch = model.SNN_classifier.forward(embedding1, embedding2, mode="val")
+            scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
             # scores_batch = F.normalize(scores_batch, p=2, dim=1)
 
             # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
@@ -181,7 +181,7 @@ def finetune(model, train_loader, eval_loader, device, save_system):
         total_correct = 0
         total_samples = 0
         
-        for audio1, audio2, label in tqdm(train_loader, desc="Evaluating", unit="batch"):
+        for audio1, audio2, label in tqdm(train_loader, desc="Finetuning", unit="batch"):
             audio1 = audio1.to(device)
             audio2 = audio2.to(device)
             label = label.to(device)
@@ -192,7 +192,7 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
 
-            output = model.SNN_classifier.forward(embedding1, embedding2, mode="finetune")
+            output = model.SNN_classifier.forward(embedding1, embedding2)
 
             loss = F.binary_cross_entropy(output.squeeze(), label.float())
             optimizer.zero_grad()
@@ -218,7 +218,7 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             best_eer = val_eer
             save_system.save_model(model, epoch + 1, mode="finetune")
 
-        if epoch == param.EPOCHS - 1:
+        if epoch == param.FINETUNE_EPOCHS - 1:
             save_system.save_model(model, epoch + 1, mode="finetune")
 
 
