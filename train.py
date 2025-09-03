@@ -27,8 +27,6 @@ def set_seed(seed):
 
 set_seed(param.RANDOM_SEED)
 
-from torch.utils.data import DataLoader, random_split
-
 def prepare_dataloader():
     """
     準備數據集和數據加載器。
@@ -216,15 +214,13 @@ def finetune(model, train_loader, eval_loader, device, save_system):
 
         if val_eer < best_eer:
             best_eer = val_eer
-            save_system.save_model(model, epoch + 1, mode="finetune")
+            save_system.save_model(model, epoch + 1, mode="finetune", state="best")
 
         if epoch == param.FINETUNE_EPOCHS - 1:
-            save_system.save_model(model, epoch + 1, mode="finetune")
+            save_system.save_model(model, epoch + 1, mode="finetune", state="last")
 
 
     return avg_loss, avg_acc * 100.0, val_eer, val_mDCF
-
-
 
 def train_model():
     device = torch.device(param.DEVICE)
@@ -255,111 +251,114 @@ def train_model():
 
     # check if gpu is available
     print("torch GPU available:", torch.cuda.is_available())
-
-    for epoch in range(param.EPOCHS):
-        model.train()
-        
-        # 【新增】用於累加整個 epoch 準確率的變量
-        total_correct_id = 0
-        total_samples_id = 0
-
-        total_loss_id = 0.0
-        total_detach_loss = 0.0
-        total_loss_recon = 0.0
-        total_detach_loss_y = 0.0
-        total_detach_loss_age = 0.0
-        total_acc_age = 0.0
-        total_detach_acc_ID = 0.0
-        
-        current_alpha = param.ALPHA
-
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", unit="batch")
-        for batch_idx, (mels, identity_labels, age_labels) in enumerate(pbar):
-            mels = mels.to(device)
-            identity_labels = identity_labels.to(device)
-            age_labels = age_labels.to(device)
-
-            # optimizer_main.zero_grad()
-            # optimizer_detach.zero_grad()
-            optimizer.zero_grad()
-
-            # 【修改點】模型前向傳播，接收 loss 和 acc
-            # output, h = model(mels, mode="train", id_label=identity_labels)
-            loss_main, acc_main, h = model(mels, mode="train", id_label=identity_labels)
+    
+    if param.PRETRAIN:
+        for epoch in range(param.EPOCHS):
+            model.train()
             
-            # loss_main = criterion_main(output, identity_labels)
+            # 【新增】用於累加整個 epoch 準確率的變量
+            total_correct_id = 0
+            total_samples_id = 0
 
-            loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
-
-            total_loss_for_extractor = loss_main + loss_detach
-            total_loss_for_extractor.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
-            # optimizer_main.step()
-            # optimizer_detach.step()
-            optimizer.step()
-
-            # --- 累加其他損失和準確率（用於日誌）---
-            total_loss_id += loss_main.item()
-            total_detach_loss += loss_detach.item()
-            total_loss_recon += loss_recon.item()
-            total_detach_loss_y += loss_y.item()
-            total_detach_loss_age += pred_detach_age_loss.item()
+            total_loss_id = 0.0
+            total_detach_loss = 0.0
+            total_loss_recon = 0.0
+            total_detach_loss_y = 0.0
+            total_detach_loss_age = 0.0
+            total_acc_age = 0.0
+            total_detach_acc_ID = 0.0
             
-            # max_index_of_id = torch.argmax(output, dim=1)
-            # total_correct_id += (max_index_of_id == identity_labels).sum().item()
-            # total_samples_id += identity_labels.size(0)
-            batch_size = identity_labels.size(0)
-            total_correct_id += (acc_main.item() / 100.0) * batch_size
-            total_samples_id += batch_size
+            current_alpha = param.ALPHA
 
-            max_index_of_age = torch.argmax(pred_age, dim=1)
-            total_acc_age += (max_index_of_age == age_labels).sum().item()
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", unit="batch")
+            for batch_idx, (mels, identity_labels, age_labels) in enumerate(pbar):
+                mels = mels.to(device)
+                identity_labels = identity_labels.to(device)
+                age_labels = age_labels.to(device)
+
+                # optimizer_main.zero_grad()
+                # optimizer_detach.zero_grad()
+                optimizer.zero_grad()
+
+                # 【修改點】模型前向傳播，接收 loss 和 acc
+                # output, h = model(mels, mode="train", id_label=identity_labels)
+                loss_main, acc_main, h = model(mels, mode="train", id_label=identity_labels)
+                
+                # loss_main = criterion_main(output, identity_labels)
+
+                loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
+
+                total_loss_for_extractor = loss_main + loss_detach
+                total_loss_for_extractor.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                # optimizer_main.step()
+                # optimizer_detach.step()
+                optimizer.step()
+
+                # --- 累加其他損失和準確率（用於日誌）---
+                total_loss_id += loss_main.item()
+                total_detach_loss += loss_detach.item()
+                total_loss_recon += loss_recon.item()
+                total_detach_loss_y += loss_y.item()
+                total_detach_loss_age += pred_detach_age_loss.item()
+                
+                # max_index_of_id = torch.argmax(output, dim=1)
+                # total_correct_id += (max_index_of_id == identity_labels).sum().item()
+                # total_samples_id += identity_labels.size(0)
+                batch_size = identity_labels.size(0)
+                total_correct_id += (acc_main.item() / 100.0) * batch_size
+                total_samples_id += batch_size
+
+                max_index_of_age = torch.argmax(pred_age, dim=1)
+                total_acc_age += (max_index_of_age == age_labels).sum().item()
+                
+                max_index_of_detach_ID = torch.argmax(pred_y, dim=1)
+                total_detach_acc_ID += (max_index_of_detach_ID == identity_labels).sum().item()
+
+                pbar.set_postfix({
+                    'L_id': f'{loss_main.item():.4f}',
+                    'Acc_id': f'{total_correct_id / total_samples_id * 100:.2f}%',
+                    'L_detach': f'{loss_detach.item():.4f}',
+                })
             
-            max_index_of_detach_ID = torch.argmax(pred_y, dim=1)
-            total_detach_acc_ID += (max_index_of_detach_ID == identity_labels).sum().item()
+            # --- 計算整個 epoch 的平均損失和準確率 ---
+            avg_loss_id = total_loss_id / len(train_loader)
 
-            pbar.set_postfix({
-                'L_id': f'{loss_main.item():.4f}',
-                'Acc_id': f'{total_correct_id / total_samples_id * 100:.2f}%',
-                'L_detach': f'{loss_detach.item():.4f}',
-            })
-        
-        # --- 計算整個 epoch 的平均損失和準確率 ---
-        avg_loss_id = total_loss_id / len(train_loader)
+            # ... (其他平均值的計算保持不變) ...
+            avg_detach_loss = total_detach_loss / len(train_loader)
+            avg_loss_recon = total_loss_recon / len(train_loader)
+            avg_detach_loss_y = total_detach_loss_y / len(train_loader)
+            avg_detach_loss_age = total_detach_loss_age / len(train_loader)
+            avg_acc_age = total_acc_age / (len(train_loader) * param.BATCH_SIZE)
+            avg_detach_acc_ID = total_detach_acc_ID / (len(train_loader) * param.BATCH_SIZE)
+            avg_acc_id = (total_correct_id / total_samples_id) * 100.0 if total_samples_id > 0 else 0.0
 
-        # ... (其他平均值的計算保持不變) ...
-        avg_detach_loss = total_detach_loss / len(train_loader)
-        avg_loss_recon = total_loss_recon / len(train_loader)
-        avg_detach_loss_y = total_detach_loss_y / len(train_loader)
-        avg_detach_loss_age = total_detach_loss_age / len(train_loader)
-        avg_acc_age = total_acc_age / (len(train_loader) * param.BATCH_SIZE)
-        avg_detach_acc_ID = total_detach_acc_ID / (len(train_loader) * param.BATCH_SIZE)
-        avg_acc_id = (total_correct_id / total_samples_id) * 100.0 if total_samples_id > 0 else 0.0
+            current_main_lr = optimizer.param_groups[0]['lr']
+            current_detach_lr = optimizer.param_groups[0]['lr']
+            save_system.write_result_to_file(
+                param.SCORE_DIR,
+                "result",
+                (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID)
+            )
 
-        current_main_lr = optimizer.param_groups[0]['lr']
-        current_detach_lr = optimizer.param_groups[0]['lr']
-        save_system.write_result_to_file(
-            param.SCORE_DIR,
-            "result",
-            (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID)
-        )
+            print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
+                f"預訓練主要任務損失: {avg_loss_id:.4f}, "
+                f"主要任務準確率: {avg_acc_id:.4f}%, "
+                f"輔助任務總損失: {avg_detach_loss:.4f}, "
+                f"輔助任務Age損失: {avg_detach_loss_age:.4f}, "
+                f"輔助任務Age準確率: {avg_acc_age:.4f}, "
+                f"輔助任務重建損失: {avg_loss_recon:.4f}, "
+                f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
+                f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
+                )
+            
+            if epoch == param.EPOCHS - 1:
+                save_system.save_model(model, epoch + 1, mode="pretrain", state=None)
 
-        print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
-              f"預訓練主要任務損失: {avg_loss_id:.4f}, "
-              f"主要任務準確率: {avg_acc_id:.4f}%, "
-              f"輔助任務總損失: {avg_detach_loss:.4f}, "
-              f"輔助任務Age損失: {avg_detach_loss_age:.4f}, "
-              f"輔助任務Age準確率: {avg_acc_age:.4f}, "
-              f"輔助任務重建損失: {avg_loss_recon:.4f}, "
-              f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
-              f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
-              )
-        
-        if epoch == param.EPOCHS - 1:
-            save_system.save_model(model, epoch + 1, mode="pretrain")
-
-    finetune_loss, finetune_acc, eer, mDCF = finetune(model, finetune_loader, eval_loader, device, save_system)
-    print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", eer, "minDCF:", mDCF)
+    else:
+        model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
+        finetune_loss, finetune_acc, eer, mDCF = finetune(model, finetune_loader, eval_loader, device, save_system)
+        print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", eer, "minDCF:", mDCF)
 
 if __name__ == '__main__':
     train_model()

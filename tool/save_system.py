@@ -106,7 +106,7 @@ class Save_system:
 
         print(f"參數已寫入：{file_path}")
         
-    def save_model(self, model, epoch, mode):
+    def save_model(self, model, epoch, mode, state):
         """
         保存模型的狀態字典到指定的檔案。
 
@@ -116,18 +116,18 @@ class Save_system:
         if mode == "pretrain":
             model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'pretrain_model_{epoch}.pth')
             torch.save(model.state_dict(), model_checkpoint_path)
-            feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'feature_extractor_{epoch}.pth')
-            torch.save(model.extractor.state_dict(), feature_extractor_path)                
+            feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'pretrain_feature_extractor_{epoch}.pth')
+            torch.save(model.extractor.state_dict(), feature_extractor_path)
         elif mode == "finetune":
-            if epoch == param.FINETUNE_EPOCHS - 1:
-                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'last_finetune_model_{epoch}.pth')
+            if state == "best":
+                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'best_finetune_model.pth')
                 torch.save(model.state_dict(), model_checkpoint_path)
-                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'last_finetune_feature_extractor_{epoch}.pth')
+                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'best_finetune_feature_extractor.pth')
                 torch.save(model.extractor.state_dict(), feature_extractor_path)
             else:
-                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'best_finetune_model_{epoch}.pth')
+                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'last_finetune_model.pth')
                 torch.save(model.state_dict(), model_checkpoint_path)
-                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'best_finetune_feature_extractor_{epoch}.pth')
+                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'last_finetune_feature_extractor.pth')
                 torch.save(model.extractor.state_dict(), feature_extractor_path)
                 
         print(f"模型已保存到：{model_checkpoint_path}")
