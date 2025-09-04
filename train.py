@@ -134,8 +134,8 @@ def evaluate(model, val_loader, device):
             embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
             
             # L2 正則化 (這部分是正確的)
-            embedding1 = F.normalize(embedding1, p=2, dim=1)
-            embedding2 = F.normalize(embedding2, p=2, dim=1)
+            # embedding1 = F.normalize(embedding1, p=2, dim=1)
+            # embedding2 = F.normalize(embedding2, p=2, dim=1)
             
             scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
             # scores_batch = F.normalize(scores_batch, p=2, dim=1)
@@ -187,8 +187,8 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             embedding1 = model(audio1, mode="finetune") # 輸出形狀: (batch_size, feature_dim)
             embedding2 = model(audio2, mode="finetune") # 輸出形狀: (batch_size, feature_dim)
 
-            embedding1 = F.normalize(embedding1, p=2, dim=1)
-            embedding2 = F.normalize(embedding2, p=2, dim=1)
+            # embedding1 = F.normalize(embedding1, p=2, dim=1)
+            # embedding2 = F.normalize(embedding2, p=2, dim=1)
 
             output = model.SNN_classifier.forward(embedding1, embedding2)
 
@@ -235,16 +235,6 @@ def train_model():
         input_size=224
     ).to(device)
 
-    # 【修改點】優化器定義，現在 ArcFace 的權重也需要被優化
-    # optimizer_main = optim.Adam(
-    #     list(model.classifier.parameters()) + list(model.extractor.parameters()),
-    #     lr=param.INITIAL_LR
-    # )
-    # optimizer_detach = optim.Adam(
-    #     list(model.extractor.parameters()) + list(model.aux_network.parameters()),
-    #     lr=param.LEARNING_RATE_DETACH
-    # )
-
     optimizer = optim.Adam(model.parameters(), lr=param.INITIAL_LR)
 
     criterion_main = nn.CrossEntropyLoss()
@@ -276,8 +266,6 @@ def train_model():
                 identity_labels = identity_labels.to(device)
                 age_labels = age_labels.to(device)
 
-                # optimizer_main.zero_grad()
-                # optimizer_detach.zero_grad()
                 optimizer.zero_grad()
 
                 # 【修改點】模型前向傳播，接收 loss 和 acc
@@ -291,8 +279,6 @@ def train_model():
                 total_loss_for_extractor = loss_main + loss_detach
                 total_loss_for_extractor.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
-                # optimizer_main.step()
-                # optimizer_detach.step()
                 optimizer.step()
 
                 # --- 累加其他損失和準確率（用於日誌）---

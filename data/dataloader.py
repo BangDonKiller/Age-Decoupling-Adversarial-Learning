@@ -11,12 +11,9 @@ import math
 import glob
 from tqdm import tqdm
 from collections import defaultdict
-from torchvision import transforms
-import torch.nn.functional as F
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from params import param
-import matplotlib.pyplot as plt
 
 
 # 忽略 librosa 可能發出的警告
@@ -273,58 +270,13 @@ class Voxceleb2_dataset(Dataset):
         
         mels, ident, age = zip(*batch)
         
-        mels = torch.stack(mels)  # 將 Mel 譜堆疊成一個批次的 Tensor (B, C, H, W)
-        # resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)  # 將 Mel 譜轉換為 Tensor 並調整大小
-        # norm_mels = self.min_max_normalize(resize_mels)  # 對 Mel 譜進行 Min-Max 正規化
+        mels = torch.stack(mels)
 
-        # final_input_mels = norm_mels.numpy()  # 如果需要轉換為 NumPy 陣列
         # # 將 RGB 圖像轉換為 Tensor
-        # final_input_mels = torch.tensor(final_input_mels, dtype=torch.float32)
         final_input_mels = self.spec_to_rgb(mels)  # 將 Mel 譜轉換為 RGB 圖像
 
         # 將身份和年齡 ID 轉換為 Tensor
         return final_input_mels, torch.tensor(ident, dtype=torch.long), torch.tensor(age, dtype=torch.long)
-
-    def min_max_normalize(self, spec):
-        """
-        將 PyTorch Tensor (B, C, H, W) 中的每個 (H, W) 頻譜圖獨立進行 Min-Max 正規化到 [0, 1]。
-        
-        Args:
-            spec: PyTorch Tensor, shape (B, C, H, W).
-                          通常 dtype 會是 float32 或 float64.
-        
-        Returns:
-            PyTorch Tensor, shape (B, C, H, W), 正規化後的頻譜圖，值在 [0, 1] 範圍。
-        """
-        
-        normalized_tensors = []
-        
-        # 遍歷批次中的每個樣本
-        for b in range(spec.shape[0]): # 批次維度
-            channel_tensors = []
-            # 遍歷每個通道
-            for c in range(spec.shape[1]): # 通道維度
-                spec_2d = spec[b, c, :, :] # 獲取單個 (H, W) 頻譜圖
-
-                min_val = spec_2d.min()
-                max_val = spec_2d.max()
-
-                # 處理所有值都相同的情況，避免除以零
-                if max_val - min_val == 0:
-                    # 如果所有值都相同，直接返回全零或全一，這裡返回原值（或全零如果想正規化到0）
-                    normalized_spec = spec_2d 
-                    # 或者如果您希望常量值正規化為0：
-                    # normalized_spec = torch.zeros_like(spec_2d)
-                else:
-                    normalized_spec = (spec_2d - min_val) / (max_val - min_val)
-                
-                channel_tensors.append(normalized_spec)
-            
-            # 將所有通道的頻譜圖堆疊回 (C, H, W)
-            normalized_tensors.append(torch.stack(channel_tensors, dim=0))
-        
-        # 將所有批次樣本堆疊回 (B, C, H, W)
-        return torch.stack(normalized_tensors, dim=0)
 
     def _apply_augmentation(self, waveform):
         """
