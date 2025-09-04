@@ -123,6 +123,9 @@ def evaluate(model, val_loader, device):
     model.eval()  # 設置模型為評估模式
     all_scores = [] # 用於收集所有測試對的分數
     all_labels = [] # 用於收集所有測試對的真實標籤
+    
+    cos_scores = []
+    cos_labels = []
 
     with torch.no_grad():
         for audio1, audio2, label in tqdm(val_loader, desc="Evaluating", unit="batch"):
@@ -134,27 +137,34 @@ def evaluate(model, val_loader, device):
             embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
             
             # L2 正則化 (這部分是正確的)
-            # embedding1 = F.normalize(embedding1, p=2, dim=1)
-            # embedding2 = F.normalize(embedding2, p=2, dim=1)
+            embedding1 = F.normalize(embedding1, p=2, dim=1)
+            embedding2 = F.normalize(embedding2, p=2, dim=1)
             
             scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
             # scores_batch = F.normalize(scores_batch, p=2, dim=1)
 
             # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
-    #         scores_batch = F.cosine_similarity(embedding1, embedding2, dim=1)
+            scores_batch2 = F.cosine_similarity(embedding1, embedding2, dim=1)
             
             all_scores.extend(scores_batch.cpu().numpy().tolist())
             all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
             
+            cos_scores.extend(scores_batch2.cpu().numpy().tolist())
+            cos_labels.extend(label.cpu().numpy().tolist())
+            
     all_scores = np.array(all_scores)
     all_labels = np.array(all_labels)
 
+    cos_scores = np.array(cos_scores)
+    cos_labels = np.array(cos_labels)
+
     # 計算 EER 和 minDCF (這部分不需要修改)
     EER = tuneThresholdfromScore(all_scores, all_labels, [1, 0.1])[1]
+    cos_EER = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])[1]
     fnrs, fprs, thresholds = ComputeErrorRates(all_scores, all_labels)
     minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
 
-    return EER, minDCF
+    return EER, minDCF, cos_EER
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -208,9 +218,9 @@ def finetune(model, train_loader, eval_loader, device, save_system):
         avg_acc = total_correct / total_samples
         
         model.eval()
-        val_eer, val_mDCF = evaluate(model, eval_loader, device)
+        val_eer, val_mDCF, cos_EER = evaluate(model, eval_loader, device)
 
-        save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, val_eer, val_mDCF))
+        save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, val_eer, val_mDCF, cos_EER))
 
         if val_eer < best_eer:
             best_eer = val_eer

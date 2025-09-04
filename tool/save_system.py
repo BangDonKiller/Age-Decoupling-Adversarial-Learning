@@ -48,7 +48,7 @@ class Save_system:
             if filename == "result":
                 f.write("Epoch, main_lr, detach_lr, alpha, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID\n")  # 寫入表頭
             elif filename == "finetune":
-                f.write("Epoch, Loss, Accuracy, EER, minDCF\n")
+                f.write("Epoch, Loss, Accuracy, EER, minDCF, cosEER\n")
             else:
                 f.write("")
         print(f"文件已創建: {file_path}")
@@ -68,9 +68,9 @@ class Save_system:
             with open(file_path, 'a') as f:
                 f.write(f"{epoch}, {main_lr}, {detach_lr}, {alpha:.4f}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}\n")
         elif filename == "finetune":
-            epoch, loss, accuracy, eer, min_dcf = content
+            epoch, loss, accuracy, eer, min_dcf, cos_eer = content
             with open(file_path, 'a') as f:
-                f.write(f"{epoch}, {loss:.4f}, {accuracy:.4f}, {eer:.4f}, {min_dcf:.4f}\n")
+                f.write(f"{epoch}, {loss:.4f}, {accuracy:.4f}, {eer:.4f}, {min_dcf:.4f}, {cos_eer:.4f}\n")
 
         print(f"結果已寫入: {file_path}")
             
