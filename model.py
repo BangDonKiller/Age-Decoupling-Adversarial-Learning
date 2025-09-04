@@ -11,52 +11,62 @@ from tool.ArcFaceLoss import AAMsoftmax
 from params import param
 
 
-class PreEmphasis(torch.nn.Module):
-
-    def __init__(self, coef: float = 0.97):
+class RepresentationDetachmentExtractor(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.coef = coef
-        self.register_buffer(
-            'flipped_filter', torch.FloatTensor([-self.coef, 1.]).unsqueeze(0).unsqueeze(0)
-        )
+        # 載入預訓練的 ShuffleNet v2
+        shufflenet = models.shufflenet_v2_x1_0(weights=models.ShuffleNet_V2_X1_0_Weights.DEFAULT)
+        # 移除原始的分類頭
+        self.features = nn.Sequential(*list(shufflenet.children())[:-1])
 
-    def forward(self, input: torch.tensor) -> torch.tensor:
-        # input = input.unsqueeze(1)
-        # padding 的〈反射〉方式可以減少邊界處突兀的「全零填充」效應，保持邊緣訊號的連續性
-        input = F.pad(input, (1, 0), 'reflect')
-        return F.conv1d(input, self.flipped_filter).squeeze(1)
+    def forward(self, x):
+        # 提取特徵
+        x = self.features(x)
+        # 全局平均池化得到 embedding
+        x = x.mean([2, 3]) 
+        return x
+    
+class MainTaskClassifier(nn.Module):
+    def __init__(self, embedding_dim, num_main_classes):
+        super().__init__()
+        # 簡單的線性分類器用於聲紋識別
+        self.fc1 = nn.Linear(embedding_dim, embedding_dim // 2)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(embedding_dim // 2, num_main_classes)
+        self.sigmoid = nn.Sigmoid()
+        
+    def forward(self, h, mode=None):
+        h = self.fc1(h)
+        
+        # if mode == "train":
+        h = self.relu(h)
+        h = self.fc2(h)
+        # else:
+        #     h = self.sigmoid(h)
+        return h
 
 class ADAL_Model(nn.Module):
     def __init__(self, feature_dim, age_classes, identity_classes):
         super(ADAL_Model, self).__init__()
         
-         # 特徵提取器
-        self.model = models.shufflenet_v2_x0_5(weights=torchvision.models.ShuffleNet_V2_X0_5_Weights.DEFAULT)
-        self.model.fc = nn.Identity()  # 去除最後的全連接層  
-
-        # 根據 backbone 最後輸出特徵維度
-        feature_dim = self.model.fc.in_features if hasattr(self.model.fc, 'in_features') else 1024
-        # self.model.requires_grad_(False)  # 冻結預訓練權重
+        self.feature_extractor = RepresentationDetachmentExtractor()
+        
+        self.main_task_classifier = MainTaskClassifier(embedding_dim=feature_dim, num_main_classes=identity_classes)
         
         # 年齡特徵提取模塊 (ARE)
         # self.age_extractor_module = ARE_Module(input_channels=512, output_dim=feature_dim)
-        self.age_extractor = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(feature_dim, feature_dim)
-        )
+        # self.age_extractor = nn.Sequential(
+        #     nn.Linear(feature_dim, feature_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Dropout(0.5),
+        #     nn.Linear(feature_dim, feature_dim)
+        # )
 
         # 這裡的 GRL 是用在身份特徵 z_id 上，讓 z_id 變得年齡不相關
         self.grl = GradientReversalLayer()
 
         # 身份分類器 (基於 z_id)
-        # self.ArcFace = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
-        self.identity_classifier = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(feature_dim, identity_classes)
-        )
+        self.speaker_loss = AAMsoftmax(n_class=identity_classes, m = param.ARC_FACE_M, s = param.ARC_FACE_S)
 
         # 年齡分類器 (基於 z_age)
         self.age_classifier_on_age = nn.Sequential(
@@ -76,34 +86,37 @@ class ADAL_Model(nn.Module):
 
 
     def forward(self, audio, mode=None, id_label=None):
-        # 1. 提取整體特徵 x (embedding)
-        z = self.model(audio)
-
-        # 3. 提取年齡特徵 z_age
-        z_age = self.age_extractor(z)
-
-        # 3. 計算身份特徵 z_id = z - z_age
-        z_id = z - z_age
-        # z_id_RG = torch.randn_like(z_id)
+        z = self.feature_extractor(audio)
 
         if mode == "train":
-            # 4. 計算身份分類損失
-            id = self.identity_classifier(z_id)
-            
-            # 5. 預測年齡
-            age = self.age_classifier_on_age(z_age)
-            
-            # 6. 計算年齡對抗
-            z_age_grl = self.grl(z_id)
-            
-            # 7. 預測年齡 (對抗性)
-            # pred_grl_age = self.age_classifier_on_grl_age(z_id_RG)
-            pred_grl_age = self.age_classifier_on_grl_age(z_age_grl)
-
-            return id, age, pred_grl_age
+            z_id = self.main_task_classifier(z)
+            return z_id
 
         else:
             return z_id
+
+    
+# --- 3. 完整的屬性遺忘模型 ---
+class AttributeUnlearningModel(nn.Module):
+    def __init__(self, num_main_classes, num_attribute_classes, input_channels=1, input_size=128):
+        super().__init__()
+        self.extractor = RepresentationDetachmentExtractor()
+        # ShuffleNet v2 x1.0 輸出的 embedding 維度是 1024
+        embedding_dim = 1024 
+        self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
+
+    def forward(self, x, id_label=None, mode=None):
+        if mode == "train":
+            h = self.extractor(x)
+            # main_task_output = self.classifier(h)
+            loss, acc = self.classifier(h, label=id_label)
+            # return main_task_output, h
+            return loss, acc, h
+        else:
+            h = self.extractor(x)
+            return h
+
+
 
 # if __name__ == "__main__":
     # # 測試模型

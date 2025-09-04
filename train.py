@@ -81,6 +81,7 @@ def prepare_dataloader():
     )
     
     val_dataset = Voxceleb1_dataset(
+        num_frames=param.NUM_FRAMES,
         data_list_file=param.VAL_DATA_LIST_FILE,
         dataset_path=param.VAL_DATA_ROOT,
     )
@@ -256,7 +257,7 @@ def train_model():
             optimizer.zero_grad() # 清除梯度
 
             # 前向傳播
-            pred_id, pred_age, pred_grl_age = model(mels, mode = "train", id_label = identity_labels)
+            pred_id = model(mels, mode = "train", id_label = identity_labels)
             # pred_id, pred_age, pred_grl_age = model(mels, mode = "train", id_label = identity_labels)
             
             # 計算損失
@@ -265,23 +266,24 @@ def train_model():
             loss_id = criterion_ce(pred_id, identity_labels)
 
             # L_age: 年齡分類損失 (監督 z_age)
-            max_index_of_age = torch.argmax(pred_age, dim=1)
-            loss_age = age_criterion_ce(pred_age, age_labels)
+            # max_index_of_age = torch.argmax(pred_age, dim=1)
+            # loss_age = age_criterion_ce(pred_age, age_labels)
 
             # L_grl: 對抗年齡損失 (讓 z_id 無法預測年齡)
-            max_index_of_grl_age = torch.argmax(pred_grl_age, dim=1)
-            loss_grl = age_criterion_ce(pred_grl_age, age_labels)
+            # max_index_of_grl_age = torch.argmax(pred_grl_age, dim=1)
+            # loss_grl = age_criterion_ce(pred_grl_age, age_labels)
             
             # 計算每個batch，模型預測的ID以及AGE數量 
-            for i in range(len(max_index_of_grl_age)):
+            for i in range(len(max_index_of_id)):
                 batch_id_count[max_index_of_id[i].item()] += 1
-                batch_age_count[max_index_of_age[i].item()] += 1
-                batch_age_grl_count[max_index_of_grl_age[i].item()] += 1
+                # batch_age_count[max_index_of_age[i].item()] += 1
+                # batch_age_grl_count[max_index_of_grl_age[i].item()] += 1
 
             # 總損失 (根據論文公式5)
-            loss = (param.LAMBDA_ID * loss_id +
-                    param.LAMBDA_AGE * loss_age +
-                    param.LAMBDA_GRL * loss_grl)
+            # loss = (param.LAMBDA_ID * loss_id +
+            #         param.LAMBDA_AGE * loss_age +
+            #         param.LAMBDA_GRL * loss_grl)
+            loss = param.LAMBDA_ID * loss_id
 
             # 反向傳播與優化
             loss.backward()
@@ -289,26 +291,26 @@ def train_model():
 
             total_loss += loss.item()
             total_loss_id += loss_id.item()
-            total_loss_age += loss_age.item()
-            total_loss_grl += loss_grl.item()
+            # total_loss_age += loss_age.item()
+            # total_loss_grl += loss_grl.item()
             
             batch_acc_id = (max_index_of_id == identity_labels).sum().item() / identity_labels.size(0)
             total_acc_id += (max_index_of_id == identity_labels).sum().item()
 
-            batch_acc_age = (max_index_of_age == age_labels).sum().item() / age_labels.size(0)
-            total_acc_age += (max_index_of_age == age_labels).sum().item()
+            # batch_acc_age = (max_index_of_age == age_labels).sum().item() / age_labels.size(0)
+            # total_acc_age += (max_index_of_age == age_labels).sum().item()
             
-            batch_acc_grl_age = (max_index_of_grl_age == age_labels).sum().item() / age_labels.size(0)
-            total_acc_age_grl += (max_index_of_grl_age == age_labels).sum().item()
+            # batch_acc_grl_age = (max_index_of_grl_age == age_labels).sum().item() / age_labels.size(0)
+            # total_acc_age_grl += (max_index_of_grl_age == age_labels).sum().item()
 
             pbar.set_postfix({
                 'Total_L': f'{loss.item():.4f}',
                 'L_id': f'{loss_id.item():.4f}',
                 'acc_id': f'{batch_acc_id:.4f}',
-                'L_age': f'{loss_age.item():.4f}',
-                'acc_age': f'{batch_acc_age:.4f}',
-                'L_grl': f'{loss_grl.item():.4f}',
-                'acc_grl_age': f'{batch_acc_grl_age:.4f}',
+                # 'L_age': f'{loss_age.item():.4f}',
+                # 'acc_age': f'{batch_acc_age:.4f}',
+                # 'L_grl': f'{loss_grl.item():.4f}',
+                # 'acc_grl_age': f'{batch_acc_grl_age:.4f}',
             })
             
             # --- 4. 保存模型檢查點 ---
@@ -376,15 +378,7 @@ def train_model():
                 f.write(line)   
 
         # 在每個 epoch 結束後更新學習率
-        # scheduler.step()
-            
-        # 保存訓練結果到文件
-        # save_system.write_result_to_file(
-        #     param.SCORE_DIR, 
-        #     "result", 
-        #     (epoch + 1, current_lr, avg_loss_id, None, None, avg_loss, val_eer, val_mDCF)
-        # )
-        
+        # scheduler.step()        
         
         # model.eval()  # 設置模型為評估模式
         # val_eer, val_mDCF = evaluate(model, val_loader, device)
