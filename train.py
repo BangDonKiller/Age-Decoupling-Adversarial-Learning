@@ -13,6 +13,9 @@ from params import param
 from model import AttributeUnlearningModel
 from tool.eval_metric import *
 from torch.utils.tensorboard import SummaryWriter
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, roc_curve, auc
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # --- 設定隨機種子，確保可重現性 ---
 def set_seed(seed):
@@ -140,31 +143,61 @@ def evaluate(model, val_loader, device):
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
             
-            scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
-            # scores_batch = F.normalize(scores_batch, p=2, dim=1)
+            # scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
 
             # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
             scores_batch2 = F.cosine_similarity(embedding1, embedding2, dim=1)
             
-            all_scores.extend(scores_batch.cpu().numpy().tolist())
-            all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
+            # all_scores.extend(scores_batch.cpu().numpy().tolist())
+            # all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
             
             cos_scores.extend(scores_batch2.cpu().numpy().tolist())
             cos_labels.extend(label.cpu().numpy().tolist())
             
-    all_scores = np.array(all_scores)
-    all_labels = np.array(all_labels)
+    # all_scores = np.array(all_scores)
+    # all_labels = np.array(all_labels)
 
     cos_scores = np.array(cos_scores)
     cos_labels = np.array(cos_labels)
+    
+    # ==== 計算 confusion matrix ====
+    threshold = 0.5  # 可以改成 EER threshold
+    preds = (cos_scores >= threshold).astype(int)
 
-    # 計算 EER 和 minDCF (這部分不需要修改)
-    EER = tuneThresholdfromScore(all_scores, all_labels, [1, 0.1])[1]
+    cm = confusion_matrix(cos_labels, preds)
+    acc = accuracy_score(cos_labels, preds)
+    precision = precision_score(cos_labels, preds, zero_division=0)
+    recall = recall_score(cos_labels, preds, zero_division=0)
+
+    # 畫 confusion matrix
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix")
+    plt.savefig("confusion_matrix.png")
+    plt.close()
+    
+    # ==== ROC curve ====
+    fpr, tpr, _ = roc_curve(cos_labels, cos_scores)
+    roc_auc = auc(fpr, tpr)
+
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {roc_auc:.4f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("Receiver Operating Characteristic")
+    plt.legend(loc="lower right")
+    plt.savefig("roc_curve.png")
+    plt.close()
+
+    # ==== 計算 EER 和 minDCF ====
     cos_EER = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])[1]
-    fnrs, fprs, thresholds = ComputeErrorRates(all_scores, all_labels)
+    fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, cos_labels)
     minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
 
-    return EER, minDCF, cos_EER
+    return cos_EER, minDCF, acc, precision, recall
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -331,12 +364,13 @@ def train_model():
 
             current_main_lr = optimizer.param_groups[0]['lr']
             current_detach_lr = optimizer.param_groups[0]['lr']
-            save_system.write_result_to_file(
-                param.SCORE_DIR,
-                "result",
-                (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID)
-            )
 
+            # save_system.write_result_to_file(
+            #     param.SCORE_DIR,
+            #     "result",
+            #     (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID)
+            # )
+            
             print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
                 f"預訓練主要任務損失: {avg_loss_id:.4f}, "
                 f"主要任務準確率: {avg_acc_id:.4f}%, "
@@ -347,6 +381,14 @@ def train_model():
                 f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
                 f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
                 )
+            
+            cos_EER, minDCF, test_acc, precision, recall = evaluate(model, eval_loader, device)
+            print(f"Evaluation - EER: {cos_EER:.4f}, minDCF: {minDCF:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
+            save_system.write_result_to_file(
+                param.SCORE_DIR,
+                "result",
+                (epoch + 1, current_main_lr, avg_loss_id, avg_acc_id, cos_EER, minDCF, test_acc, precision, recall)
+            )
             
             if epoch == param.EPOCHS - 1:
                 save_system.save_model(model, epoch + 1, mode="pretrain", state=None)
