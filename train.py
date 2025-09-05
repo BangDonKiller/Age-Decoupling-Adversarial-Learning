@@ -321,7 +321,7 @@ def train_model():
 
                 total_loss_for_extractor = loss_main + loss_detach
                 total_loss_for_extractor.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
                 optimizer.step()
 
                 # --- 累加其他損失和準確率（用於日誌）---
