@@ -46,7 +46,7 @@ class Save_system:
             self.count += 1
         with open(file_path, 'w') as f:
             if filename == "result":
-                f.write("Epoch, main_lr, L_id, Acc_id, cosEER, minDCF, Testacc, Precision, Recall\n")  # 寫入表頭
+                f.write("Epoch, main_lr, L_id, Acc_id, cosEER, minDCF, Testacc, Precision, Recall, EER_threshold\n")  # 寫入表頭
                 # f.write("Epoch, main_lr, detach_lr, alpha, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID\n")  # 寫入表頭
             elif filename == "finetune":
                 f.write("Epoch, Loss, Accuracy, EER, minDCF, cosEER\n")
@@ -68,9 +68,9 @@ class Save_system:
             # epoch, main_lr, detach_lr, alpha, l_id, acc_id, loss_detach, acc_age, loss_age, loss_recon, detachment_ID_loss, detach_acc_ID= content
             # with open(file_path, 'a') as f:
             #     f.write(f"{epoch}, {main_lr}, {detach_lr}, {alpha:.4f}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}\n")
-            epoch, main_lr, l_id, acc_id, cos_eer, min_dcf, Testacc, precision, recall = content
+            epoch, main_lr, l_id, acc_id, cos_eer, min_dcf, Testacc, precision, recall, EER_threshold = content
             with open(file_path, 'a') as f:
-                f.write(f"{epoch}, {main_lr}, {l_id:.4f}, {acc_id:.4f}, {cos_eer:.4f}, {Testacc:.4f}, {precision:.4f}, {recall:.4f}\n")
+                f.write(f"{epoch}, {main_lr}, {l_id:.4f}, {acc_id:.4f}, {cos_eer:.4f}, {Testacc:.4f}, {precision:.4f}, {recall:.4f}, {EER_threshold:.4f}\n")
         elif filename == "finetune":
             epoch, loss, accuracy, eer, min_dcf, cos_eer = content
             with open(file_path, 'a') as f:
@@ -118,10 +118,16 @@ class Save_system:
         :param epoch: 當前訓練的 epoch
         """
         if mode == "pretrain":
-            model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'pretrain_model_{epoch}.pth')
-            torch.save(model.state_dict(), model_checkpoint_path)
-            feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'pretrain_feature_extractor_{epoch}.pth')
-            torch.save(model.extractor.state_dict(), feature_extractor_path)
+            if state == "best":
+                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'best_pretrain_model.pth')
+                torch.save(model.state_dict(), model_checkpoint_path)
+                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'best_pretrain_feature_extractor.pth')
+                torch.save(model.extractor.state_dict(), feature_extractor_path)
+            else:
+                model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'last_pretrain_model.pth')
+                torch.save(model.state_dict(), model_checkpoint_path)
+                feature_extractor_path = os.path.join(param.CHECKPOINT_DIR, f'last_pretrain_feature_extractor.pth')
+                torch.save(model.extractor.state_dict(), feature_extractor_path)
         elif mode == "finetune":
             if state == "best":
                 model_checkpoint_path = os.path.join(param.CHECKPOINT_DIR, f'best_finetune_model.pth')

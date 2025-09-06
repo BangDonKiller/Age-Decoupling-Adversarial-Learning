@@ -160,8 +160,13 @@ def evaluate(model, val_loader, device):
     cos_scores = np.array(cos_scores)
     cos_labels = np.array(cos_labels)
     
+    # ==== 計算 EER 和 minDCF ====
+    _, cos_EER, EER_threshold, _, _ = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])
+    fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, cos_labels)
+    minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
+    
     # ==== 計算 confusion matrix ====
-    threshold = 0.5  # 可以改成 EER threshold
+    threshold = EER_threshold  # 可以改成 EER threshold
     preds = (cos_scores >= threshold).astype(int)
 
     cm = confusion_matrix(cos_labels, preds)
@@ -192,12 +197,7 @@ def evaluate(model, val_loader, device):
     plt.savefig("roc_curve.png")
     plt.close()
 
-    # ==== 計算 EER 和 minDCF ====
-    cos_EER = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])[1]
-    fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, cos_labels)
-    minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
-
-    return cos_EER, minDCF, acc, precision, recall
+    return cos_EER, minDCF, acc, precision, recall, EER_threshold
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -284,6 +284,8 @@ def train_model():
 
     # check if gpu is available
     print("torch GPU available:", torch.cuda.is_available())
+    
+    best_lost = float('inf')
     
     if param.PRETRAIN:
         for epoch in range(param.EPOCHS):
@@ -382,16 +384,20 @@ def train_model():
                 f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
                 )
             
-            cos_EER, minDCF, test_acc, precision, recall = evaluate(model, eval_loader, device)
-            print(f"Evaluation - EER: {cos_EER:.4f}, minDCF: {minDCF:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
+            cos_EER, minDCF, test_acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
+            print(f"Evaluation - EER: {cos_EER:.4f}, minDCF: {minDCF:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
             save_system.write_result_to_file(
                 param.SCORE_DIR,
                 "result",
-                (epoch + 1, current_main_lr, avg_loss_id, avg_acc_id, cos_EER, minDCF, test_acc, precision, recall)
+                (epoch + 1, current_main_lr, avg_loss_id, avg_acc_id, cos_EER, minDCF, test_acc, precision, recall, EER_threshold)
             )
             
+            if best_lost > avg_loss_id:
+                best_lost = avg_loss_id
+                save_system.save_model(model, epoch + 1, mode="pretrain", state="best")
+            
             if epoch == param.EPOCHS - 1:
-                save_system.save_model(model, epoch + 1, mode="pretrain", state=None)
+                save_system.save_model(model, epoch + 1, mode="pretrain", state="last")
 
     else:
         model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))

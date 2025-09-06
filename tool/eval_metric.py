@@ -54,9 +54,10 @@ def tuneThresholdfromScore(scores, labels, target_fa, target_fr=None):
         
     # 計算等錯誤率 (EER)
     idxE = numpy.nanargmin(numpy.absolute((fnr - fpr))) # 找到 FPR 和 FNR 絕對差值最小的索引
+    eer_threshold = thresholds[idxE] # EER 對應的閾值
     eer  = max(fpr[idxE], fnr[idxE]) * 100 # EER 是該點的 FPR 和 FNR 中較大的一個，轉換為百分比
     
-    return tunedThreshold, eer, fpr, fnr
+    return tunedThreshold, eer, eer_threshold, fpr, fnr
 
 
 def ComputeErrorRates(scores, labels):
