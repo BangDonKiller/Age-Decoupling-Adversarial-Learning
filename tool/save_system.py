@@ -46,10 +46,10 @@ class Save_system:
             self.count += 1
         with open(file_path, 'w') as f:
             if filename == "result":
-                f.write("Epoch, main_lr, L_id, Acc_id, cosEER, minDCF, Testacc, Precision, Recall, EER_threshold\n")  # 寫入表頭
+                f.write("Epoch, main_lr, L_id, Acc_id, cosEER, Testacc, Precision, Recall, EER_threshold\n")  # 寫入表頭
                 # f.write("Epoch, main_lr, detach_lr, alpha, L_id, Acc_id, Total Loss, Acc_age, Loss_age, Loss_Recon, Detach_Loss_pred_ID, Detach_Acc_pred_ID\n")  # 寫入表頭
             elif filename == "finetune":
-                f.write("Epoch, Loss, Accuracy, EER, minDCF, cosEER\n")
+                f.write("Epoch, Loss, Accuracy, EER, cosEER, Testacc, Precision, Recall, EER_threshold\n")
             else:
                 f.write("")
         print(f"文件已創建: {file_path}")
@@ -72,9 +72,9 @@ class Save_system:
             with open(file_path, 'a') as f:
                 f.write(f"{epoch}, {main_lr}, {l_id:.4f}, {acc_id:.4f}, {cos_eer:.4f}, {Testacc:.4f}, {precision:.4f}, {recall:.4f}, {EER_threshold:.4f}\n")
         elif filename == "finetune":
-            epoch, loss, accuracy, eer, min_dcf, cos_eer = content
+            epoch, loss, accuracy, eer, cos_eer, Testacc, precision, recall, EER_threshold = content
             with open(file_path, 'a') as f:
-                f.write(f"{epoch}, {loss:.4f}, {accuracy:.4f}, {eer:.4f}, {min_dcf:.4f}, {cos_eer:.4f}\n")
+                f.write(f"{epoch}, {loss:.4f}, {accuracy:.4f}, {eer:.4f}, {cos_eer:.4f}, {Testacc:.4f}, {precision:.4f}, {recall:.4f}, {EER_threshold:.4f}\n")
 
         print(f"結果已寫入: {file_path}")
             

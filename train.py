@@ -143,27 +143,32 @@ def evaluate(model, val_loader, device):
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
             
-            # scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
+            scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
 
             # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
             scores_batch2 = F.cosine_similarity(embedding1, embedding2, dim=1)
             
-            # all_scores.extend(scores_batch.cpu().numpy().tolist())
-            # all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
+            all_scores.extend(scores_batch.cpu().numpy().tolist())
+            all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
             
             cos_scores.extend(scores_batch2.cpu().numpy().tolist())
             cos_labels.extend(label.cpu().numpy().tolist())
             
-    # all_scores = np.array(all_scores)
-    # all_labels = np.array(all_labels)
+    all_scores = np.array(all_scores)
+    all_labels = np.array(all_labels)
 
     cos_scores = np.array(cos_scores)
     cos_labels = np.array(cos_labels)
     
-    # ==== 計算 EER 和 minDCF ====
+    # ==== 用餘弦相似度計算 EER 和 minDCF ====
     _, cos_EER, EER_threshold, _, _ = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])
     fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, cos_labels)
     minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
+    
+    # ==== 用SNN分數計算 EER 和 minDCF ====
+    _, eer, _, _, _ = tuneThresholdfromScore(all_scores, all_labels, [1, 0.1])
+    fnrs, fprs, thresholds = ComputeErrorRates(all_scores, all_labels)
+    minDCF_snn, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
     
     # ==== 計算 confusion matrix ====
     threshold = EER_threshold  # 可以改成 EER threshold
@@ -197,7 +202,7 @@ def evaluate(model, val_loader, device):
     plt.savefig("roc_curve.png")
     plt.close()
 
-    return cos_EER, minDCF, acc, precision, recall, EER_threshold
+    return eer, cos_EER, minDCF, acc, precision, recall, EER_threshold
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -230,9 +235,6 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             embedding1 = model(audio1, mode="finetune") # 輸出形狀: (batch_size, feature_dim)
             embedding2 = model(audio2, mode="finetune") # 輸出形狀: (batch_size, feature_dim)
 
-            # embedding1 = F.normalize(embedding1, p=2, dim=1)
-            # embedding2 = F.normalize(embedding2, p=2, dim=1)
-
             output = model.SNN_classifier.forward(embedding1, embedding2)
 
             loss = F.binary_cross_entropy(output.squeeze(), label.float())
@@ -251,19 +253,19 @@ def finetune(model, train_loader, eval_loader, device, save_system):
         avg_acc = total_correct / total_samples
         
         model.eval()
-        val_eer, val_mDCF, cos_EER = evaluate(model, eval_loader, device)
+        eer, cos_EER, minDCF, acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
 
-        save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, val_eer, val_mDCF, cos_EER))
+        save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, eer, cos_EER, acc, precision, recall, EER_threshold))
 
-        if val_eer < best_eer:
-            best_eer = val_eer
+        if cos_EER < best_eer:
+            best_eer = cos_EER
             save_system.save_model(model, epoch + 1, mode="finetune", state="best")
 
         if epoch == param.FINETUNE_EPOCHS - 1:
             save_system.save_model(model, epoch + 1, mode="finetune", state="last")
 
 
-    return avg_loss, avg_acc * 100.0, val_eer, val_mDCF
+    return avg_loss, avg_acc * 100.0, cos_EER, minDCF
 
 def train_model():
     device = torch.device(param.DEVICE)
