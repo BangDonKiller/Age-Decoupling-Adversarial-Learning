@@ -161,31 +161,31 @@ def evaluate(model, val_loader, device):
     cos_labels = np.array(cos_labels)
     
     # ==== 用餘弦相似度計算 EER 和 minDCF ====
-    _, cos_EER, EER_threshold, _, _ = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])
+    _, cos_EER, cos_EER_threshold, _, _ = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])
     fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, cos_labels)
     minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
     
     # ==== 用SNN分數計算 EER 和 minDCF ====
-    _, eer, _, _, _ = tuneThresholdfromScore(all_scores, all_labels, [1, 0.1])
+    _, snn_eer, SNN_EER_threshold, _, _ = tuneThresholdfromScore(all_scores, all_labels, [1, 0.1])
     fnrs, fprs, thresholds = ComputeErrorRates(all_scores, all_labels)
     minDCF_snn, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
     
     # ==== 計算 confusion matrix ====
-    threshold = EER_threshold  # 可以改成 EER threshold
+    threshold = cos_EER_threshold  # 可以改成 EER threshold
     preds = (cos_scores >= threshold).astype(int)
 
     cm = confusion_matrix(cos_labels, preds)
-    acc = accuracy_score(cos_labels, preds)
-    precision = precision_score(cos_labels, preds, zero_division=0)
-    recall = recall_score(cos_labels, preds, zero_division=0)
+    cos_acc = accuracy_score(cos_labels, preds)
+    cos_precision = precision_score(cos_labels, preds, zero_division=0)
+    cos_recall = recall_score(cos_labels, preds, zero_division=0)
 
     # 畫 confusion matrix
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
     plt.xlabel("Predicted")
     plt.ylabel("True")
-    plt.title("Confusion Matrix")
-    plt.savefig("confusion_matrix.png")
+    plt.title("Cosine Similarity Confusion Matrix")
+    plt.savefig("cos_confusion_matrix.png")
     plt.close()
     
     # ==== ROC curve ====
@@ -199,10 +199,43 @@ def evaluate(model, val_loader, device):
     plt.ylabel("True Positive Rate")
     plt.title("Receiver Operating Characteristic")
     plt.legend(loc="lower right")
-    plt.savefig("roc_curve.png")
+    plt.savefig("cos_roc_curve.png")
     plt.close()
 
-    return eer, cos_EER, minDCF, acc, precision, recall, EER_threshold
+
+    # ==== SNN confusion matrix ====
+    threshold = SNN_EER_threshold
+    preds_snn = (all_scores >= threshold).astype(int)
+
+    cm_snn = confusion_matrix(all_labels, preds_snn)
+    acc_snn = accuracy_score(all_labels, preds_snn)
+    precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
+    recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
+
+    # confusion matrix
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("SNN Confusion Matrix")
+    plt.savefig("snn_confusion_matrix.png")
+    plt.close()
+
+    # ROC curve
+    fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
+    roc_auc_snn = auc(fpr_snn, tpr_snn)
+
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("SNN Receiver Operating Characteristic")
+    plt.legend(loc="lower right")
+    plt.savefig("snn_roc_curve.png")
+    plt.close()
+
+    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -223,6 +256,7 @@ def finetune(model, train_loader, eval_loader, device, save_system):
 
     for epoch in range(param.FINETUNE_EPOCHS):
         model.train()
+        model.extractor.eval()
         total_loss = 0.0
         total_correct = 0
         total_samples = 0
@@ -253,9 +287,10 @@ def finetune(model, train_loader, eval_loader, device, save_system):
         avg_acc = total_correct / total_samples
         
         model.eval()
-        eer, cos_EER, minDCF, acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
+        cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold = evaluate(model, eval_loader, device)
 
-        save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, eer, cos_EER, acc, precision, recall, EER_threshold))
+        save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
+                                                                          , snn_eer, acc_snn, precision_snn, recall_snn, SNN_EER_threshold))
 
         if cos_EER < best_eer:
             best_eer = cos_EER
@@ -265,7 +300,7 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             save_system.save_model(model, epoch + 1, mode="finetune", state="last")
 
 
-    return avg_loss, avg_acc * 100.0, cos_EER, minDCF
+    return avg_loss, avg_acc * 100.0, cos_EER, snn_eer
 
 def train_model():
     device = torch.device(param.DEVICE)
@@ -403,8 +438,8 @@ def train_model():
 
     else:
         model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
-        finetune_loss, finetune_acc, eer, mDCF = finetune(model, finetune_loader, eval_loader, device, save_system)
-        print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", eer, "minDCF:", mDCF)
+        finetune_loss, finetune_acc, cos_eer, snn_eer = finetune(model, finetune_loader, eval_loader, device, save_system)
+        print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", cos_eer, "SNN EER:", snn_eer)
 
 if __name__ == '__main__':
     train_model()
