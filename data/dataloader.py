@@ -14,6 +14,7 @@ from collections import defaultdict
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from params import param
+import soundfile
 
 
 # 忽略 librosa 可能發出的警告
@@ -38,6 +39,11 @@ class Voxceleb2_dataset(Dataset):
             n_mels=80          # 80 維 Mel-filterbank energies
         )
         
+        # 定義噪音類型與對應 SNR 範圍與數量
+        self.noisetypes = ['noise','speech','music']
+        self.noisesnr = {'noise':[0,15],'speech':[13,20],'music':[5,15]}
+        self.numnoise = {'noise':[1,1], 'speech':[3,8], 'music':[1,1]}
+        
         # --- 數據增強相關的初始化和預載入 ---
         if self.augment:
             self.musan_noise_types = ['noise', 'speech', 'music']
@@ -50,11 +56,11 @@ class Voxceleb2_dataset(Dataset):
             self.rir_file_paths = glob.glob(os.path.join(self.rir_path,'*','*','*.wav'))
 
             # Step 2: 將所有噪音和 RIR 檔案的波形預載入到記憶體中
-            print("Preloading MUSAN noise files to memory...")
-            self.loaded_musan_noise_waveforms = self._preload_audios_to_memory(self.noise_file_paths_by_type)
-            print("Preloading RIR files to memory...")
-            self.loaded_rir_waveforms = self._preload_audios_to_memory(self.rir_file_paths)
-            print("Preloading complete.")
+            # print("Preloading MUSAN noise files to memory...")
+            # self.loaded_musan_noise_waveforms = self._preload_audios_to_memory(self.noise_file_paths_by_type)
+            # print("Preloading RIR files to memory...")
+            # self.loaded_rir_waveforms = self._preload_audios_to_memory(self.rir_file_paths)
+            # print("Preloading complete.")
         
         # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
         self.data_list = self._load_data_list(dataset_path, data_list_file)
@@ -222,29 +228,29 @@ class Voxceleb2_dataset(Dataset):
         
         # 將 NumPy 轉換為 PyTorch Tensor，因為我們的增強函式現在期望 Tensor
         # 並且增強操作最好在 Tensor 上完成
-        final_waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
+        # final_waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
 
         # ==================== 核心修正：對調順序 ====================
-        # 2. 【先】進行資料增強。這一步驟可能會改變 final_waveform 的長度
-        if self.augment:
-            final_waveform = self._apply_augmentation(final_waveform)
-
         # 3. 【後】對增強後的音訊進行固定長度處理
         length = self.frame_num * 160 + 240
-        current_length = final_waveform.shape[1]
+        # current_length = final_waveform.shape[1]
         
-        if current_length <= length:
-            shortage = length - current_length
-            # 使用 PyTorch 的 pad 函式來填充 Tensor
+        if waveform.shape[0] <= length:
+            shortage = length - waveform.shape[0]
             final_waveform = torch.nn.functional.pad(final_waveform, (0, shortage), 'constant', 0)
         else:
             # 隨機裁剪
-            start_frame = random.randint(0, current_length - length)
-            final_waveform = final_waveform[:, start_frame:start_frame + length]
+            start_frame = random.randint(0, waveform.shape[0] - length)
+            final_waveform = waveform[start_frame:start_frame + length]
+            # final_waveform = final_waveform[:, start_frame:start_frame + length]
+            
+        # 2. 【先】進行資料增強。這一步驟可能會改變 final_waveform 的長度
+        if self.augment:
+            final_waveform = self._apply_augmentation(final_waveform)
         # ============================================================
+        final_waveform = torch.from_numpy(final_waveform).float() # Shape: (1, num_samples)
 
         # 4. 提取 Mel-filterbank energies
-        # 現在傳入 mel_spectrogram 的 final_waveform 保證是固定長度
         mel_spec = self.mel_spectrogram(final_waveform)
         
         # 5. 對數 Mel-filterbank energies
@@ -291,7 +297,7 @@ class Voxceleb2_dataset(Dataset):
             Tensor: 增強後的音頻波形
         """
         # aug_type = random.randint(0, 4)
-        aug_type = 2
+        aug_type = 1
         
         # 確保 waveform 在 CPU 上，因為 librosa 和 torchaudio 某些操作預設在 CPU
         # 並且在 worker 中進行，如果傳入 GPU Tensor，會在 worker 中造成額外複製到 CPU 的開銷
@@ -300,7 +306,7 @@ class Voxceleb2_dataset(Dataset):
         if aug_type == 0:
             return waveform_on_cpu
         elif aug_type == 1:
-            return self._add_noise(waveform_on_cpu)
+            return self._add_noise(waveform_on_cpu, random.choice(self.noisetypes))
             # return waveform_on_cpu
         elif aug_type == 2:
             return self._apply_reverberation(waveform_on_cpu)
@@ -311,41 +317,83 @@ class Voxceleb2_dataset(Dataset):
         
         return waveform_on_cpu # 確保返回的是 CPU Tensor
     
-    def _add_noise(self, waveform):
+    
+    def _add_noise(self, audio, noisecat):
         """
-        添加噪音到音頻波形中。噪音從預載入的 MUSAN 數據集獲取。
+        加入背景噪音：
+        - 根據類型選擇 SNR、數量
+        - 從噪音資料集中隨機取出
+        - 根據 SNR 調整音量後加入語音
         """
-        if waveform.shape[1] == 0: # 處理空波形
-            return waveform
-
-        snr_db = random.uniform(0, 15) 
-
-        # **優化點：直接從記憶體中獲取噪音波形**
-        noise_type = random.choice(self.musan_noise_types)
-        noise_pool = self.loaded_musan_noise_waveforms[noise_type]
-        selected_noise_waveform = random.choice(noise_pool) # 這已經是 PyTorch Tensor
-
-        # 確保噪音片段長度足夠，如果不足就重複
-        if selected_noise_waveform.shape[1] < waveform.shape[1]:
-            repeats = math.ceil(waveform.shape[1] / selected_noise_waveform.shape[1])
-            selected_noise_waveform = selected_noise_waveform.repeat(1, repeats)
         
-        # 裁剪到目標長度
-        start_idx = random.randint(0, selected_noise_waveform.shape[1] - waveform.shape[1])
-        noise_segment = selected_noise_waveform[:, start_idx : start_idx + waveform.shape[1]]
+        # 計算乾淨語音的平均功率 (DB)
+        clean_db = 10 * np.log10(np.mean(audio ** 2) + 1e-4) 
         
-        # 計算 RMS 和縮放
-        eps = 1e-6 
-        speech_rms = torch.sqrt(torch.mean(waveform**2) + eps)
-        noise_rms = torch.sqrt(torch.mean(noise_segment**2) + eps)
+        # 決定加入的噪音數量和選擇噪音檔案
+        numnoise = self.numnoise[noisecat]
+        noiselist = random.sample(self.noise_file_paths_by_type[noisecat], random.randint(numnoise[0], numnoise[1]))
+        
+        
+        noises = []
+        for noise in noiselist:
+            noiseaudio, sr = soundfile.read(noise)
 
-        snr_linear = 10**(snr_db / 10.0)
-        noise_scaling_factor = (speech_rms / (noise_rms * torch.sqrt(torch.tensor(snr_linear, device=waveform.device))))
+            # 定義模型輸入長度
+            # 每10ms一幀，一幀的樣本數 = sampling rate (16000Hz) * 0.01s = 160
+            # 加上前後各240個樣本的緩衝區，避免邊緣效應(猜測)
+            length = self.frame_num * 160 + 240
+            
+            # 如果噪音長度不足，則重複填充 (不一定每段噪音都有足夠長度可供使用)
+            if noiseaudio.shape[0] <= length:
+                shortage = length - noiseaudio.shape[0]
+                noiseaudio = np.pad(noiseaudio, (0, shortage), 'wrap')
+            # 隨機選擇噪音片段
+            start_frame = np.int64(random.random()*(noiseaudio.shape[0]-length))
+            noiseaudio = noiseaudio[start_frame:start_frame + length]
+            noiseaudio = np.stack([noiseaudio], axis=0)
+            noise_db = 10 * np.log10(np.mean(noiseaudio ** 2) + 1e-4)
+            
+            # 確定目標的信噪比 (SNR)
+            noisesnr = random.uniform(self.noisesnr[noisecat][0], self.noisesnr[noisecat][1])
+            noises.append(np.sqrt(10 ** ((clean_db - noise_db - noisesnr) / 10)) * noiseaudio)
+        noise = np.sum(np.concatenate(noises, axis=0), axis=0, keepdims=True)
+        return noise + audio
+    
+    # def _add_noise(self, waveform):
+    #     """
+    #     添加噪音到音頻波形中。噪音從預載入的 MUSAN 數據集獲取。
+    #     """
+    #     if waveform.shape[1] == 0: # 處理空波形
+    #         return waveform
+
+    #     snr_db = random.uniform(0, 15) 
+
+    #     # **優化點：直接從記憶體中獲取噪音波形**
+    #     noise_type = random.choice(self.musan_noise_types)
+    #     noise_pool = self.loaded_musan_noise_waveforms[noise_type]
+    #     selected_noise_waveform = random.choice(noise_pool) # 這已經是 PyTorch Tensor
+
+    #     # 確保噪音片段長度足夠，如果不足就重複
+    #     if selected_noise_waveform.shape[1] < waveform.shape[1]:
+    #         repeats = math.ceil(waveform.shape[1] / selected_noise_waveform.shape[1])
+    #         selected_noise_waveform = selected_noise_waveform.repeat(1, repeats)
         
-        scaled_noise = noise_segment * noise_scaling_factor
-        noisy_waveform = waveform + scaled_noise
+    #     # 裁剪到目標長度
+    #     start_idx = random.randint(0, selected_noise_waveform.shape[1] - waveform.shape[1])
+    #     noise_segment = selected_noise_waveform[:, start_idx : start_idx + waveform.shape[1]]
         
-        return torch.clamp(noisy_waveform, -1.0, 1.0)
+    #     # 計算 RMS 和縮放
+    #     eps = 1e-6 
+    #     speech_rms = torch.sqrt(torch.mean(waveform**2) + eps)
+    #     noise_rms = torch.sqrt(torch.mean(noise_segment**2) + eps)
+
+    #     snr_linear = 10**(snr_db / 10.0)
+    #     noise_scaling_factor = (speech_rms / (noise_rms * torch.sqrt(torch.tensor(snr_linear, device=waveform.device))))
+        
+    #     scaled_noise = noise_segment * noise_scaling_factor
+    #     noisy_waveform = waveform + scaled_noise
+        
+    #     return torch.clamp(noisy_waveform, -1.0, 1.0)
     
     def _apply_reverberation(self, waveform):
         """
