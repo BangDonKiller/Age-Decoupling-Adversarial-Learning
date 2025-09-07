@@ -41,7 +41,7 @@ def prepare_dataloader():
         dataset_path=param.DATA_ROOT,
         musan_path=param.MUSAN_DIR,
         rir_path=param.RIR_NOISE_DIR,
-        augment=False,
+        augment=param.AUGMENT,
     )
     print(f"Training dataset loaded with {len(train_dataset)} samples.")
 
@@ -256,7 +256,7 @@ def finetune(model, train_loader, eval_loader, device, save_system):
 
     for epoch in range(param.FINETUNE_EPOCHS):
         model.train()
-        model.extractor.eval()
+        # model.extractor.eval()
         total_loss = 0.0
         total_correct = 0
         total_samples = 0

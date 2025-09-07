@@ -172,8 +172,8 @@ class AttributeUnlearningModel(nn.Module):
     def __init__(self, num_main_classes, num_attribute_classes, input_channels=1, input_size=128):
         super().__init__()
         self.extractor = RepresentationDetachmentExtractor()
-        self.extractor.requires_grad_(False)  # 鎖定提取器參數
-        self.extractor.eval()
+        # self.extractor.requires_grad_(False)  # 鎖定提取器參數
+        # self.extractor.eval()
         # ShuffleNet v2 x1.0 輸出的 embedding 維度是 1024
         embedding_dim = 1024 
         # self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)

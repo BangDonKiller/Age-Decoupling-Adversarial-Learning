@@ -46,7 +46,7 @@ class Voxceleb2_dataset(Dataset):
 
             # Step 1: 載入所有噪音和 RIR 檔案的路徑
             self.noise_file_paths_by_type = {}
-            # self._load_musan_noise_paths(self.musan_path)
+            self._load_musan_noise_paths(self.musan_path)
             self.rir_file_paths = glob.glob(os.path.join(self.rir_path,'*','*','*.wav'))
 
             # Step 2: 將所有噪音和 RIR 檔案的波形預載入到記憶體中
@@ -225,7 +225,6 @@ class Voxceleb2_dataset(Dataset):
         final_waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
 
         # ==================== 核心修正：對調順序 ====================
-
         # 2. 【先】進行資料增強。這一步驟可能會改變 final_waveform 的長度
         if self.augment:
             final_waveform = self._apply_augmentation(final_waveform)
@@ -242,7 +241,6 @@ class Voxceleb2_dataset(Dataset):
             # 隨機裁剪
             start_frame = random.randint(0, current_length - length)
             final_waveform = final_waveform[:, start_frame:start_frame + length]
-        
         # ============================================================
 
         # 4. 提取 Mel-filterbank energies
@@ -292,7 +290,8 @@ class Voxceleb2_dataset(Dataset):
         Returns:
             Tensor: 增強後的音頻波形
         """
-        aug_type = random.randint(0, 4)
+        # aug_type = random.randint(0, 4)
+        aug_type = 2
         
         # 確保 waveform 在 CPU 上，因為 librosa 和 torchaudio 某些操作預設在 CPU
         # 並且在 worker 中進行，如果傳入 GPU Tensor，會在 worker 中造成額外複製到 CPU 的開銷
@@ -301,8 +300,8 @@ class Voxceleb2_dataset(Dataset):
         if aug_type == 0:
             return waveform_on_cpu
         elif aug_type == 1:
-            # return self._add_noise(waveform_on_cpu)
-            return waveform_on_cpu
+            return self._add_noise(waveform_on_cpu)
+            # return waveform_on_cpu
         elif aug_type == 2:
             return self._apply_reverberation(waveform_on_cpu)
         elif aug_type == 3:
