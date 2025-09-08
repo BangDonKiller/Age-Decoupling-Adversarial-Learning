@@ -47,7 +47,6 @@ class Voxceleb2_dataset(Dataset):
         
         # --- 數據增強相關的初始化和預載入 ---
         if self.augment:
-            self.musan_noise_types = ['noise', 'speech', 'music']
             self.musan_path = musan_path
             self.rir_path = rir_path
 

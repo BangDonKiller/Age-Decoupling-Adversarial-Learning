@@ -204,38 +204,39 @@ def evaluate(model, val_loader, device):
 
 
     # ==== SNN confusion matrix ====
-    threshold = SNN_EER_threshold
-    preds_snn = (all_scores >= threshold).astype(int)
+    # threshold = SNN_EER_threshold
+    # preds_snn = (all_scores >= threshold).astype(int)
 
-    cm_snn = confusion_matrix(all_labels, preds_snn)
-    acc_snn = accuracy_score(all_labels, preds_snn)
-    precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
-    recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
+    # cm_snn = confusion_matrix(all_labels, preds_snn)
+    # acc_snn = accuracy_score(all_labels, preds_snn)
+    # precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
+    # recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
 
-    # confusion matrix
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.title("SNN Confusion Matrix")
-    plt.savefig("snn_confusion_matrix.png")
-    plt.close()
+    # # confusion matrix
+    # plt.figure(figsize=(6, 5))
+    # sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    # plt.xlabel("Predicted")
+    # plt.ylabel("True")
+    # plt.title("SNN Confusion Matrix")
+    # plt.savefig("snn_confusion_matrix.png")
+    # plt.close()
 
-    # ROC curve
-    fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
-    roc_auc_snn = auc(fpr_snn, tpr_snn)
+    # # ROC curve
+    # fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
+    # roc_auc_snn = auc(fpr_snn, tpr_snn)
 
-    plt.figure(figsize=(6, 5))
-    plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
-    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("SNN Receiver Operating Characteristic")
-    plt.legend(loc="lower right")
-    plt.savefig("snn_roc_curve.png")
-    plt.close()
+    # plt.figure(figsize=(6, 5))
+    # plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
+    # plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    # plt.xlabel("False Positive Rate")
+    # plt.ylabel("True Positive Rate")
+    # plt.title("SNN Receiver Operating Characteristic")
+    # plt.legend(loc="lower right")
+    # plt.savefig("snn_roc_curve.png")
+    # plt.close()
 
-    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
+    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
+    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -421,12 +422,12 @@ def train_model():
                 f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
                 )
             
-            cos_EER, minDCF, test_acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
-            print(f"Evaluation - EER: {cos_EER:.4f}, minDCF: {minDCF:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
+            cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
+            print(f"Evaluation - EER: {cos_EER:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
             save_system.write_result_to_file(
                 param.SCORE_DIR,
                 "result",
-                (epoch + 1, current_main_lr, avg_loss_id, avg_acc_id, cos_EER, minDCF, test_acc, precision, recall, EER_threshold)
+                (epoch + 1, current_main_lr, avg_loss_id, avg_acc_id, cos_EER, test_acc, precision, recall, EER_threshold)
             )
             
             if best_lost > avg_loss_id:

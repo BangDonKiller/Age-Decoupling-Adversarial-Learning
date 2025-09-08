@@ -68,7 +68,7 @@ class Save_system:
             # epoch, main_lr, detach_lr, alpha, l_id, acc_id, loss_detach, acc_age, loss_age, loss_recon, detachment_ID_loss, detach_acc_ID= content
             # with open(file_path, 'a') as f:
             #     f.write(f"{epoch}, {main_lr}, {detach_lr}, {alpha:.4f}, {l_id:.4f}, {acc_id:.4f}, {loss_detach:.4f}, {acc_age:.4f}, {loss_age:.4f}, {loss_recon:.4f}, {detachment_ID_loss:.4f}, {detach_acc_ID:.4f}\n")
-            epoch, main_lr, l_id, acc_id, cos_eer, min_dcf, Testacc, precision, recall, EER_threshold = content
+            epoch, main_lr, l_id, acc_id, cos_eer, Testacc, precision, recall, EER_threshold = content
             with open(file_path, 'a') as f:
                 f.write(f"{epoch}, {main_lr}, {l_id:.4f}, {acc_id:.4f}, {cos_eer:.4f}, {Testacc:.4f}, {precision:.4f}, {recall:.4f}, {EER_threshold:.4f}\n")
         elif filename == "finetune":
