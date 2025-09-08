@@ -15,6 +15,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from params import param
 import soundfile
+from scipy import signal
 
 
 # 忽略 librosa 可能發出的警告
@@ -54,13 +55,6 @@ class Voxceleb2_dataset(Dataset):
             self.noise_file_paths_by_type = {}
             self._load_musan_noise_paths(self.musan_path)
             self.rir_file_paths = glob.glob(os.path.join(self.rir_path,'*','*','*.wav'))
-
-            # Step 2: 將所有噪音和 RIR 檔案的波形預載入到記憶體中
-            # print("Preloading MUSAN noise files to memory...")
-            # self.loaded_musan_noise_waveforms = self._preload_audios_to_memory(self.noise_file_paths_by_type)
-            # print("Preloading RIR files to memory...")
-            # self.loaded_rir_waveforms = self._preload_audios_to_memory(self.rir_file_paths)
-            # print("Preloading complete.")
         
         # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
         self.data_list = self._load_data_list(dataset_path, data_list_file)
@@ -226,10 +220,6 @@ class Voxceleb2_dataset(Dataset):
         # 1. 載入音訊檔案，得到 NumPy 陣列
         waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
         
-        # 將 NumPy 轉換為 PyTorch Tensor，因為我們的增強函式現在期望 Tensor
-        # 並且增強操作最好在 Tensor 上完成
-        # final_waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
-
         # ==================== 核心修正：對調順序 ====================
         # 3. 【後】對增強後的音訊進行固定長度處理
         length = self.frame_num * 160 + 240
@@ -243,6 +233,7 @@ class Voxceleb2_dataset(Dataset):
             start_frame = random.randint(0, waveform.shape[0] - length)
             final_waveform = waveform[start_frame:start_frame + length]
             # final_waveform = final_waveform[:, start_frame:start_frame + length]
+        final_waveform = np.stack([final_waveform], axis=0)
             
         # 2. 【先】進行資料增強。這一步驟可能會改變 final_waveform 的長度
         if self.augment:
@@ -296,18 +287,13 @@ class Voxceleb2_dataset(Dataset):
         Returns:
             Tensor: 增強後的音頻波形
         """
-        # aug_type = random.randint(0, 4)
-        aug_type = 1
-        
-        # 確保 waveform 在 CPU 上，因為 librosa 和 torchaudio 某些操作預設在 CPU
-        # 並且在 worker 中進行，如果傳入 GPU Tensor，會在 worker 中造成額外複製到 CPU 的開銷
+        aug_type = random.randint(0, 3)
         waveform_on_cpu = waveform
 
         if aug_type == 0:
             return waveform_on_cpu
         elif aug_type == 1:
             return self._add_noise(waveform_on_cpu, random.choice(self.noisetypes))
-            # return waveform_on_cpu
         elif aug_type == 2:
             return self._apply_reverberation(waveform_on_cpu)
         elif aug_type == 3:
@@ -358,69 +344,32 @@ class Voxceleb2_dataset(Dataset):
             noises.append(np.sqrt(10 ** ((clean_db - noise_db - noisesnr) / 10)) * noiseaudio)
         noise = np.sum(np.concatenate(noises, axis=0), axis=0, keepdims=True)
         return noise + audio
-    
-    # def _add_noise(self, waveform):
-    #     """
-    #     添加噪音到音頻波形中。噪音從預載入的 MUSAN 數據集獲取。
-    #     """
-    #     if waveform.shape[1] == 0: # 處理空波形
-    #         return waveform
-
-    #     snr_db = random.uniform(0, 15) 
-
-    #     # **優化點：直接從記憶體中獲取噪音波形**
-    #     noise_type = random.choice(self.musan_noise_types)
-    #     noise_pool = self.loaded_musan_noise_waveforms[noise_type]
-    #     selected_noise_waveform = random.choice(noise_pool) # 這已經是 PyTorch Tensor
-
-    #     # 確保噪音片段長度足夠，如果不足就重複
-    #     if selected_noise_waveform.shape[1] < waveform.shape[1]:
-    #         repeats = math.ceil(waveform.shape[1] / selected_noise_waveform.shape[1])
-    #         selected_noise_waveform = selected_noise_waveform.repeat(1, repeats)
-        
-    #     # 裁剪到目標長度
-    #     start_idx = random.randint(0, selected_noise_waveform.shape[1] - waveform.shape[1])
-    #     noise_segment = selected_noise_waveform[:, start_idx : start_idx + waveform.shape[1]]
-        
-    #     # 計算 RMS 和縮放
-    #     eps = 1e-6 
-    #     speech_rms = torch.sqrt(torch.mean(waveform**2) + eps)
-    #     noise_rms = torch.sqrt(torch.mean(noise_segment**2) + eps)
-
-    #     snr_linear = 10**(snr_db / 10.0)
-    #     noise_scaling_factor = (speech_rms / (noise_rms * torch.sqrt(torch.tensor(snr_linear, device=waveform.device))))
-        
-    #     scaled_noise = noise_segment * noise_scaling_factor
-    #     noisy_waveform = waveform + scaled_noise
-        
-    #     return torch.clamp(noisy_waveform, -1.0, 1.0)
-    
+      
     def _apply_reverberation(self, waveform):
         """
         應用混響。RIRs 從預載入的數據集獲取。
         """
-        if not self.loaded_rir_waveforms:
-            warnings.warn("No RIR files preloaded for reverberation. Returning original waveform.")
-            return waveform
-        
-        # **優化點：直接從記憶體中獲取 RIR 波形**
-        rir_tensor = random.choice(self.loaded_rir_waveforms) # 這已經是 PyTorch Tensor
-
-        # 將 RIR 正規化
-        rir_tensor = rir_tensor / torch.norm(rir_tensor)
-
-        # 進行卷積操作，確保輸入和 RIR 都是 (1, samples)
-        reverb_waveform = F_audio.convolve(waveform, rir_tensor)
-
-        return torch.clamp(reverb_waveform, -1.0, 1.0)
+        rir_file = random.choice(self.rir_file_paths)
+        rir, sr = soundfile.read(rir_file)
+        rir = np.expand_dims(rir.astype(float), 0)
+        rir = rir / np.sqrt(np.sum(rir**2))  # 正規化        
+        return signal.convolve(waveform, rir, mode='full')[:, :self.frame_num * 160 + 240]
     
     def _change_volume(self, waveform):
         """
-        隨機改變音量。
+        隨機改變音量，使用對數 dB 模式。
         """
-        gain = random.uniform(0.5, 1.5)
-        adjusted_waveform = waveform * gain
-        return torch.clamp(adjusted_waveform, -1.0, 1.0)
+        # 隨機增益範圍：-6 到 +6 分貝
+        gain_db = random.uniform(-6.0, 6.0)
+        gain = 10 ** (gain_db / 20)  # dB -> 線性比例
+
+        adjusted = waveform * gain
+        # 避免削型：如果溢出就正規化到 -1~1 範圍
+        max_val = np.max(np.abs(adjusted))
+        if max_val > 1.0:
+            adjusted = adjusted / max_val
+
+        return adjusted
     
     def _change_speed(self, waveform):
         """
