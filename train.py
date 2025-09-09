@@ -59,6 +59,9 @@ def prepare_dataloader():
         dataset_path=param.VAL_DATA_ROOT,
         data_list_file=param.FINETUNE_DATA_LIST_FILE,
         frame_num=param.NUM_FRAMES,
+        musan_path=param.MUSAN_DIR,
+        rir_path=param.RIR_NOISE_DIR,
+        augment=param.AUGMENT,
     )
     print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
 
@@ -75,7 +78,10 @@ def prepare_dataloader():
     eval_dataset = Voxceleb1_dataset(
         dataset_path=param.VAL_DATA_ROOT,
         data_list_file=param.VAL_DATA_LIST_FILE,
+        musan_path=param.MUSAN_DIR,
+        rir_path=param.RIR_NOISE_DIR,
         frame_num=param.NUM_FRAMES,
+        augment=False,  # 評估時不進行增強
     )
 
     eval_loader = DataLoader(
@@ -204,39 +210,39 @@ def evaluate(model, val_loader, device):
 
 
     # ==== SNN confusion matrix ====
-    # threshold = SNN_EER_threshold
-    # preds_snn = (all_scores >= threshold).astype(int)
+    threshold = SNN_EER_threshold
+    preds_snn = (all_scores >= threshold).astype(int)
 
-    # cm_snn = confusion_matrix(all_labels, preds_snn)
-    # acc_snn = accuracy_score(all_labels, preds_snn)
-    # precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
-    # recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
+    cm_snn = confusion_matrix(all_labels, preds_snn)
+    acc_snn = accuracy_score(all_labels, preds_snn)
+    precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
+    recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
 
-    # # confusion matrix
-    # plt.figure(figsize=(6, 5))
-    # sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
-    # plt.xlabel("Predicted")
-    # plt.ylabel("True")
-    # plt.title("SNN Confusion Matrix")
-    # plt.savefig("snn_confusion_matrix.png")
-    # plt.close()
+    # confusion matrix
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("SNN Confusion Matrix")
+    plt.savefig("snn_confusion_matrix.png")
+    plt.close()
 
     # # ROC curve
-    # fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
-    # roc_auc_snn = auc(fpr_snn, tpr_snn)
+    fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
+    roc_auc_snn = auc(fpr_snn, tpr_snn)
 
-    # plt.figure(figsize=(6, 5))
-    # plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
-    # plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
-    # plt.xlabel("False Positive Rate")
-    # plt.ylabel("True Positive Rate")
-    # plt.title("SNN Receiver Operating Characteristic")
-    # plt.legend(loc="lower right")
-    # plt.savefig("snn_roc_curve.png")
-    # plt.close()
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("SNN Receiver Operating Characteristic")
+    plt.legend(loc="lower right")
+    plt.savefig("snn_roc_curve.png")
+    plt.close()
 
-    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
-    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
+    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
+    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -247,9 +253,6 @@ def finetune(model, train_loader, eval_loader, device, save_system):
         val_loader: 驗證數據加載器。
         device: 設備 (CPU 或 GPU)。
     """
-    # model.eval()
-    # val_eer, val_mDCF = evaluate(model, eval_loader, device)
-    # print(f"Validation EER: {val_eer:.4f}, Validation minDCF: {val_mDCF:.4f}")
     
     best_eer = float('inf')
 

@@ -226,7 +226,7 @@ class Voxceleb2_dataset(Dataset):
         
         if waveform.shape[0] <= length:
             shortage = length - waveform.shape[0]
-            final_waveform = torch.nn.functional.pad(final_waveform, (0, shortage), 'constant', 0)
+            final_waveform = torch.nn.functional.pad(waveform, (0, shortage), 'constant', 0)
         else:
             # 隨機裁剪
             start_frame = random.randint(0, waveform.shape[0] - length)
@@ -409,9 +409,12 @@ class Voxceleb2_dataset(Dataset):
     
 
 class Voxceleb1_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file,frame_num):
+    def __init__(self, dataset_path, data_list_file,frame_num, augment, musan_path, rir_path):
         self.sample_rate = 16000
         self.frame_num = frame_num
+        self.augment = augment
+        self.musan_path = musan_path
+        self.rir_path = rir_path
 
         # MelSpectrogram 應保持在 CPU，因為輸入波形是 CPU Tensor
         self.mel_spectrogram = T.MelSpectrogram(
@@ -420,12 +423,39 @@ class Voxceleb1_dataset(Dataset):
             hop_length=160,    # 10ms hop_size
             n_mels=80          # 80 維 Mel-filterbank energies
         )
+        
+        # 定義噪音類型與對應 SNR 範圍與數量
+        self.noisetypes = ['noise','speech','music']
+        self.noisesnr = {'noise':[0,15],'speech':[13,20],'music':[5,15]}
+        self.numnoise = {'noise':[1,1], 'speech':[3,8], 'music':[1,1]}
+
+        # --- 數據增強相關的初始化和預載入 ---
+        if self.augment:
+            self.musan_path = musan_path
+            self.rir_path = rir_path
+
+            # Step 1: 載入所有噪音和 RIR 檔案的路徑
+            self.noise_file_paths_by_type = {}
+            self._load_musan_noise_paths(self.musan_path)
+            self.rir_file_paths = glob.glob(os.path.join(self.rir_path,'*','*','*.wav'))
 
         # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
         self.data_list = self._load_data_list(dataset_path, data_list_file)
         
     def __len__(self):
         return len(self.data_list)
+    
+    def _load_musan_noise_paths(self, musan_path):
+        """
+        遍歷 MUSAN 數據集目錄，載入所有噪音檔案的路徑並按類型分類。
+        """
+        augment_files = glob.glob(os.path.join(musan_path,'*','*','*.wav'))
+        for file_path in augment_files:
+            # 根據 MUSAN 的標準路徑結構，類型通常是倒數第三個資料夾名
+            noise_type_key = file_path.split(os.sep)[-3] # 使用 os.sep 確保跨平台兼容性
+            if noise_type_key not in self.noise_file_paths_by_type:
+                self.noise_file_paths_by_type[noise_type_key] = []
+            self.noise_file_paths_by_type[noise_type_key].append(file_path)
 
     def _load_data_list(self, dataset_path, data_list_path):
         """
@@ -531,20 +561,39 @@ class Voxceleb1_dataset(Dataset):
         # 【核心修改】這個函數現在完全模仿訓練集的 __getitem__ 邏輯
         waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
 
-        waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
+        # waveform = torch.from_numpy(waveform).float().unsqueeze(0) # Shape: (1, num_samples)
         
         # 計算與訓練集完全相同的目標長度
         length = self.frame_num * 160 + 240
-        current_length = waveform.shape[1]
+        # current_length = waveform.shape[1]
         
-        if current_length <= length:
-            shortage = length - current_length
-            # 使用 PyTorch 的 pad 函式來填充 Tensor
+        # if current_length <= length:
+        #     shortage = length - current_length
+        #     # 使用 PyTorch 的 pad 函式來填充 Tensor
+        #     final_waveform = torch.nn.functional.pad(waveform, (0, shortage), 'constant', 0)
+        # else:
+        #     # 隨機裁剪
+        #     start_frame = random.randint(0, current_length - length)
+        #     final_waveform = waveform[:, start_frame:start_frame + length]
+        
+        length = self.frame_num * 160 + 240
+        # current_length = final_waveform.shape[1]
+        
+        if waveform.shape[0] <= length:
+            shortage = length - waveform.shape[0]
             final_waveform = torch.nn.functional.pad(waveform, (0, shortage), 'constant', 0)
         else:
             # 隨機裁剪
-            start_frame = random.randint(0, current_length - length)
-            final_waveform = waveform[:, start_frame:start_frame + length]
+            start_frame = random.randint(0, waveform.shape[0] - length)
+            final_waveform = waveform[start_frame:start_frame + length]
+            # final_waveform = final_waveform[:, start_frame:start_frame + length]
+        final_waveform = np.stack([final_waveform], axis=0)
+            
+        if self.augment:
+            final_waveform = self._apply_augmentation(final_waveform)
+            final_waveform = torch.from_numpy(final_waveform).float()
+        else:
+            final_waveform = torch.from_numpy(final_waveform).float()
 
         mel_spec = self.mel_spectrogram(final_waveform)
         mel_spec = torch.log(mel_spec + 1e-6)
@@ -570,6 +619,104 @@ class Voxceleb1_dataset(Dataset):
         final_input_mels2 = process_batch(mels2)
 
         return final_input_mels1, final_input_mels2, torch.tensor(label_list, dtype=torch.long)
+
+    def _apply_augmentation(self, waveform):
+        """
+        資料強化方法:
+            - aug_type = 0: 不進行增強
+            - aug_type = 1: 添加噪音
+            - aug_type = 2: 混響
+            - aug_type = 3: 音量變化
+            - aug_type = 4: 速度變化
+        
+        Args:
+            waveform (Tensor): 音頻波形，形狀為 (channels, samples)
+        Returns:
+            Tensor: 增強後的音頻波形
+        """
+        aug_type = random.randint(0, 3)
+        waveform_on_cpu = waveform
+
+        if aug_type == 0:
+            return waveform_on_cpu
+        elif aug_type == 1:
+            return self._add_noise(waveform_on_cpu, random.choice(self.noisetypes))
+        elif aug_type == 2:
+            return self._apply_reverberation(waveform_on_cpu)
+        elif aug_type == 3:
+            return self._change_volume(waveform_on_cpu)
+        # elif aug_type == 4:
+        #     return self._change_speed(waveform_on_cpu)
+        
+        return waveform_on_cpu # 確保返回的是 CPU Tensor
+    
+    
+    def _add_noise(self, audio, noisecat):
+        """
+        加入背景噪音：
+        - 根據類型選擇 SNR、數量
+        - 從噪音資料集中隨機取出
+        - 根據 SNR 調整音量後加入語音
+        """
+        
+        # 計算乾淨語音的平均功率 (DB)
+        clean_db = 10 * np.log10(np.mean(audio ** 2) + 1e-4) 
+        
+        # 決定加入的噪音數量和選擇噪音檔案
+        numnoise = self.numnoise[noisecat]
+        noiselist = random.sample(self.noise_file_paths_by_type[noisecat], random.randint(numnoise[0], numnoise[1]))
+        
+        
+        noises = []
+        for noise in noiselist:
+            noiseaudio, sr = soundfile.read(noise)
+
+            # 定義模型輸入長度
+            # 每10ms一幀，一幀的樣本數 = sampling rate (16000Hz) * 0.01s = 160
+            # 加上前後各240個樣本的緩衝區，避免邊緣效應(猜測)
+            length = self.frame_num * 160 + 240
+            
+            # 如果噪音長度不足，則重複填充 (不一定每段噪音都有足夠長度可供使用)
+            if noiseaudio.shape[0] <= length:
+                shortage = length - noiseaudio.shape[0]
+                noiseaudio = np.pad(noiseaudio, (0, shortage), 'wrap')
+            # 隨機選擇噪音片段
+            start_frame = np.int64(random.random()*(noiseaudio.shape[0]-length))
+            noiseaudio = noiseaudio[start_frame:start_frame + length]
+            noiseaudio = np.stack([noiseaudio], axis=0)
+            noise_db = 10 * np.log10(np.mean(noiseaudio ** 2) + 1e-4)
+            
+            # 確定目標的信噪比 (SNR)
+            noisesnr = random.uniform(self.noisesnr[noisecat][0], self.noisesnr[noisecat][1])
+            noises.append(np.sqrt(10 ** ((clean_db - noise_db - noisesnr) / 10)) * noiseaudio)
+        noise = np.sum(np.concatenate(noises, axis=0), axis=0, keepdims=True)
+        return noise + audio
+      
+    def _apply_reverberation(self, waveform):
+        """
+        應用混響。RIRs 從預載入的數據集獲取。
+        """
+        rir_file = random.choice(self.rir_file_paths)
+        rir, sr = soundfile.read(rir_file)
+        rir = np.expand_dims(rir.astype(float), 0)
+        rir = rir / np.sqrt(np.sum(rir**2))  # 正規化        
+        return signal.convolve(waveform, rir, mode='full')[:, :self.frame_num * 160 + 240]
+    
+    def _change_volume(self, waveform):
+        """
+        隨機改變音量，使用對數 dB 模式。
+        """
+        # 隨機增益範圍：-6 到 +6 分貝
+        gain_db = random.uniform(-6.0, 6.0)
+        gain = 10 ** (gain_db / 20)  # dB -> 線性比例
+
+        adjusted = waveform * gain
+        # 避免削型：如果溢出就正規化到 -1~1 範圍
+        max_val = np.max(np.abs(adjusted))
+        if max_val > 1.0:
+            adjusted = adjusted / max_val
+
+        return adjusted
         
 # Testing
 if __name__ == "__main__":
