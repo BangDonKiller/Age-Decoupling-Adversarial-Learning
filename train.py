@@ -63,6 +63,7 @@ def prepare_dataloader():
         musan_path=param.MUSAN_DIR,
         rir_path=param.RIR_NOISE_DIR,
         augment=param.AUGMENT,
+        train = True,
     )
     print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
 
@@ -83,6 +84,7 @@ def prepare_dataloader():
         rir_path=param.RIR_NOISE_DIR,
         frame_num=param.NUM_FRAMES,
         augment=False,  # 評估時不進行增強
+        train = False,
     )
 
     eval_loader = DataLoader(
@@ -147,7 +149,7 @@ def evaluate(model, val_loader, device):
             embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
             
             scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
-            
+
             # L2 正則化 (這部分是正確的)
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
@@ -443,7 +445,7 @@ def train_model():
                 save_system.save_model(model, epoch + 1, mode="pretrain", state="last")
 
     else:
-        model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
+        # model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
         finetune_loss, finetune_acc, cos_eer, snn_eer = finetune(model, finetune_loader, eval_loader, device, save_system)
         print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", cos_eer, "SNN EER:", snn_eer)
 

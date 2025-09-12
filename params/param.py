@@ -6,7 +6,7 @@ import torch
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 # 設定隨機種子，確保實驗可重現性
 RANDOM_SEED = 42
-PRETRAIN = True
+PRETRAIN = False
 AUGMENT = False
 
 # --- 2. 路徑設定 (Path Configurations) ---
@@ -29,7 +29,7 @@ CHECKPOINT_DIR = './checkpoints'
 SCORE_DIR = './scores' # 儲存驗證結果 (EER, mDCF)
 TENSOR_BOARD_DIR = './tensorboard_logs'  # TensorBoard 日誌目錄
 FINETUNE_DIR = './finetune'
-PRETRAINED_WEIGHTS_PATH = './checkpoints/last_pretrain_model.pth' # 預訓練模型權重路徑
+PRETRAINED_WEIGHTS_PATH = './checkpoints/best_pretrain_model.pth' # 預訓練模型權重路徑
 # 確保目錄存在
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -102,9 +102,9 @@ ALPHA_SCHEDULE = {
 # 訓練輪數
 EPOCHS = 50 # 實際訓練可能更多，這裡是一個示例
 WARM_UP_EPOCHS = 10
-FINETUNE_EPOCHS = 1
+FINETUNE_EPOCHS = 100
 # 每批次訓練樣本數
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 # 優化器類型
 OPTIMIZER = 'Adam'
 # 初始學習率
