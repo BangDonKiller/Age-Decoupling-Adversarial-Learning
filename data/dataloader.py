@@ -409,12 +409,13 @@ class Voxceleb2_dataset(Dataset):
     
 
 class Voxceleb1_dataset(Dataset):
-    def __init__(self, dataset_path, data_list_file,frame_num, augment, musan_path, rir_path):
+    def __init__(self, dataset_path, data_list_file,frame_num, augment, musan_path, rir_path, train):
         self.sample_rate = 16000
         self.frame_num = frame_num
         self.augment = augment
         self.musan_path = musan_path
         self.rir_path = rir_path
+        self.train = train
 
         # MelSpectrogram 應保持在 CPU，因為輸入波形是 CPU Tensor
         self.mel_spectrogram = T.MelSpectrogram(
@@ -465,8 +466,11 @@ class Voxceleb1_dataset(Dataset):
             data_list_raw = f.readlines()
 
         data_list_raw = [line.strip().split() for line in data_list_raw]
-        data_list_raw = random.sample(data_list_raw, 10000)  # 隨機選擇 10000 條數據
-        
+
+        # 如果是測試模式，隨機選擇 10000 條數據來加快速度
+        if not self.train:
+            data_list_raw = random.sample(data_list_raw, 10000)  # 隨機選擇 10000 條數據
+
         data = []
         
         for line in data_list_raw:

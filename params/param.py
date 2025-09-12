@@ -7,29 +7,29 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 # 設定隨機種子，確保實驗可重現性
 RANDOM_SEED = 42
 PRETRAIN = False
-AUGMENT = True
+AUGMENT = False
 
 # --- 2. 路徑設定 (Path Configurations) ---
 # 數據集根目錄
-DATA_ROOT = ['D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac']
+DATA_ROOT = ['/app/dataset/VoxCeleb2/vox2_dev_wav/dev/aac']
 # 數據列表文件路徑 (包含音頻路徑、身份ID、年齡組ID)
-DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy"
+DATA_LIST_FILE = "/app/dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy"
 # 訓練數據列表文件路徑
 VAL_DATA_ROOT = [
-    "D:/Dataset/VoxCeleb1/vox1_dev_wav/wav", 
-    "D:/Dataset/VoxCeleb1/vox1_test_wav/wav",
-    "D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac"
+    "/app/dataset/VoxCeleb1/vox1_dev_wav/wav", 
+    "/app/dataset/VoxCeleb1/vox1_test_wav/wav",
+    "/app/dataset/VoxCeleb2/vox2_dev_wav/dev/aac"
 ]
 # 驗證數據列表文件路徑
-FINETUNE_DATA_LIST_FILE = "D:/Dataset/VoxCeleb2/vox2celeb2pair.txt"
-VAL_DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA5/test.txt"
+FINETUNE_DATA_LIST_FILE = "/app/dataset/VoxCeleb2/vox2celeb2pair.txt"
+VAL_DATA_LIST_FILE = "/app/dataset/Cross-Age_Speaker_Verification/trials/Vox-CA5/test.txt"
 # 訓練日誌、模型檢查點的儲存目錄
 LOG_DIR = './logs'
 CHECKPOINT_DIR = './checkpoints'
 SCORE_DIR = './scores' # 儲存驗證結果 (EER, mDCF)
 TENSOR_BOARD_DIR = './tensorboard_logs'  # TensorBoard 日誌目錄
 FINETUNE_DIR = './finetune'
-PRETRAINED_WEIGHTS_PATH = './checkpoints/last_pretrain_model.pth' # 預訓練模型權重路徑
+PRETRAINED_WEIGHTS_PATH = './checkpoints/best_pretrain_model.pth' # 預訓練模型權重路徑
 # 確保目錄存在
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -37,8 +37,8 @@ os.makedirs(SCORE_DIR, exist_ok=True)
 os.makedirs(FINETUNE_DIR, exist_ok=True)
 
 # 數據增強所需的外部數據集路徑
-MUSAN_DIR = 'D:/Dataset/musan/musan'
-RIR_NOISE_DIR = 'D:/Dataset/sim_rir_16k/simulated_rirs_16k'
+MUSAN_DIR = '/app/dataset/musan/musan'
+RIR_NOISE_DIR = '/app/dataset/sim_rir_16k/simulated_rirs_16k'
 
 # --- 3. 音頻特徵提取參數 (Audio Feature Extraction Parameters) ---
 # 音頻採樣率 (Hz) - 論文中未明確提及，常用值
@@ -102,9 +102,9 @@ ALPHA_SCHEDULE = {
 # 訓練輪數
 EPOCHS = 1 # 實際訓練可能更多，這裡是一個示例
 WARM_UP_EPOCHS = 10
-FINETUNE_EPOCHS = 1
+FINETUNE_EPOCHS = 100
 # 每批次訓練樣本數
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 # 優化器類型
 OPTIMIZER = 'Adam'
 # 初始學習率
