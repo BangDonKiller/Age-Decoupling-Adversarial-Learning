@@ -42,6 +42,7 @@ def prepare_dataloader():
         musan_path=param.MUSAN_DIR,
         rir_path=param.RIR_NOISE_DIR,
         augment=param.AUGMENT,
+        num_people=param.NUM_SPEAKERS
     )
     print(f"Training dataset loaded with {len(train_dataset)} samples.")
 
@@ -145,11 +146,11 @@ def evaluate(model, val_loader, device):
             embedding1 = model(audio1, mode="val") # 輸出形狀: (batch_size, feature_dim)
             embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
             
+            scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
+            
             # L2 正則化 (這部分是正確的)
             embedding1 = F.normalize(embedding1, p=2, dim=1)
             embedding2 = F.normalize(embedding2, p=2, dim=1)
-            
-            scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
 
             # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
             scores_batch2 = F.cosine_similarity(embedding1, embedding2, dim=1)
@@ -210,39 +211,39 @@ def evaluate(model, val_loader, device):
 
 
     # ==== SNN confusion matrix ====
-    threshold = SNN_EER_threshold
-    preds_snn = (all_scores >= threshold).astype(int)
+    # threshold = SNN_EER_threshold
+    # preds_snn = (all_scores >= threshold).astype(int)
 
-    cm_snn = confusion_matrix(all_labels, preds_snn)
-    acc_snn = accuracy_score(all_labels, preds_snn)
-    precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
-    recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
+    # cm_snn = confusion_matrix(all_labels, preds_snn)
+    # acc_snn = accuracy_score(all_labels, preds_snn)
+    # precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
+    # recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
 
-    # confusion matrix
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.title("SNN Confusion Matrix")
-    plt.savefig("snn_confusion_matrix.png")
-    plt.close()
+    # # confusion matrix
+    # plt.figure(figsize=(6, 5))
+    # sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    # plt.xlabel("Predicted")
+    # plt.ylabel("True")
+    # plt.title("SNN Confusion Matrix")
+    # plt.savefig("snn_confusion_matrix.png")
+    # plt.close()
 
-    # # ROC curve
-    fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
-    roc_auc_snn = auc(fpr_snn, tpr_snn)
+    # # # ROC curve
+    # fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
+    # roc_auc_snn = auc(fpr_snn, tpr_snn)
 
-    plt.figure(figsize=(6, 5))
-    plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
-    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("SNN Receiver Operating Characteristic")
-    plt.legend(loc="lower right")
-    plt.savefig("snn_roc_curve.png")
-    plt.close()
+    # plt.figure(figsize=(6, 5))
+    # plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
+    # plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    # plt.xlabel("False Positive Rate")
+    # plt.ylabel("True Positive Rate")
+    # plt.title("SNN Receiver Operating Characteristic")
+    # plt.legend(loc="lower right")
+    # plt.savefig("snn_roc_curve.png")
+    # plt.close()
 
-    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
-    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
+    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
+    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
 
 def finetune(model, train_loader, eval_loader, device, save_system):
     """
@@ -360,19 +361,20 @@ def train_model():
                 
                 # loss_main = criterion_main(output, identity_labels)
 
-                loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
+                # loss_detach, loss_recon, pred_y, loss_y, pred_age, pred_detach_age_loss = model.aux_network(h, mels, identity_labels, age_labels, current_alpha, param.BETA, param.GAMMA)
 
-                total_loss_for_extractor = loss_main + loss_detach
+                total_loss_for_extractor = loss_main
+                # total_loss_for_extractor = loss_main + loss_detach
                 total_loss_for_extractor.backward()
                 # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
                 optimizer.step()
 
                 # --- 累加其他損失和準確率（用於日誌）---
                 total_loss_id += loss_main.item()
-                total_detach_loss += loss_detach.item()
-                total_loss_recon += loss_recon.item()
-                total_detach_loss_y += loss_y.item()
-                total_detach_loss_age += pred_detach_age_loss.item()
+                # total_detach_loss += loss_detach.item()
+                # total_loss_recon += loss_recon.item()
+                # total_detach_loss_y += loss_y.item()
+                # total_detach_loss_age += pred_detach_age_loss.item()
                 
                 # max_index_of_id = torch.argmax(output, dim=1)
                 # total_correct_id += (max_index_of_id == identity_labels).sum().item()
@@ -381,16 +383,16 @@ def train_model():
                 total_correct_id += (acc_main.item() / 100.0) * batch_size
                 total_samples_id += batch_size
 
-                max_index_of_age = torch.argmax(pred_age, dim=1)
-                total_acc_age += (max_index_of_age == age_labels).sum().item()
+                # max_index_of_age = torch.argmax(pred_age, dim=1)
+                # total_acc_age += (max_index_of_age == age_labels).sum().item()
                 
-                max_index_of_detach_ID = torch.argmax(pred_y, dim=1)
-                total_detach_acc_ID += (max_index_of_detach_ID == identity_labels).sum().item()
+                # max_index_of_detach_ID = torch.argmax(pred_y, dim=1)
+                # total_detach_acc_ID += (max_index_of_detach_ID == identity_labels).sum().item()
 
                 pbar.set_postfix({
                     'L_id': f'{loss_main.item():.4f}',
                     'Acc_id': f'{total_correct_id / total_samples_id * 100:.2f}%',
-                    'L_detach': f'{loss_detach.item():.4f}',
+                    # 'L_detach': f'{loss_detach.item():.4f}',
                 })
             
             # --- 計算整個 epoch 的平均損失和準確率 ---

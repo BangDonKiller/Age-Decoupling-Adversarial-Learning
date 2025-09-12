@@ -129,7 +129,8 @@ class RepresentationDetachmentExtractor(nn.Module):
     def __init__(self):
         super().__init__()
         # 載入預訓練的 ShuffleNet v2
-        shufflenet = models.shufflenet_v2_x1_0(weights=models.ShuffleNet_V2_X1_0_Weights.DEFAULT)
+        shufflenet = models.shufflenet_v2_x1_0(weights=None)
+        # shufflenet = models.shufflenet_v2_x1_0(weights=models.ShuffleNet_V2_X1_0_Weights.DEFAULT)
         # 移除原始的分類頭
         self.features = nn.Sequential(*list(shufflenet.children())[:-1])
 

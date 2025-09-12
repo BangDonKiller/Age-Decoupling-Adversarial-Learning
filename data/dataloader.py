@@ -27,10 +27,11 @@ warnings.simplefilter("ignore", category=FutureWarning)
 
 
 class Voxceleb2_dataset(Dataset):
-    def __init__(self, num_frames, dataset_path, data_list_file, musan_path, rir_path, augment=False):
+    def __init__(self, num_frames, dataset_path, data_list_file, musan_path, rir_path, augment=False, num_people=None):
         self.augment = augment
         self.sample_rate = 16000  # 假設採樣率為 16000 Hz
         self.frame_num = num_frames
+        self.num_people = num_people
 
         # MelSpectrogram 應保持在 CPU，因為輸入波形是 CPU Tensor
         self.mel_spectrogram = T.MelSpectrogram(
@@ -56,7 +57,7 @@ class Voxceleb2_dataset(Dataset):
             self.rir_file_paths = glob.glob(os.path.join(self.rir_path,'*','*','*.wav'))
         
         # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
-        self.data_list = self._load_data_list(dataset_path, data_list_file)
+        self.data_list = self._load_data_list(dataset_path, data_list_file, self.num_people)
             
     def _load_musan_noise_paths(self, musan_path):
         """
@@ -96,7 +97,7 @@ class Voxceleb2_dataset(Dataset):
                     warnings.warn(f"Failed to preload {file_path}: {e}. Skipping.")
         return loaded_data
 
-    def _load_data_list(self, dataset_paths, data_list_path, num_people=500):
+    def _load_data_list(self, dataset_paths, data_list_path, num_people):
         """
         讀取包含 (audio_path, identity_id, age_group_id) 的列表。
         優化：在初始化時就確定每個樣本的具體音頻文件路徑，並確保說話者唯一性。
