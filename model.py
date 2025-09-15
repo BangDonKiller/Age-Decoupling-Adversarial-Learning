@@ -177,21 +177,37 @@ class AttributeUnlearningModel(nn.Module):
         # self.extractor.eval()
         # ShuffleNet v2 x1.0 輸出的 embedding 維度是 1024
         embedding_dim = 1024 
+        self.num_main_classes = num_main_classes
         # self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
         self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
         self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
         self.SNN_classifier = SNNClassifier(embedding_dim, 1)
 
     def forward(self, x, id_label=None, mode=None):
+        h = self.extractor(x)
         if mode == "train":
-            h = self.extractor(x)
             # main_task_output = self.classifier(h)
             loss, acc = self.classifier(h, label=id_label)
             # return main_task_output, h
             return loss, acc, h
-        else:
-            h = self.extractor(x)
+        elif mode == "val" or mode == "finetune":
+            # 在評估或微調時，只返回提取器嵌入
             return h
+
+        # 【新增】返回分類器嵌入的模式
+        elif mode == "extract_classifier_embedding":
+            # 我們要返回 id_classifier 最後一個線性層之前的輸出
+            # 遍歷分類器層
+            classifier_embedding = h
+            for layer in self.SNN_classifier:
+                # 找到最後一個線性層就停止
+                if isinstance(layer, nn.Linear) and layer.out_features == self.num_main_classes:
+                    break
+                classifier_embedding = layer(classifier_embedding)
+            return classifier_embedding
+
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
 
 # if __name__ == "__main__":

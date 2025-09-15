@@ -6,7 +6,8 @@ import torch
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 # 設定隨機種子，確保實驗可重現性
 RANDOM_SEED = 42
-PRETRAIN = True
+PRETRAIN = False
+EVAL = True
 AUGMENT = False
 
 # --- 2. 路徑設定 (Path Configurations) ---
@@ -22,7 +23,8 @@ VAL_DATA_ROOT = [
 ]
 # 驗證數據列表文件路徑
 FINETUNE_DATA_LIST_FILE = "D:/Dataset/VoxCeleb2/vox2celeb2pair.txt"
-VAL_DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA5/test.txt"
+VAL_DATA_LIST_FILE = "D:/Dataset/VoxCeleb1/vox1_test_txt/vox1_test.txt"
+# VAL_DATA_LIST_FILE = "D:/Dataset/Cross-Age_Speaker_Verification/trials/Vox-CA5/test.txt"
 # 訓練日誌、模型檢查點的儲存目錄
 LOG_DIR = './logs'
 CHECKPOINT_DIR = './checkpoints'

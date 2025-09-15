@@ -411,22 +411,10 @@ def train_model():
 
             current_main_lr = optimizer.param_groups[0]['lr']
             current_detach_lr = optimizer.param_groups[0]['lr']
-
-            # save_system.write_result_to_file(
-            #     param.SCORE_DIR,
-            #     "result",
-            #     (epoch + 1, current_main_lr, current_detach_lr, current_alpha, avg_loss_id, avg_acc_id, avg_detach_loss, avg_acc_age, avg_detach_loss_age, avg_loss_recon, avg_detach_loss_y, avg_detach_acc_ID)
-            # )
             
             print(f"Epoch {epoch + 1}/{param.EPOCHS} completed. "
                 f"預訓練主要任務損失: {avg_loss_id:.4f}, "
                 f"主要任務準確率: {avg_acc_id:.4f}%, "
-                f"輔助任務總損失: {avg_detach_loss:.4f}, "
-                f"輔助任務Age損失: {avg_detach_loss_age:.4f}, "
-                f"輔助任務Age準確率: {avg_acc_age:.4f}, "
-                f"輔助任務重建損失: {avg_loss_recon:.4f}, "
-                f"輔助任務ID損失: {avg_detach_loss_y:.4f}, "
-                f"輔助任務ID準確率: {avg_detach_acc_ID:.4f}, "
                 )
             
             cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
@@ -444,10 +432,16 @@ def train_model():
             if epoch == param.EPOCHS - 1:
                 save_system.save_model(model, epoch + 1, mode="pretrain", state="last")
 
-    else:
+    # 二次訓練
+    elif not param.PRETRAIN and not param.EVAL:
         # model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
         finetune_loss, finetune_acc, cos_eer, snn_eer = finetune(model, finetune_loader, eval_loader, device, save_system)
         print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", cos_eer, "SNN EER:", snn_eer)
+        
+    else:
+        model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
+        cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
+        print(f"Evaluation - EER: {cos_EER:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
 
 if __name__ == '__main__':
     train_model()
