@@ -29,7 +29,6 @@ class eval_loader(Dataset):
             n_mels=80          # 80 維 Mel-filterbank energies
         )
 
-        # 加載數據列表，這個必須在增強文件預載入之後，因為 _load_data_list 中會檢查文件存在
         self.data_list = self._load_data_list(dataset_path, data_list_file)
         
     def __len__(self):
@@ -126,7 +125,6 @@ class eval_loader(Dataset):
         return torch.stack(normalized_tensors, dim=0)
     
     def __getitem__(self, idx):
-        # 現在 self.data_list[idx] 已經是完整的音訊檔案路徑了
         label, audio1_path, audio2_path = self.data_list[idx]
         
         # 使用一個輔助函數來處理單個音頻，確保邏輯一致
@@ -137,8 +135,7 @@ class eval_loader(Dataset):
 
     def _process_audio(self, audio_file_path):
         waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
-        
-        # 計算與訓練集完全相同的目標長度
+
         length = self.frame_num * 160 + 240
         
         if waveform.shape[0] <= length:
@@ -158,14 +155,11 @@ class eval_loader(Dataset):
         return mel_spec
     
     def collate_fn(self, batch):
-        # 【核心修改】collate_fn 現在變得和訓練集一樣簡單
         mel1_list, mel2_list, label_list = zip(*batch)
-        
-        # 直接堆疊，因為 __getitem__ 保證了大小一致
+
         mels1 = torch.stack(mel1_list)
         mels2 = torch.stack(mel2_list)
 
-        # 應用與訓練集完全相同的處理流程
         def process_batch(mels):
             # resize_mels = F.interpolate(mels, size=(224, 224), mode="bilinear", align_corners=False)
             # norm_mels = self.min_max_normalize(resize_mels)

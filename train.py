@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
+import torchaudio.transforms as T
 import numpy as np
 import os
 from tqdm import tqdm
@@ -16,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, roc_curve, auc
 import matplotlib.pyplot as plt
 import seaborn as sns
+import soundfile
 
 # --- 設定隨機種子，確保可重現性 ---
 def set_seed(seed):
@@ -25,8 +27,6 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        # torch.backends.cudnn.deterministic = True
-        # torch.backends.cudnn.benchmark = False
 
 set_seed(param.RANDOM_SEED)
 
@@ -123,7 +123,24 @@ def log_tensorboard(writer, step, id_loss, age_loss, age_grl_loss, acc, EER, min
     if minDCF is not None:
         writer.add_scalar("minDCF/train", minDCF, step)
 
-def evaluate(model, val_loader, device):
+def eval_file_processing(eval_list):
+    """
+    處理評估文件列表，返回音頻對和標籤。
+    
+    :param file_list: 包含音頻對和標籤的文件路徑。
+    :return: 音頻對和標籤的列表。
+    """
+    files = []
+    lines = open(eval_list).read().splitlines()
+    for line in lines:
+        files.append(line.split()[1])
+        files.append(line.split()[2])
+    setfiles = list(set(files))
+    setfiles.sort()
+    return setfiles, lines
+
+
+def evaluate(model, eval_path, device):
     """
     在驗證集上評估模型性能，計算 EER 和 minDCF。
     
@@ -133,61 +150,76 @@ def evaluate(model, val_loader, device):
     :return: EER 和 minDCF。
     """
     model.eval()  # 設置模型為評估模式
-    all_scores = [] # 用於收集所有測試對的分數
-    all_labels = [] # 用於收集所有測試對的真實標籤
     
-    cos_scores = []
-    cos_labels = []
+    mel_trans = T.MelSpectrogram(
+        sample_rate=param.SAMPLE_RATE,
+        win_length=400,
+        hop_length=160,
+        n_mels=80
+    ).to(device)
 
-    with torch.no_grad():
-        for audio1, audio2, label in tqdm(val_loader, desc="Evaluating", unit="batch"):
-            audio1 = audio1.to(device)
-            audio2 = audio2.to(device)
+    embeddings = {}
+    setfiles, lines = eval_file_processing(param.VAL_DATA_LIST_FILE)
 
-            # 前向傳播
-            embedding1 = model(audio1, mode="val") # 輸出形狀: (batch_size, feature_dim)
-            embedding2 = model(audio2, mode="val") # 輸出形狀: (batch_size, feature_dim)
+    for idx, file in tqdm(enumerate(setfiles), total = len(setfiles)):
+        path = os.path.join(eval_path, file)
+        if os.path.exists(path):
+            target_path = path
+        else:
+            print("File not found:", path)
+
+        audio, _  = soundfile.read(target_path)
+        # Full utterance
+        data_1 = torch.FloatTensor(numpy.stack([audio],axis=0)).cuda()
+
+        # Spliited utterance matrix
+        max_audio = 300 * 160 + 240
+        if audio.shape[0] <= max_audio:
+            shortage = max_audio - audio.shape[0]
+            audio = numpy.pad(audio, (0, shortage), 'wrap')
+        feats = []
+        startframe = numpy.linspace(0, audio.shape[0]-max_audio, num=5)
+        for asf in startframe:
+            feats.append(audio[int(asf):int(asf)+max_audio])
+        feats = numpy.stack(feats, axis = 0).astype(float)
+        data_2 = torch.FloatTensor(feats).cuda()
+        # Speaker embeddings
+        with torch.no_grad():
+            data_1 = mel_trans(data_1).unsqueeze(1).repeat(1, 3, 1, 1)
+            data_2 = mel_trans(data_2).unsqueeze(1).repeat(1, 3, 1, 1)
+
+            embedding_1 = model(data_1, mode="val")
+            embedding_2 = model(data_2, mode="val")
+            cos_embedding_1 = F.normalize(embedding_1, p=2, dim=1)
+            cos_embedding_2 = F.normalize(embedding_2, p=2, dim=1)
             
-            scores_batch = model.SNN_classifier.forward(embedding1, embedding2)
-
-            # L2 正則化 (這部分是正確的)
-            embedding1 = F.normalize(embedding1, p=2, dim=1)
-            embedding2 = F.normalize(embedding2, p=2, dim=1)
-
-            # --- 核心修改：計算批次中每對音頻的餘弦相似度 ---
-            scores_batch2 = F.cosine_similarity(embedding1, embedding2, dim=1)
-            
-            all_scores.extend(scores_batch.cpu().numpy().tolist())
-            all_labels.extend(label.cpu().numpy().tolist()) # 假設 label 也是一個 Tensor
-            
-            cos_scores.extend(scores_batch2.cpu().numpy().tolist())
-            cos_labels.extend(label.cpu().numpy().tolist())
-            
-    all_scores = np.array(all_scores)
-    all_labels = np.array(all_labels)
-
-    cos_scores = np.array(cos_scores)
-    cos_labels = np.array(cos_labels)
+        embeddings[file] = [cos_embedding_1, cos_embedding_2]
+    cos_scores, labels  = [], []
     
-    # ==== 用餘弦相似度計算 EER 和 minDCF ====
-    _, cos_EER, cos_EER_threshold, _, _ = tuneThresholdfromScore(cos_scores, cos_labels, [1, 0.1])
-    fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, cos_labels)
+    for line in lines:			
+        embedding_11, embedding_12 = embeddings[line.split()[1]]
+        embedding_21, embedding_22 = embeddings[line.split()[2]]
+        # Compute the scores
+        score_1 = torch.mean(torch.matmul(embedding_11, embedding_21.T)) # higher is positive
+        score_2 = torch.mean(torch.matmul(embedding_12, embedding_22.T))
+        score = (score_1 + score_2) / 2
+        score = score.detach().cpu().numpy()
+        cos_scores.append(score)
+        labels.append(int(line.split()[0]))
+        
+    # Coumpute EER and minDCF
+    _, cos_EER, cos_EER_threshold, _, _ = tuneThresholdfromScore(cos_scores, labels, [1, 0.1])
+    fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, labels)
     minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
     
-    # ==== 用SNN分數計算 EER 和 minDCF ====
-    _, snn_eer, SNN_EER_threshold, _, _ = tuneThresholdfromScore(all_scores, all_labels, [1, 0.1])
-    fnrs, fprs, thresholds = ComputeErrorRates(all_scores, all_labels)
-    minDCF_snn, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
-    
-    # ==== 計算 confusion matrix ====
+    # Compute confusion matrix
     threshold = cos_EER_threshold  # 可以改成 EER threshold
-    preds = (cos_scores >= threshold).astype(int)
-
-    cm = confusion_matrix(cos_labels, preds)
-    cos_acc = accuracy_score(cos_labels, preds)
-    cos_precision = precision_score(cos_labels, preds, zero_division=0)
-    cos_recall = recall_score(cos_labels, preds, zero_division=0)
-
+    preds = (np.array(cos_scores) >= threshold).astype(int)
+    cm = confusion_matrix(labels, preds)
+    test_acc = accuracy_score(labels, preds)
+    precision = precision_score(labels, preds, zero_division=0)
+    recall = recall_score(labels, preds, zero_division=0)
+    
     # 畫 confusion matrix
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
@@ -197,10 +229,9 @@ def evaluate(model, val_loader, device):
     plt.savefig("cos_confusion_matrix.png")
     plt.close()
     
-    # ==== ROC curve ====
-    fpr, tpr, _ = roc_curve(cos_labels, cos_scores)
+    # ROC curve
+    fpr, tpr, _ = roc_curve(labels, cos_scores)
     roc_auc = auc(fpr, tpr)
-
     plt.figure(figsize=(6, 5))
     plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {roc_auc:.4f})")
     plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
@@ -210,6 +241,24 @@ def evaluate(model, val_loader, device):
     plt.legend(loc="lower right")
     plt.savefig("cos_roc_curve.png")
     plt.close()
+
+    return cos_EER, test_acc, precision, recall, cos_EER_threshold
+
+    # ======================================================
+    
+    # # ==== ROC curve ====
+    # fpr, tpr, _ = roc_curve(cos_labels, cos_scores)
+    # roc_auc = auc(fpr, tpr)
+
+    # plt.figure(figsize=(6, 5))
+    # plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {roc_auc:.4f})")
+    # plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    # plt.xlabel("False Positive Rate")
+    # plt.ylabel("True Positive Rate")
+    # plt.title("Receiver Operating Characteristic")
+    # plt.legend(loc="lower right")
+    # plt.savefig("cos_roc_curve.png")
+    # plt.close()
 
 
     # ==== SNN confusion matrix ====
@@ -244,7 +293,7 @@ def evaluate(model, val_loader, device):
     # plt.savefig("snn_roc_curve.png")
     # plt.close()
 
-    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
+    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
     # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
 
 def finetune(model, train_loader, eval_loader, device, save_system):
@@ -440,7 +489,7 @@ def train_model():
         
     else:
         model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
-        cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
+        cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, param.EVAL_PATH, device)
         print(f"Evaluation - EER: {cos_EER:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
 
 if __name__ == '__main__':
