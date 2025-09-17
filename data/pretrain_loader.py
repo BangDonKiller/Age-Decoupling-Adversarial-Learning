@@ -20,7 +20,7 @@ warnings.filterwarnings(
 warnings.simplefilter("ignore", category=FutureWarning)
 
 
-class train_loader(Dataset):
+class Train_loader(Dataset):
     def __init__(self, num_frames, dataset_path, data_list_file, musan_path, rir_path, augment=False, num_people=None):
         self.augment = augment
         self.sample_rate = 16000  # 假設採樣率為 16000 Hz
@@ -191,6 +191,9 @@ class train_loader(Dataset):
         
         # 5. 對數 Mel-filterbank energies
         mel_spec = torch.log(mel_spec + 1e-6)
+        
+        # turn to 3 channels
+        mel_spec = mel_spec.repeat(3, 1, 1)  # Shape: (3, n_mels, time_frames)
 
         return mel_spec, identity_id, age_group_id
     

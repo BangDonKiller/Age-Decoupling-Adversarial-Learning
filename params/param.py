@@ -7,7 +7,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 # 設定隨機種子，確保實驗可重現性
 RANDOM_SEED = 42
 PRETRAIN = False
-EVAL = True
+EVAL = False
 AUGMENT = False
 
 # --- 2. 路徑設定 (Path Configurations) ---

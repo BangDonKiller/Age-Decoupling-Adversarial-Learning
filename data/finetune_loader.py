@@ -11,6 +11,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import soundfile
 from scipy import signal
+import params.param as param
 
 # 忽略 librosa 可能發出的警告
 warnings.filterwarnings(
@@ -19,7 +20,7 @@ warnings.filterwarnings(
 )
 warnings.simplefilter("ignore", category=FutureWarning)
 
-class finetune_loader(Dataset):
+class Finetune_loader(Dataset):
     def __init__(self, dataset_path, data_list_file,frame_num, musan_path, rir_path):
         self.sample_rate = 16000
         self.frame_num = frame_num
@@ -98,7 +99,7 @@ class finetune_loader(Dataset):
         spec: 2D array (H, W)
         return: 3D uint8 RGB image: shape (H, W, 3)
         """
-        return spec.repeat(1, 3, 1, 1)
+        return spec.repeat(3, 1, 1)
     
     def min_max_normalize(self, spec):
         """
@@ -147,6 +148,10 @@ class finetune_loader(Dataset):
         # 使用一個輔助函數來處理單個音頻，確保邏輯一致
         audio1_mel = self._process_audio(audio1_path)
         audio2_mel = self._process_audio(audio2_path)
+        
+        # turn to 3 channels
+        audio1_mel = self.spec_to_rgb(audio1_mel)
+        audio2_mel = self.spec_to_rgb(audio2_mel)
 
         return audio1_mel, audio2_mel, label
 
@@ -165,8 +170,10 @@ class finetune_loader(Dataset):
             start_frame = random.randint(0, waveform.shape[0] - length)
             final_waveform = waveform[start_frame:start_frame + length]
         final_waveform = np.stack([final_waveform], axis=0)
-            
-        final_waveform = self._apply_augmentation(final_waveform)
+        
+        
+        if param.AUGMENT:    
+            final_waveform = self._apply_augmentation(final_waveform)
         final_waveform = torch.from_numpy(final_waveform).float()
 
         mel_spec = self.mel_spectrogram(final_waveform)

@@ -9,7 +9,8 @@ import os
 from tqdm import tqdm
 from tool.save_system import Save_system
 import random
-from data.dataloader import Voxceleb2_dataset, Voxceleb1_dataset
+from data.pretrain_loader import Train_loader
+from data.finetune_loader import Finetune_loader
 from params import param
 from model import AttributeUnlearningModel
 from tool.eval_metric import *
@@ -35,7 +36,7 @@ def prepare_dataloader():
     準備數據集和數據加載器。
     """
     # 預訓練的 train dataset
-    train_dataset = Voxceleb2_dataset(
+    train_dataset = Train_loader(
         num_frames=param.NUM_FRAMES,
         data_list_file=param.DATA_LIST_FILE,
         dataset_path=param.DATA_ROOT,
@@ -52,18 +53,16 @@ def prepare_dataloader():
         shuffle=True,
         num_workers=0,
         drop_last=True,
-        collate_fn=train_dataset.collate_fn,
+        # collate_fn=train_dataset.collate_fn,
     )
 
-    # finetune dataset (用於微調 + 驗證)
-    finetune_dataset = Voxceleb1_dataset(
+    # finetune dataset (用於微調)
+    finetune_dataset = Finetune_loader(
         dataset_path=param.VAL_DATA_ROOT,
         data_list_file=param.FINETUNE_DATA_LIST_FILE,
         frame_num=param.NUM_FRAMES,
         musan_path=param.MUSAN_DIR,
         rir_path=param.RIR_NOISE_DIR,
-        augment=param.AUGMENT,
-        train = True,
     )
     print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
 
@@ -74,29 +73,10 @@ def prepare_dataloader():
         shuffle=True,
         num_workers=0,
         drop_last=False,
-        collate_fn=finetune_dataset.collate_fn,
-    )
-    
-    eval_dataset = Voxceleb1_dataset(
-        dataset_path=param.VAL_DATA_ROOT,
-        data_list_file=param.VAL_DATA_LIST_FILE,
-        musan_path=param.MUSAN_DIR,
-        rir_path=param.RIR_NOISE_DIR,
-        frame_num=param.NUM_FRAMES,
-        augment=False,  # 評估時不進行增強
-        train = False,
+        # collate_fn=finetune_dataset.collate_fn,
     )
 
-    eval_loader = DataLoader(
-        eval_dataset,
-        batch_size=param.BATCH_SIZE,
-        shuffle=False,
-        num_workers=0,
-        drop_last=False,
-        collate_fn=finetune_dataset.collate_fn,
-    )
-
-    return train_loader, finetune_loader, eval_loader
+    return train_loader, finetune_loader
 
 
 def init_tensorboard():
@@ -296,7 +276,7 @@ def evaluate(model, eval_path, device):
     # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
     # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
 
-def finetune(model, train_loader, eval_loader, device, save_system):
+def finetune(model, train_loader, eval_path, device, save_system):
     """
     微調模型以適應新數據集。
     Args:
@@ -343,10 +323,13 @@ def finetune(model, train_loader, eval_loader, device, save_system):
         avg_acc = total_correct / total_samples
         
         model.eval()
-        cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold = evaluate(model, eval_loader, device)
+        cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold = evaluate(model, eval_path, device)
+        # cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold = evaluate(model, eval_path, device)
 
         save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
-                                                                          , snn_eer, acc_snn, precision_snn, recall_snn, SNN_EER_threshold))
+                                                                          , 0.0, 0.0, 0.0, 0.0, 0.0))
+        # save_system.write_result_to_file(param.FINETUNE_DIR, "finetune", (epoch + 1, avg_loss, avg_acc, cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
+        #                                                                   , snn_eer, acc_snn, precision_snn, recall_snn, SNN_EER_threshold))
 
         if cos_EER < best_eer:
             best_eer = cos_EER
@@ -356,11 +339,11 @@ def finetune(model, train_loader, eval_loader, device, save_system):
             save_system.save_model(model, epoch + 1, mode="finetune", state="last")
 
 
-    return avg_loss, avg_acc * 100.0, cos_EER, snn_eer
+    return avg_loss, avg_acc * 100.0, cos_EER, 0.0 # snn_eer
 
 def train_model():
     device = torch.device(param.DEVICE)
-    train_loader, finetune_loader, eval_loader = prepare_dataloader()
+    train_loader, finetune_loader = prepare_dataloader()
     save_system = Save_system()
     # writer = init_tensorboard() # 如果需要TensorBoard可以取消註釋
 
@@ -372,8 +355,6 @@ def train_model():
     ).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=param.INITIAL_LR)
-
-    criterion_main = nn.CrossEntropyLoss()
 
     # check if gpu is available
     print("torch GPU available:", torch.cuda.is_available())
@@ -466,7 +447,7 @@ def train_model():
                 f"主要任務準確率: {avg_acc_id:.4f}%, "
                 )
             
-            cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, eval_loader, device)
+            cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, param.EVAL_PATH, device)
             print(f"Evaluation - EER: {cos_EER:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
             save_system.write_result_to_file(
                 param.SCORE_DIR,
@@ -484,7 +465,7 @@ def train_model():
     # 二次訓練
     elif not param.PRETRAIN and not param.EVAL:
         # model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
-        finetune_loss, finetune_acc, cos_eer, snn_eer = finetune(model, finetune_loader, eval_loader, device, save_system)
+        finetune_loss, finetune_acc, cos_eer, snn_eer = finetune(model, finetune_loader, param.EVAL_PATH, device, save_system)
         print("After finetune, Loss:", finetune_loss, "Accuracy:", finetune_acc, "EER:", cos_eer, "SNN EER:", snn_eer)
         
     else:
