@@ -168,41 +168,63 @@ def evaluate(model, eval_path, device):
             data_1 = mel_trans(data_1).unsqueeze(1).repeat(1, 3, 1, 1)
             data_2 = mel_trans(data_2).unsqueeze(1).repeat(1, 3, 1, 1)
 
-            embedding_1 = model(data_1, mode="val")
-            embedding_2 = model(data_2, mode="val")
-            cos_embedding_1 = F.normalize(embedding_1, p=2, dim=1)
-            cos_embedding_2 = F.normalize(embedding_2, p=2, dim=1)
+            raw_embedding_1 = model(data_1, mode="val")
+            raw_embedding_2 = model(data_2, mode="val")
+            cos_embedding_1 = F.normalize(raw_embedding_1, p=2, dim=1)
+            cos_embedding_2 = F.normalize(raw_embedding_2, p=2, dim=1)
             
-        embeddings[file] = [cos_embedding_1, cos_embedding_2]
-    cos_scores, labels  = [], []
+            embeddings[file] = {
+                "raw": [raw_embedding_1, raw_embedding_2],
+                "cos": [cos_embedding_1, cos_embedding_2]
+            }
+    cos_scores, snn_scores, labels  = [], [], []
     
-    for line in lines:			
-        embedding_11, embedding_12 = embeddings[line.split()[1]]
-        embedding_21, embedding_22 = embeddings[line.split()[2]]
-        # Compute the scores
-        score_1 = torch.mean(torch.matmul(embedding_11, embedding_21.T)) # higher is positive
-        score_2 = torch.mean(torch.matmul(embedding_12, embedding_22.T))
-        score = (score_1 + score_2) / 2
-        score = score.detach().cpu().numpy()
-        cos_scores.append(score)
+    print("Computing scores...")
+    for line in tqdm(lines):
+        # 提取兩種 embedding
+        embed_1_raw, embed_1_cos = embeddings[line.split()[1]]["raw"], embeddings[line.split()[1]]["cos"]
+        embed_2_raw, embed_2_cos = embeddings[line.split()[2]]["raw"], embeddings[line.split()[2]]["cos"]
+
+        # 1. ==== Cosine Similarity Score ==== (保留原有邏輯)
+        embedding_11_cos, embedding_12_cos = embed_1_cos
+        embedding_21_cos, embedding_22_cos = embed_2_cos
+        score_1_cos = torch.mean(torch.matmul(embedding_11_cos, embedding_21_cos.T))
+        score_2_cos = torch.mean(torch.matmul(embedding_12_cos, embedding_22_cos.T))
+        score_cos = (score_1_cos + score_2_cos) / 2
+        cos_scores.append(score_cos.detach().cpu().numpy())
+        
+        # 2. ==== SNN Classifier Score ==== (【新增】)
+        with torch.no_grad():
+            embedding_11_raw, embedding_12_raw = embed_1_raw
+            embedding_21_raw, embedding_22_raw = embed_2_raw
+            # 使用 SNN 分類器計算分數 (輸出通常是 0-1 之間的相似度)
+            score_1_snn = model.SNN_classifier(embedding_11_raw, embedding_21_raw)
+            score_2_snn = model.SNN_classifier(embedding_12_raw, embedding_22_raw)
+            # SNN 分類器可能輸出 (batch, 1) 的形狀，用 squeeze() 去掉多餘維度
+            score_2_snn = torch.mean(score_2_snn, dim=0, keepdim=True)
+            score_snn = (score_1_snn.squeeze() + score_2_snn.squeeze()) / 2
+            snn_scores.append(score_snn.detach().cpu().numpy())
+
+        # 標籤對於兩種方法是相同的
         labels.append(int(line.split()[0]))
         
-    # Coumpute EER and minDCF
+    # ======================================================================
+    # ========== 1. Cosine Similarity Evaluation (保留原有邏輯) ==========
+    # ======================================================================
+    print("Evaluating Cosine Similarity...")
     _, cos_EER, cos_EER_threshold, _, _ = tuneThresholdfromScore(cos_scores, labels, [1, 0.1])
     fnrs, fprs, thresholds = ComputeErrorRates(cos_scores, labels)
-    minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
+    cos_minDCF, _ = ComputeMinDcf(fnrs, fprs, thresholds, 0.05, 1, 1)
     
-    # Compute confusion matrix
-    threshold = cos_EER_threshold  # 可以改成 EER threshold
-    preds = (np.array(cos_scores) >= threshold).astype(int)
-    cm = confusion_matrix(labels, preds)
-    test_acc = accuracy_score(labels, preds)
-    precision = precision_score(labels, preds, zero_division=0)
-    recall = recall_score(labels, preds, zero_division=0)
+    # Confusion matrix
+    cos_preds = (np.array(cos_scores) >= cos_EER_threshold).astype(int)
+    cos_cm = confusion_matrix(labels, cos_preds)
+    cos_acc = accuracy_score(labels, cos_preds)
+    cos_precision = precision_score(labels, cos_preds, zero_division=0)
+    cos_recall = recall_score(labels, cos_preds, zero_division=0)
     
-    # 畫 confusion matrix
     plt.figure(figsize=(6, 5))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    sns.heatmap(cos_cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
     plt.xlabel("Predicted")
     plt.ylabel("True")
     plt.title("Cosine Similarity Confusion Matrix")
@@ -210,71 +232,56 @@ def evaluate(model, eval_path, device):
     plt.close()
     
     # ROC curve
-    fpr, tpr, _ = roc_curve(labels, cos_scores)
-    roc_auc = auc(fpr, tpr)
+    cos_fpr, cos_tpr, _ = roc_curve(labels, cos_scores)
+    cos_roc_auc = auc(cos_fpr, cos_tpr)
     plt.figure(figsize=(6, 5))
-    plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {roc_auc:.4f})")
+    plt.plot(cos_fpr, cos_tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {cos_roc_auc:.4f})")
     plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
-    plt.title("Receiver Operating Characteristic")
+    plt.title("Cosine Similarity ROC")
     plt.legend(loc="lower right")
     plt.savefig("cos_roc_curve.png")
     plt.close()
 
-    return cos_EER, test_acc, precision, recall, cos_EER_threshold
+    # ======================================================================
+    # ================ 2. SNN Classifier Evaluation ================
+    # ======================================================================
+    print("Evaluating SNN Classifier...")
+    _, snn_EER, snn_EER_threshold, _, _ = tuneThresholdfromScore(snn_scores, labels, [1, 0.1])
+    fnrs_snn, fprs_snn, thresholds_snn = ComputeErrorRates(snn_scores, labels)
+    snn_minDCF, _ = ComputeMinDcf(fnrs_snn, fprs_snn, thresholds_snn, 0.05, 1, 1)
 
-    # ======================================================
-    
-    # # ==== ROC curve ====
-    # fpr, tpr, _ = roc_curve(cos_labels, cos_scores)
-    # roc_auc = auc(fpr, tpr)
+    # Confusion matrix
+    snn_preds = (np.array(snn_scores) >= snn_EER_threshold).astype(int)
+    snn_cm = confusion_matrix(labels, snn_preds)
+    snn_acc = accuracy_score(labels, snn_preds)
+    snn_precision = precision_score(labels, snn_preds, zero_division=0)
+    snn_recall = recall_score(labels, snn_preds, zero_division=0)
 
-    # plt.figure(figsize=(6, 5))
-    # plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {roc_auc:.4f})")
-    # plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
-    # plt.xlabel("False Positive Rate")
-    # plt.ylabel("True Positive Rate")
-    # plt.title("Receiver Operating Characteristic")
-    # plt.legend(loc="lower right")
-    # plt.savefig("cos_roc_curve.png")
-    # plt.close()
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(snn_cm, annot=True, fmt="d", cmap="Greens", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("SNN Classifier Confusion Matrix")
+    plt.savefig("snn_confusion_matrix.png")
+    plt.close()
 
+    # ROC curve
+    snn_fpr, snn_tpr, _ = roc_curve(labels, snn_scores)
+    snn_roc_auc = auc(snn_fpr, snn_tpr)
+    plt.figure(figsize=(6, 5))
+    plt.plot(snn_fpr, snn_tpr, color="darkgreen", lw=2, label=f"ROC curve (AUC = {snn_roc_auc:.4f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("SNN Classifier ROC")
+    plt.legend(loc="lower right")
+    plt.savefig("snn_roc_curve.png")
+    plt.close()
 
-    # ==== SNN confusion matrix ====
-    # threshold = SNN_EER_threshold
-    # preds_snn = (all_scores >= threshold).astype(int)
-
-    # cm_snn = confusion_matrix(all_labels, preds_snn)
-    # acc_snn = accuracy_score(all_labels, preds_snn)
-    # precision_snn = precision_score(all_labels, preds_snn, zero_division=0)
-    # recall_snn = recall_score(all_labels, preds_snn, zero_division=0)
-
-    # # confusion matrix
-    # plt.figure(figsize=(6, 5))
-    # sns.heatmap(cm_snn, annot=True, fmt="d", cmap="Blues", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
-    # plt.xlabel("Predicted")
-    # plt.ylabel("True")
-    # plt.title("SNN Confusion Matrix")
-    # plt.savefig("snn_confusion_matrix.png")
-    # plt.close()
-
-    # # # ROC curve
-    # fpr_snn, tpr_snn, _ = roc_curve(all_labels, all_scores)
-    # roc_auc_snn = auc(fpr_snn, tpr_snn)
-
-    # plt.figure(figsize=(6, 5))
-    # plt.plot(fpr_snn, tpr_snn, color="darkorange", lw=2, label=f"SNN ROC curve (AUC = {roc_auc_snn:.4f})")
-    # plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
-    # plt.xlabel("False Positive Rate")
-    # plt.ylabel("True Positive Rate")
-    # plt.title("SNN Receiver Operating Characteristic")
-    # plt.legend(loc="lower right")
-    # plt.savefig("snn_roc_curve.png")
-    # plt.close()
-
-    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
-    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_eer,acc_snn, precision_snn, recall_snn, SNN_EER_threshold
+    # return cos_EER, test_acc, precision, recall, cos_EER_threshold
+    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_EER, snn_acc, snn_precision, snn_recall, snn_EER_threshold
 
 def finetune(model, train_loader, eval_path, device, save_system):
     """
@@ -470,8 +477,9 @@ def train_model():
         
     else:
         model.load_state_dict(torch.load(param.PRETRAINED_WEIGHTS_PATH))
-        cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, param.EVAL_PATH, device)
-        print(f"Evaluation - EER: {cos_EER:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
+        cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_EER, snn_acc, snn_precision, snn_recall, snn_EER_threshold = evaluate(model, param.EVAL_PATH, device)
+        print(f"Evaluation - EER: {cos_EER:.4f}, Acc: {cos_acc:.4f}, Precision: {cos_precision:.4f}, Recall: {cos_recall:.4f}, EER_threshold: {cos_EER_threshold:.4f}")
+        print(f"Evaluation - SNN EER: {snn_EER:.4f}, SNN Acc: {snn_acc:.4f}, SNN Precision: {snn_precision:.4f}, SNN Recall: {snn_recall:.4f}, SNN EER_threshold: {snn_EER_threshold:.4f}")
 
 if __name__ == '__main__':
     train_model()
