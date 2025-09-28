@@ -6,8 +6,8 @@ import torch
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 # 設定隨機種子，確保實驗可重現性
 RANDOM_SEED = 42
-PRETRAIN = False
-EVAL = True
+PRETRAIN = True
+EVAL = False
 AUGMENT = False
 
 # --- 2. 路徑設定 (Path Configurations) ---
@@ -103,11 +103,11 @@ ALPHA_SCHEDULE = {
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
 # 訓練輪數
-EPOCHS = 50 # 實際訓練可能更多，這裡是一個示例
+EPOCHS = 1 # 實際訓練可能更多，這裡是一個示例
 WARM_UP_EPOCHS = 10
 FINETUNE_EPOCHS = 100
 # 每批次訓練樣本數
-BATCH_SIZE = 64
+BATCH_SIZE = 16
 # 優化器類型
 OPTIMIZER = 'Adam'
 # 初始學習率

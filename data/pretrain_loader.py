@@ -186,16 +186,7 @@ class Train_loader(Dataset):
 
         final_waveform = torch.from_numpy(final_waveform).float() # Shape: (1, num_samples)
 
-        # 4. 提取 Mel-filterbank energies
-        mel_spec = self.mel_spectrogram(final_waveform)
-        
-        # 5. 對數 Mel-filterbank energies
-        mel_spec = torch.log(mel_spec + 1e-6)
-        
-        # turn to 3 channels
-        mel_spec = mel_spec.repeat(3, 1, 1)  # Shape: (3, n_mels, time_frames)
-
-        return mel_spec, identity_id, age_group_id
+        return final_waveform, identity_id, age_group_id
     
     def spec_to_rgb(self, spec):
         """

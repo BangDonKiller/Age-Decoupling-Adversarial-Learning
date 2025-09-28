@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.models as models
+import torchaudio.transforms as T
 from params import param
 from dlordinal.losses.cdw import CDWCELoss
 from tool.ArcFaceLoss import AAMsoftmax
+from speechbrain.lobes.models.ResNet import ResNet
 
 # --- 1. 輔助網絡 (Auxiliary Network) ---
 # 這是論文的核心，負責計算「表示分離損失」。
@@ -122,34 +122,7 @@ class View(nn.Module):
     def forward(self, x):
         return x.view(*self.shape)
 
-# --- 2. 模型組件 ---
-# 將 ShuffleNet 分割為提取器和分類器
-
-class RepresentationDetachmentExtractor(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # 載入預訓練的 ShuffleNet v2
-        shufflenet = models.shufflenet_v2_x1_0(weights=None)
-        # shufflenet = models.shufflenet_v2_x1_0(weights=models.ShuffleNet_V2_X1_0_Weights.DEFAULT)
-        # 移除原始的分類頭
-        self.features = nn.Sequential(*list(shufflenet.children())[:-1])
-
-    def forward(self, x):
-        # 提取特徵
-        x = self.features(x)
-        # 全局平均池化得到 embedding
-        x = x.mean([2, 3]) 
-        return x
-
-class MainTaskClassifier(nn.Module):
-    def __init__(self, embedding_dim, num_main_classes):
-        super().__init__()
-        # 簡單的線性分類器用於聲紋識別
-        self.fc = nn.Linear(embedding_dim, num_main_classes)
-
-    def forward(self, h):
-        return self.fc(h)
-    
+# --- 2. 模型組件 ---   
 class SNNClassifier(nn.Module):
     def __init__(self, embedding_dim, output_dim):
         super().__init__()
@@ -172,18 +145,27 @@ class SNNClassifier(nn.Module):
 class AttributeUnlearningModel(nn.Module):
     def __init__(self, num_main_classes, num_attribute_classes, input_channels=1, input_size=128):
         super().__init__()
-        self.extractor = RepresentationDetachmentExtractor()
-        # self.extractor.requires_grad_(False)  # 鎖定提取器參數
-        # self.extractor.eval()
-        # ShuffleNet v2 x1.0 輸出的 embedding 維度是 1024
-        embedding_dim = 1024 
+        embedding_dim = 1024
+        self.fbank = nn.Sequential(
+            # PreEmphasis(), 
+            T.MelSpectrogram(sample_rate=16000, n_fft=512, win_length=400, hop_length=160, \
+                                                 f_min = 20, f_max = 7600, window_fn=torch.hamming_window, n_mels=80),
+        ) 
+        self.extractor = ResNet(lin_neurons=embedding_dim)
         self.num_main_classes = num_main_classes
-        # self.classifier = MainTaskClassifier(embedding_dim, num_main_classes)
         self.classifier = AAMsoftmax(n_class=num_main_classes, m=param.ARC_FACE_M, s=param.ARC_FACE_S)
         self.aux_network = AuxiliaryNetwork(embedding_dim, num_main_classes, num_attribute_classes, input_channels, input_size)
         self.SNN_classifier = SNNClassifier(embedding_dim, 1)
 
     def forward(self, x, id_label=None, mode=None):
+        with torch.no_grad():
+            x = self.fbank(x) + 1e-6  # (B, 1, n_mels, time_frames)
+            x = x.squeeze(1)  # (B, n_mels, time_frames)
+            x = x.transpose(1, 2)  # (B, time_frames, n_mels)
+            x = x.log()
+            # 零均值歸一化   
+            x = x - torch.mean(x, dim=-1, keepdim=True)        
+            
         h = self.extractor(x)
         if mode == "train":
             loss, acc = self.classifier(h, label=id_label)
