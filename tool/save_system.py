@@ -5,7 +5,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from params import param
 import importlib.util
 import inspect
-from torch.utils.tensorboard import SummaryWriter
 
 class Save_system:
     @staticmethod
@@ -110,7 +109,7 @@ class Save_system:
 
         print(f"參數已寫入：{file_path}")
         
-    def save_model(self, model, epoch, mode, state):
+    def save_model(self, model, mode, state):
         """
         保存模型的狀態字典到指定的檔案。
 

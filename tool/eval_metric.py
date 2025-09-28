@@ -1,7 +1,6 @@
 import numpy
 from operator import itemgetter
 from sklearn import metrics
-import numpy as np
 
 def tuneThresholdfromScore(scores, labels, target_fa, target_fr=None):
     """

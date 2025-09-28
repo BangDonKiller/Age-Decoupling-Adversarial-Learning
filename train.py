@@ -1,9 +1,7 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import torchaudio.transforms as T
 import numpy as np
 import os
 from tqdm import tqdm
@@ -12,7 +10,7 @@ import random
 from data.pretrain_loader import Train_loader
 from data.finetune_loader import Finetune_loader
 from params import param
-from model import AttributeUnlearningModel
+from model.backbone.speechbrain_resnet import AttributeUnlearningModel
 from tool.eval_metric import *
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, roc_curve, auc
@@ -55,7 +53,6 @@ def prepare_dataloader():
         drop_last=True,
     )
 
-    # finetune dataset (用於微調)
     finetune_dataset = Finetune_loader(
         dataset_path=param.VAL_DATA_ROOT,
         data_list_file=param.FINETUNE_DATA_LIST_FILE,
@@ -65,7 +62,6 @@ def prepare_dataloader():
     )
     print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
 
-    # DataLoader
     finetune_loader = DataLoader(
         finetune_dataset,
         batch_size=param.BATCH_SIZE,
@@ -290,7 +286,6 @@ def finetune(model, train_loader, eval_path, device, save_system):
 
     for epoch in range(param.FINETUNE_EPOCHS):
         model.train()
-        # model.extractor.eval()
         total_loss = 0.0
         total_correct = 0
         total_samples = 0
@@ -331,10 +326,10 @@ def finetune(model, train_loader, eval_path, device, save_system):
 
         if cos_EER < best_eer:
             best_eer = cos_EER
-            save_system.save_model(model, epoch + 1, mode="finetune", state="best")
+            save_system.save_model(model, mode="finetune", state="best")
 
         if epoch == param.FINETUNE_EPOCHS - 1:
-            save_system.save_model(model, epoch + 1, mode="finetune", state="last")
+            save_system.save_model(model, mode="finetune", state="last")
 
 
     return avg_loss, avg_acc * 100.0, cos_EER, 0.0 # snn_eer
@@ -418,10 +413,10 @@ def train_model():
             
             if best_lost > avg_loss_id:
                 best_lost = avg_loss_id
-                save_system.save_model(model, epoch + 1, mode="pretrain", state="best")
+                save_system.save_model(model, mode="pretrain", state="best")
             
             if epoch == param.EPOCHS - 1:
-                save_system.save_model(model, epoch + 1, mode="pretrain", state="last")
+                save_system.save_model(model, mode="pretrain", state="last")
 
     # 二次訓練
     elif not param.PRETRAIN and not param.EVAL:

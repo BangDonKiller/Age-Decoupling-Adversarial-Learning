@@ -187,30 +187,6 @@ class Train_loader(Dataset):
         final_waveform = torch.from_numpy(final_waveform).float() # Shape: (1, num_samples)
 
         return final_waveform, identity_id, age_group_id
-    
-    def spec_to_rgb(self, spec):
-        """
-        將單通道 spectrogram 視覺化成 RGB image。
-        spec: 2D array (H, W)
-        return: 3D uint8 RGB image: shape (H, W, 3)
-        """
-        return spec.repeat(1, 3, 1, 1)
-    
-    def collate_fn(self, batch):
-        """
-        將批次數據填充到相同長度，並調整為模型期望的形狀。
-        """
-        # 過濾掉 __getitem__ 返回 None 的樣本 (如果有的話，雖然本次修改應該不會)
-        
-        mels, ident, age = zip(*batch)
-        
-        mels = torch.stack(mels)
-
-        # # 將 RGB 圖像轉換為 Tensor
-        final_input_mels = self.spec_to_rgb(mels)  # 將 Mel 譜轉換為 RGB 圖像
-
-        # 將身份和年齡 ID 轉換為 Tensor
-        return final_input_mels, torch.tensor(ident, dtype=torch.long), torch.tensor(age, dtype=torch.long)
 
     def _apply_augmentation(self, waveform):
         """
