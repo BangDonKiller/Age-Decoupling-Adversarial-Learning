@@ -53,7 +53,6 @@ def prepare_dataloader():
         shuffle=True,
         num_workers=0,
         drop_last=True,
-        # collate_fn=train_dataset.collate_fn,
     )
 
     # finetune dataset (用於微調)
@@ -73,7 +72,6 @@ def prepare_dataloader():
         shuffle=True,
         num_workers=0,
         drop_last=False,
-        # collate_fn=finetune_dataset.collate_fn,
     )
 
     return train_loader, finetune_loader
@@ -120,7 +118,7 @@ def eval_file_processing(eval_list):
     return setfiles, lines
 
 
-def evaluate(model, eval_path, device):
+def evaluate(model, eval_path):
     """
     在驗證集上評估模型性能，計算 EER 和 minDCF。
     
@@ -130,13 +128,6 @@ def evaluate(model, eval_path, device):
     :return: EER 和 minDCF。
     """
     model.eval()  # 設置模型為評估模式
-    
-    mel_trans = T.MelSpectrogram(
-        sample_rate=param.SAMPLE_RATE,
-        win_length=400,
-        hop_length=160,
-        n_mels=80
-    ).to(device)
 
     embeddings = {}
     setfiles, lines = eval_file_processing(param.VAL_DATA_LIST_FILE)
@@ -165,8 +156,8 @@ def evaluate(model, eval_path, device):
         data_2 = torch.FloatTensor(feats).cuda()
         # Speaker embeddings
         with torch.no_grad():
-            data_1 = mel_trans(data_1).unsqueeze(1).repeat(1, 3, 1, 1)
-            data_2 = mel_trans(data_2).unsqueeze(1).repeat(1, 3, 1, 1)
+            # data_1 = mel_trans(data_1).unsqueeze(1).repeat(1, 3, 1, 1)
+            # data_2 = mel_trans(data_2).unsqueeze(1).repeat(1, 3, 1, 1)
 
             raw_embedding_1 = model(data_1, mode="val")
             raw_embedding_2 = model(data_2, mode="val")
@@ -247,41 +238,41 @@ def evaluate(model, eval_path, device):
     # ======================================================================
     # ================ 2. SNN Classifier Evaluation ================
     # ======================================================================
-    print("Evaluating SNN Classifier...")
-    _, snn_EER, snn_EER_threshold, _, _ = tuneThresholdfromScore(snn_scores, labels, [1, 0.1])
-    fnrs_snn, fprs_snn, thresholds_snn = ComputeErrorRates(snn_scores, labels)
-    snn_minDCF, _ = ComputeMinDcf(fnrs_snn, fprs_snn, thresholds_snn, 0.05, 1, 1)
+    # print("Evaluating SNN Classifier...")
+    # _, snn_EER, snn_EER_threshold, _, _ = tuneThresholdfromScore(snn_scores, labels, [1, 0.1])
+    # fnrs_snn, fprs_snn, thresholds_snn = ComputeErrorRates(snn_scores, labels)
+    # snn_minDCF, _ = ComputeMinDcf(fnrs_snn, fprs_snn, thresholds_snn, 0.05, 1, 1)
 
-    # Confusion matrix
-    snn_preds = (np.array(snn_scores) >= snn_EER_threshold).astype(int)
-    snn_cm = confusion_matrix(labels, snn_preds)
-    snn_acc = accuracy_score(labels, snn_preds)
-    snn_precision = precision_score(labels, snn_preds, zero_division=0)
-    snn_recall = recall_score(labels, snn_preds, zero_division=0)
+    # # Confusion matrix
+    # snn_preds = (np.array(snn_scores) >= snn_EER_threshold).astype(int)
+    # snn_cm = confusion_matrix(labels, snn_preds)
+    # snn_acc = accuracy_score(labels, snn_preds)
+    # snn_precision = precision_score(labels, snn_preds, zero_division=0)
+    # snn_recall = recall_score(labels, snn_preds, zero_division=0)
 
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(snn_cm, annot=True, fmt="d", cmap="Greens", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.title("SNN Classifier Confusion Matrix")
-    plt.savefig("snn_confusion_matrix.png")
-    plt.close()
+    # plt.figure(figsize=(6, 5))
+    # sns.heatmap(snn_cm, annot=True, fmt="d", cmap="Greens", xticklabels=["Pred 0", "Pred 1"], yticklabels=["True 0", "True 1"])
+    # plt.xlabel("Predicted")
+    # plt.ylabel("True")
+    # plt.title("SNN Classifier Confusion Matrix")
+    # plt.savefig("snn_confusion_matrix.png")
+    # plt.close()
 
-    # ROC curve
-    snn_fpr, snn_tpr, _ = roc_curve(labels, snn_scores)
-    snn_roc_auc = auc(snn_fpr, snn_tpr)
-    plt.figure(figsize=(6, 5))
-    plt.plot(snn_fpr, snn_tpr, color="darkgreen", lw=2, label=f"ROC curve (AUC = {snn_roc_auc:.4f})")
-    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("SNN Classifier ROC")
-    plt.legend(loc="lower right")
-    plt.savefig("snn_roc_curve.png")
-    plt.close()
+    # # ROC curve
+    # snn_fpr, snn_tpr, _ = roc_curve(labels, snn_scores)
+    # snn_roc_auc = auc(snn_fpr, snn_tpr)
+    # plt.figure(figsize=(6, 5))
+    # plt.plot(snn_fpr, snn_tpr, color="darkgreen", lw=2, label=f"ROC curve (AUC = {snn_roc_auc:.4f})")
+    # plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    # plt.xlabel("False Positive Rate")
+    # plt.ylabel("True Positive Rate")
+    # plt.title("SNN Classifier ROC")
+    # plt.legend(loc="lower right")
+    # plt.savefig("snn_roc_curve.png")
+    # plt.close()
 
-    # return cos_EER, test_acc, precision, recall, cos_EER_threshold
-    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_EER, snn_acc, snn_precision, snn_recall, snn_EER_threshold
+    return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold
+    # return cos_EER, cos_acc, cos_precision, cos_recall, cos_EER_threshold, snn_EER, snn_acc, snn_precision, snn_recall, snn_EER_threshold
 
 def finetune(model, train_loader, eval_path, device, save_system):
     """
@@ -377,14 +368,6 @@ def train_model():
             total_samples_id = 0
 
             total_loss_id = 0.0
-            # total_detach_loss = 0.0
-            # total_loss_recon = 0.0
-            # total_detach_loss_y = 0.0
-            # total_detach_loss_age = 0.0
-            # total_acc_age = 0.0
-            # total_detach_acc_ID = 0.0
-            
-            # current_alpha = param.ALPHA
 
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", unit="batch")
             for batch_idx, (mels, identity_labels, age_labels) in enumerate(pbar):
@@ -425,7 +408,7 @@ def train_model():
                 f"主要任務準確率: {avg_acc_id:.4f}%, "
                 )
             
-            cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, param.EVAL_PATH, device)
+            cos_EER, test_acc, precision, recall, EER_threshold = evaluate(model, param.EVAL_PATH)
             print(f"Evaluation - EER: {cos_EER:.4f}, Acc: {test_acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, EER_threshold: {EER_threshold:.4f}")
             save_system.write_result_to_file(
                 param.SCORE_DIR,
