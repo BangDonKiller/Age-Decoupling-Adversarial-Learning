@@ -129,11 +129,14 @@ def evaluate(model, eval_path):
     setfiles, lines = eval_file_processing(param.VAL_DATA_LIST_FILE)
 
     for idx, file in tqdm(enumerate(setfiles), total = len(setfiles)):
-        path = os.path.join(eval_path, file)
-        if os.path.exists(path):
-            target_path = path
-        else:
-            print("File not found:", path)
+        try:
+            for path in eval_path:
+                target_path = os.path.join(path, file)
+                if os.path.exists(target_path):
+                    break
+        except:
+            print("File not found:", file)
+            continue
 
         audio, _  = soundfile.read(target_path)
         # Full utterance
