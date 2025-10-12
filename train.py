@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, roc_curve, auc
 import matplotlib.pyplot as plt
 import seaborn as sns
-import soundfile
+import torchaudio
 
 # --- 設定隨機種子，確保可重現性 ---
 def set_seed(seed):
@@ -53,24 +53,24 @@ def prepare_dataloader():
         drop_last=True,
     )
 
-    finetune_dataset = Finetune_loader(
-        dataset_path=param.VAL_DATA_ROOT,
-        data_list_file=param.FINETUNE_DATA_LIST_FILE,
-        frame_num=param.NUM_FRAMES,
-        musan_path=param.MUSAN_DIR,
-        rir_path=param.RIR_NOISE_DIR,
-    )
-    print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
+    # finetune_dataset = Finetune_loader(
+    #     dataset_path=param.VAL_DATA_ROOT,
+    #     data_list_file=param.FINETUNE_DATA_LIST_FILE,
+    #     frame_num=param.NUM_FRAMES,
+    #     musan_path=param.MUSAN_DIR,
+    #     rir_path=param.RIR_NOISE_DIR,
+    # )
+    # print(f"Fine-tune dataset loaded with {len(finetune_dataset)} samples.")
 
-    finetune_loader = DataLoader(
-        finetune_dataset,
-        batch_size=param.BATCH_SIZE,
-        shuffle=True,
-        num_workers=0,
-        drop_last=False,
-    )
+    # finetune_loader = DataLoader(
+    #     finetune_dataset,
+    #     batch_size=param.BATCH_SIZE,
+    #     shuffle=True,
+    #     num_workers=0,
+    #     drop_last=False,
+    # )
 
-    return train_loader, finetune_loader
+    return train_loader, None
 
 
 def init_tensorboard():
@@ -105,7 +105,7 @@ def eval_file_processing(eval_list):
     :return: 音頻對和標籤的列表。
     """
     files = []
-    lines = open(eval_list).read().splitlines()
+    lines = open(eval_list).read().splitlines()[:500]
     for line in lines:
         files.append(line.split()[1])
         files.append(line.split()[2])
@@ -138,26 +138,33 @@ def evaluate(model, eval_path):
             print("File not found:", file)
             continue
 
-        audio, _  = soundfile.read(target_path)
+        audio, _  = torchaudio.load(target_path)
         # Full utterance
         data_1 = torch.FloatTensor(numpy.stack([audio],axis=0)).cuda()
 
         # Spliited utterance matrix
-        max_audio = 300 * 160 + 240
-        if audio.shape[0] <= max_audio:
-            shortage = max_audio - audio.shape[0]
-            audio = numpy.pad(audio, (0, shortage), 'wrap')
+        max_audio = 200 * 160 + 240
+        # 【修正 #1】: 使用 audio.shape[1] 檢查長度
+        if audio.shape[1] <= max_audio:
+            shortage = max_audio - audio.shape[1]
+            # 【修正 #2】: 使用 torch.nn.functional.pad，而不是 numpy.pad
+            # F.pad 的參數是 (pad_left, pad_right)，作用在最後一個維度上
+            audio = F.pad(audio, (0, shortage), 'circular') # 'circular' 相當於 numpy 的 'wrap'
+        
         feats = []
-        startframe = numpy.linspace(0, audio.shape[0]-max_audio, num=5)
+        # 【修正 #3】: 使用 torch.linspace 產生分割點
+        startframe = torch.linspace(0, audio.shape[1] - max_audio, 5)
         for asf in startframe:
-            feats.append(audio[int(asf):int(asf)+max_audio])
-        feats = numpy.stack(feats, axis = 0).astype(float)
-        data_2 = torch.FloatTensor(feats).cuda()
-        # Speaker embeddings
+            start_idx = int(asf)
+            feats.append(audio[:, start_idx : start_idx + max_audio])
+        
+        # 【修正 #4】: 使用 torch.stack，而不是 numpy.stack
+        feats_tensor = torch.stack(feats, dim=0)
+        # feats_tensor = feats_tensor.squeeze(1)  # 移除多餘的維度
+        data_2 = feats_tensor.cuda()
+        
+        # 3. 提取 Speaker embeddings (保持不變)
         with torch.no_grad():
-            # data_1 = mel_trans(data_1).unsqueeze(1).repeat(1, 3, 1, 1)
-            # data_2 = mel_trans(data_2).unsqueeze(1).repeat(1, 3, 1, 1)
-
             raw_embedding_1 = model(data_1, mode="val")
             raw_embedding_2 = model(data_2, mode="val")
             cos_embedding_1 = F.normalize(raw_embedding_1, p=2, dim=1)

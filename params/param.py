@@ -106,7 +106,7 @@ ALPHA_SCHEDULE = {
 
 # --- 7. 訓練超參數 (Training Hyperparameters) ---
 # 訓練輪數
-EPOCHS = 1 # 實際訓練可能更多，這裡是一個示例
+EPOCHS = 1
 WARM_UP_EPOCHS = 10
 FINETUNE_EPOCHS = 100
 # 每批次訓練樣本數

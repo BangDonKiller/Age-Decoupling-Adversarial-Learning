@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torchaudio.transforms as T
 from params import param
-from dlordinal.losses.cdw import CDWCELoss
 from tool.ArcFaceLoss import AAMsoftmax
 from speechbrain.lobes.models.ResNet import ResNet
 import warnings

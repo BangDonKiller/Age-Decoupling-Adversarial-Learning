@@ -6,15 +6,16 @@ from collections import defaultdict
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-import torchaudio.transforms as T
 import librosa
 import soundfile  # <--- 確保 soundfile 已匯入
 from scipy import signal
 from tqdm import tqdm
 import time
 import torch.nn.functional as F
+import sys
+import os
 import torchaudio
-
+import torchaudio.transforms as T
 
 # 忽略 librosa 可能發出的警告
 warnings.filterwarnings(
@@ -137,13 +138,13 @@ class Train_loader(Dataset):
     def __getitem__(self, idx):
         audio_file_path, identity_id, age_group_id = self.data_list[idx]
 
-        try:
-            # 1. 使用 torchaudio 讀取音訊，直接得到 PyTorch 張量
-            #    torchaudio 可以直接處理 .m4a, .wav, .mp3 等多種格式 (需安裝 ffmpeg 後端)
-            waveform, sr = torchaudio.load(audio_file_path)
-        except Exception:
-            # 如果檔案損壞或無法讀取，返回一個靜音的張量作為替代
-            return torch.zeros(1, self.target_length), identity_id, age_group_id
+        # try:
+        #     # 1. 使用 torchaudio 讀取音訊，直接得到 PyTorch 張量
+        #     #    torchaudio 可以直接處理 .m4a, .wav, .mp3 等多種格式 (需安裝 ffmpeg 後端)
+        waveform, sr = torchaudio.load(audio_file_path)
+        # except Exception:
+        #     # 如果檔案損壞或無法讀取，返回一個靜音的張量作為替代
+        #     return torch.zeros(1, self.target_length), identity_id, age_group_id
 
         # 2. 處理重採樣 (Resampling)
         if sr != self.sample_rate:
@@ -226,6 +227,7 @@ class Train_loader(Dataset):
     
        
 if __name__ == "__main__":
+    print(torchaudio.list_audio_backends())
     dataset_path = ['D:/Dataset/VoxCeleb2/vox2_dev_wav/dev/aac']
     data_list_file = 'D:/Dataset/Cross-Age_Speaker_Verification/vox2dev/segment2age.npy'
     musan_path = 'D:/Dataset/musan/musan'

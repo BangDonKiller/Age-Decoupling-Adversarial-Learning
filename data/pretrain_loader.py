@@ -7,10 +7,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 import torchaudio.transforms as T
-import librosa
+import torchaudio
 import soundfile
 from scipy import signal
 from tqdm import tqdm
+import torch.nn.functional as F
 
 # 忽略 librosa 可能發出的警告
 warnings.filterwarnings(
@@ -26,6 +27,8 @@ class Train_loader(Dataset):
         self.sample_rate = 16000  # 假設採樣率為 16000 Hz
         self.frame_num = num_frames
         self.num_people = num_people
+        
+        self.target_length = num_frames * 160 + 240
 
         # MelSpectrogram 應保持在 CPU，因為輸入波形是 CPU Tensor
         self.mel_spectrogram = T.MelSpectrogram(
@@ -167,26 +170,33 @@ class Train_loader(Dataset):
 
     def __getitem__(self, idx):
         audio_file_path, identity_id, age_group_id = self.data_list[idx]
-        waveform, sr = librosa.load(audio_file_path, sr=self.sample_rate, mono=True)
-
-        # 對增強後的音訊進行固定長度處理
-        length = self.frame_num * 160 + 240
+        try:
+            # 使用 torchaudio 讀取音訊，直接得到 PyTorch 張量
+            # torchaudio 可以直接處理 .m4a, .wav, .mp3 等多種格式 (需安裝 ffmpeg 後端)
+            waveform, sr = torchaudio.load(audio_file_path)
+        except Exception:
+            # 如果檔案損壞或無法讀取，返回一個靜音的張量作為替代
+            return torch.zeros(1, self.target_length), identity_id, age_group_id
         
-        if waveform.shape[0] <= length:
-            shortage = length - waveform.shape[0]
-            final_waveform = torch.nn.functional.pad(waveform, (0, shortage), 'constant', 0)
+        # 轉為單聲道 (Mono)
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        
+        # 4. 裁剪或填充至固定長度 (Padding/Cropping)
+        current_length = waveform.shape[1]
+        if current_length < self.target_length:
+            # 使用 torch.nn.functional.pad 進行填充
+            waveform = F.pad(waveform, (0, self.target_length - current_length), 'constant', 0)
         else:
-            # 隨機裁剪
-            start_frame = random.randint(0, waveform.shape[0] - length)
-            final_waveform = waveform[start_frame:start_frame + length]
-        final_waveform = np.stack([final_waveform], axis=0)
-
+            # 使用 torch.randint 進行隨機裁剪
+            start_frame = torch.randint(0, current_length - self.target_length + 1, (1,)).item()
+            waveform = waveform[:, start_frame:start_frame + self.target_length]
+        
+        # 5. 應用資料增強 (所有增強函式都已改為處理 PyTorch 張量)
         if self.augment:
-            final_waveform = self._apply_augmentation(final_waveform)
+            waveform = self._apply_augmentation(waveform)
 
-        final_waveform = torch.from_numpy(final_waveform).float() # Shape: (1, num_samples)
-
-        return final_waveform, identity_id, age_group_id
+        return waveform, identity_id, age_group_id
 
     def _apply_augmentation(self, waveform):
         """
@@ -218,91 +228,50 @@ class Train_loader(Dataset):
         return waveform
     
     def _add_noise(self, audio, noisecat):
-        """
-        加入背景噪音：
-        - 根據類型選擇 SNR、數量
-        - 從噪音資料集中隨機取出
-        - 根據 SNR 調整音量後加入語音
-        """
-        
-        # 計算乾淨語音的平均功率 (DB)
         clean_db = 10 * np.log10(np.mean(audio ** 2) + 1e-4) 
-        
-        # 決定加入的噪音數量和選擇噪音檔案
-        numnoise = self.numnoise[noisecat]
-        noiselist = random.sample(self.noise_file_paths_by_type[noisecat], random.randint(numnoise[0], numnoise[1]))
-        
-        
+        numnoise_val = self.numnoise[noisecat]
+        noiselist = random.sample(self.noise_file_paths_by_type[noisecat], random.randint(numnoise_val[0], numnoise_val[1]))
         noises = []
-        for noise in noiselist:
-            noiseaudio, sr = soundfile.read(noise)
-
-            # 定義模型輸入長度
-            # 每10ms一幀，一幀的樣本數 = sampling rate (16000Hz) * 0.01s = 160
-            # 加上前後各240個樣本的緩衝區，避免邊緣效應(猜測)
+        for noise_path in noiselist:
+            noiseaudio, sr = soundfile.read(noise_path)
             length = self.frame_num * 160 + 240
-            
-            # 如果噪音長度不足，則重複填充 (不一定每段噪音都有足夠長度可供使用)
             if noiseaudio.shape[0] <= length:
                 shortage = length - noiseaudio.shape[0]
                 noiseaudio = np.pad(noiseaudio, (0, shortage), 'wrap')
-            # 隨機選擇噪音片段
             start_frame = np.int64(random.random()*(noiseaudio.shape[0]-length))
             noiseaudio = noiseaudio[start_frame:start_frame + length]
             noiseaudio = np.stack([noiseaudio], axis=0)
             noise_db = 10 * np.log10(np.mean(noiseaudio ** 2) + 1e-4)
-            
-            # 確定目標的信噪比 (SNR)
-            noisesnr = random.uniform(self.noisesnr[noisecat][0], self.noisesnr[noisecat][1])
-            noises.append(np.sqrt(10 ** ((clean_db - noise_db - noisesnr) / 10)) * noiseaudio)
+            noisesnr_val = self.noisesnr[noisecat]
+            noisesnr_db = random.uniform(noisesnr_val[0], noisesnr_val[1])
+            noises.append(np.sqrt(10 ** ((clean_db - noise_db - noisesnr_db) / 10)) * noiseaudio)
         noise = np.sum(np.concatenate(noises, axis=0), axis=0, keepdims=True)
         return noise + audio
-      
+    
     def _apply_reverberation(self, waveform):
-        """
-        應用混響。RIRs 從預載入的數據集獲取。
-        """
         rir_file = random.choice(self.rir_file_paths)
         rir, sr = soundfile.read(rir_file)
         rir = np.expand_dims(rir.astype(float), 0)
-        rir = rir / np.sqrt(np.sum(rir**2))  # 正規化        
+        rir = rir / np.sqrt(np.sum(rir**2))
         return signal.convolve(waveform, rir, mode='full')[:, :self.frame_num * 160 + 240]
     
     def _change_volume(self, waveform):
-        """
-        隨機改變音量，使用對數 dB 模式。
-        """
-        # 隨機增益範圍：-6 到 +6 分貝
         gain_db = random.uniform(-6.0, 6.0)
-        gain = 10 ** (gain_db / 20)  # dB -> 線性比例
-
+        gain = 10 ** (gain_db / 20)
         adjusted = waveform * gain
-        # 避免削型：如果溢出就正規化到 -1~1 範圍
         max_val = np.max(np.abs(adjusted))
         if max_val > 1.0:
             adjusted = adjusted / max_val
-
         return adjusted
     
     def _change_speed(self, waveform):
-        """
-        隨機改變音頻速度，同時保持音高不變。
-        """
-        speed_factor = random.uniform(0.7, 1.3) # 隨機選擇速度因子，例如 0.7 到 1.3 倍，避免極端速度
-        if speed_factor == 1.0:
-            return waveform # 不變速
-        
+        speed_factor = random.uniform(0.7, 1.3)
+        if speed_factor == 1.0: return waveform
         if isinstance(waveform, np.ndarray):
             waveform = torch.from_numpy(waveform).float()
-
         new_sample_rate = int(self.sample_rate * speed_factor)
-        
-        # torchaudio 的 Resample 預設在 CPU 運行，因為輸入 waveform 是 CPU Tensor
         resampler = T.Resample(orig_freq=self.sample_rate, new_freq=new_sample_rate)
-        
-        # 執行重新採樣
         speed_waveform = resampler(waveform)
-        
         return speed_waveform
     
     # 僅用於測試
