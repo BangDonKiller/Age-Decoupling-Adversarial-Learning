@@ -102,6 +102,6 @@ def create_dataloader(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=lambda x: ([w.squeeze(0) for w ,_ , _ in x], [p for _, p, _ in x], [g for _, _, g in x]),
+        # collate_fn=lambda x: ([w.squeeze(0) for w ,_ , _ in x], [p for _, p, _ in x], [g for _, _, g in x]),
     )
     return loader

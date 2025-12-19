@@ -76,6 +76,9 @@ class SpeakerEmbeddingExtractor(nn.Module):
         # 確保 waveform 是 2D (batch, samples) 且在正確的設備上
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0)
+        else:
+            waveform = waveform.squeeze(1)  # 假設輸入是 (batch, 1, samples)
+        
         waveform = waveform.to(self.device)
 
         # 提取嵌入 (在 no_grad 上下文中以節省記憶體和加速)

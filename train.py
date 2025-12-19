@@ -23,10 +23,10 @@ warnings.filterwarnings(
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_list = {
     "ECAPA-TDNN": "speechbrain/spkrec-ecapa-voxceleb",
-    "ResNet34": "",
+    "ResNet34": "speechbrain/spkrec-resnet-voxceleb",
     "x-vector": "",
 }
-MODEL_ID = MODEL_list["ECAPA-TDNN"]
+MODEL_ID = MODEL_list["ResNet34"]
 AUDIO_DIR = "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac"
 AUDIO_LIST_DIR = "D:\\Dataset\\VoxCeleb2\\train_list.txt"
 AUDIO_META_DIR = "D:\\Dataset\\VoxCeleb2\\vox2_meta.csv"
@@ -53,21 +53,17 @@ speaker_ids = []
 genders = []
 
 with torch.no_grad():
-    for waveforms, gender, paths in tqdm(loader):
-        for waveform in waveforms:
-            emb = speaker_extractor(waveform)
-            all_embeddings.append(emb.cpu())
-            speaker_ids.extend(paths)
-            genders.extend(gender)
+    for waveforms, speaker_id, gender in tqdm(loader):
+        emb = speaker_extractor(waveforms)
+        all_embeddings.append(emb.cpu())
+        speaker_ids.extend(speaker_id)
+        genders.extend(gender)
 
 all_embeddings = torch.cat(all_embeddings, dim=0)
 
 # ========== 儲存 embeddings ==========
-torch.save({"embeddings": all_embeddings, "speaker_ids": speaker_ids, "genders": genders}, "ecapa_embeddings.pt")
-np.save("ecapa_embeddings.npy", all_embeddings.numpy())
-np.save("speaker_ids.npy", speaker_ids.numpy())
-np.save("genders.npy", genders.numpy())
-
+MODEL = next((k for k, v in MODEL_list.items() if v == MODEL_ID), None)
+torch.save({"embeddings": all_embeddings, "speaker_ids": speaker_ids, "genders": genders}, f"result/{MODEL}/{MODEL}_embeddings.pt")
 print(f"推論完成，共 {len(all_embeddings)} 個向量")
 
 
