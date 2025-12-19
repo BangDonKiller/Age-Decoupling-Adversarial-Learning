@@ -6,33 +6,46 @@ import torchaudio.transforms as T
 from torch.utils.data import Dataset
 
 class TrainDataset(Dataset):
-    """
-    自訂 Speaker Dataset，用於返回 raw waveform + label。
-    file_list: [(wav_path, speaker_int), ...]
-    """
-    def __init__(self, file_list):
-        self.data = file_list
+    def __init__(self, file_dir, file_list):
+        """
+        file_dir: 根目錄 (其實現在 file_list 已經是完整路徑，這邊留著當備註)
+        file_list: [(完整路徑, 講者編號), ...]
+        """
+        self.datalist = file_list
 
     def __len__(self):
-        return len(self.data)
+        return len(self.datalist)
 
     def __getitem__(self, idx):
-        wav_path, spk_id = self.data[idx]
+        wav_path, spk_id = self.datalist[idx]
 
-        # 使用 torchaudio 讀取 waveform
-        signal, sr = torchaudio.load(wav_path)
-        
-        # 重採樣到 16kHz
-        if sr != 16000:
-            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
-            signal = resampler(signal)
-        
-        # 如果是 stereo，轉成 mono
-        if signal.ndim > 1:
-            signal = signal.mean(dim=0, keepdim=True)
+        # 讀取音檔
+        try:
+            signal, sr = torchaudio.load(wav_path)
+            
+            # 固定長度處理（例如 3 秒），這對 Batch 訓練非常重要
+            # 如果不固定長度，DataLoader 在 collect 時會報錯 (因為 tensor size 不一)
+            target_length = 16000 * 3 
+            if signal.shape[1] > target_length:
+                signal = signal[:, :target_length]
+            else:
+                padding = target_length - signal.shape[1]
+                signal = torch.nn.functional.pad(signal, (0, padding))
 
-        # 移除 channel 維度 -> (samples,)
-        signal = signal.squeeze(0)
+            # 重採樣
+            if sr != 16000:
+                resampler = T.Resample(orig_freq=sr, new_freq=16000)
+                signal = resampler(signal)
+            
+            # Mono
+            if signal.shape[0] > 1:
+                signal = signal.mean(dim=0, keepdim=True)
+
+            signal = signal.squeeze(0) # (samples,)
+        except Exception as e:
+            # 預防損壞的檔案
+            print(f"Error loading {wav_path}: {e}")
+            return torch.zeros(48000), spk_id
 
         return signal, spk_id
 
