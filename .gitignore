@@ -1,5 +1,5 @@
 .venv
 __pycache__
 result/
-finetune/
-pretrained_models/
+official_pretrained_models/
+chceckpoints/

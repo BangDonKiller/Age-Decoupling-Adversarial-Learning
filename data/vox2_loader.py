@@ -3,9 +3,40 @@ from pathlib import Path
 import torch
 import torchaudio
 import torchaudio.transforms as T
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
-class AudioFileDataset(Dataset):
+class TrainDataset(Dataset):
+    """
+    自訂 Speaker Dataset，用於返回 raw waveform + label。
+    file_list: [(wav_path, speaker_int), ...]
+    """
+    def __init__(self, file_list):
+        self.data = file_list
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        wav_path, spk_id = self.data[idx]
+
+        # 使用 torchaudio 讀取 waveform
+        signal, sr = torchaudio.load(wav_path)
+        
+        # 重採樣到 16kHz
+        if sr != 16000:
+            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
+            signal = resampler(signal)
+        
+        # 如果是 stereo，轉成 mono
+        if signal.ndim > 1:
+            signal = signal.mean(dim=0, keepdim=True)
+
+        # 移除 channel 維度 -> (samples,)
+        signal = signal.squeeze(0)
+
+        return signal, spk_id
+
+class InferenceDataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
 
     def __init__(self, audio_dir: str, audio_list_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
@@ -87,21 +118,3 @@ class AudioFileDataset(Dataset):
         speaker_id, gender, path = self.datalist[idx]
         waveform = self._load_and_preprocess_audio(str(path))
         return waveform, speaker_id, gender
-
-def create_dataloader(
-    audio_dir: str,
-    audio_list_dir: str,
-    audio_meta_dir: str,
-    batch_size: int = 64,
-    num_workers: int = 0,
-    suffix: str = ".m4a",
-):
-    dataset = AudioFileDataset(audio_dir, audio_list_dir, audio_meta_dir, suffix=suffix)
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        # collate_fn=lambda x: ([w.squeeze(0) for w ,_ , _ in x], [p for _, p, _ in x], [g for _, _, g in x]),
-    )
-    return loader
