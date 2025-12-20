@@ -65,8 +65,8 @@ class InferenceDataset(Dataset):
                 filepath = line.strip()
                 if filepath.endswith(suffix):
                     self.audio_list.append(filepath)
-                if len(self.audio_list) >= 10000:
-                    break
+                # if len(self.audio_list) >= 10000:
+                #     break
         
         self.meta = self.read_meta_file(self.audio_meta_dir)
         self.datalist = self.get_audio_paths(self.audio_list)

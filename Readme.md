@@ -1,4 +1,4 @@
-有關於 ffmpeg 說明
+有關於 ffmpeg 說明(for Windows environment)
 - 請先至 https://github.com/GyanD/codexffmpeg/releases 下載檔案 (必須是shared)
 - 加入系統變數後，且裝完 torchaudio 後，請至 .venv\Lib\site-packages\torchaudio\_extension\__init__.py 修改此行
 
