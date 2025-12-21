@@ -27,9 +27,9 @@ MODEL_list = {
     "x-vector": "",
 }
 MODEL_ID = MODEL_list["ECAPA-TDNN"]
-AUDIO_DIR = "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac"
-AUDIO_LIST_DIR = "D:\\Dataset\\VoxCeleb2\\train_list.txt"
-AUDIO_META_DIR = "D:\\Dataset\\VoxCeleb2\\vox2_meta2.csv"
+AUDIO_DIR = "/app/dataset/VoxCeleb2/vox2_dev_wav/dev/aac"
+AUDIO_LIST_DIR = "/app/dataset/VoxCeleb2/train_list.txt"
+AUDIO_META_DIR = "/app/dataset/VoxCeleb2/vox2_meta2.csv"
 BATCH_SIZE = 64
 
 # ========== 載入模型 ==========
