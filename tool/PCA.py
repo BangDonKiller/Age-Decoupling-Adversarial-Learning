@@ -87,7 +87,7 @@ def subsample_for_visualization(X, y, max_points=50000, seed=42):
 
 
 # 載入資料
-data = torch.load("/app/result/ECAPA-TDNN/multi-class_pretrained_weight/ECAPA-TDNN_embeddings.pt")
+data = torch.load("./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings.pt")
 embeddings = data["embeddings"]
 y = np.array(data["genders"])
 
@@ -104,8 +104,8 @@ plot_pca_2d(
     y,
     label_map,
     color_map,
-    title="ECAPA-TDNN Embeddings PCA (2D)",
-    save_path="/app/result/ECAPA-TDNN/multi-class_pretrained_weight/ECAPA-TDNN_embeddings_pca2d.png"
+    title="VoxCeleb2 ECAPA-TDNN Embeddings PCA (2D)",
+    save_path="./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings_pca2d.png"
 )
 print("2D PCA plot saved.")
 
@@ -121,7 +121,7 @@ plot_pca_3d_interactive_safe(
     X_vis,
     y_vis,
     label_map,
-    "/app/result/ECAPA-TDNN/multi-class_pretrained_weight/pca3d_interactive.html"
+    "./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings_pca3d_interactive.html"
 )
 
 

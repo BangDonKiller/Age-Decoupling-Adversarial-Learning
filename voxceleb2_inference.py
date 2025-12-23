@@ -1,5 +1,6 @@
 import torch
 from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+# from data.vox1_loader import InferenceDataset
 from data.vox2_loader import InferenceDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -27,9 +28,24 @@ MODEL_list = {
     "x-vector": "",
 }
 MODEL_ID = MODEL_list["ECAPA-TDNN"]
-AUDIO_DIR = "/app/dataset/VoxCeleb2/vox2_dev_wav/dev/aac"
-AUDIO_LIST_DIR = "/app/dataset/VoxCeleb2/train_list.txt"
-AUDIO_META_DIR = "/app/dataset/VoxCeleb2/vox2_meta2.csv"
+DATASET_INFO = {
+    "VoxCeleb1": {
+        "AUDIO_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav",
+        "AUDIO_LIST_DIR": None,
+        "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_meta.csv",
+    },
+    "VoxCeleb2": {
+        "AUDIO_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac",
+        "AUDIO_LIST_DIR": "D:\\Dataset\\VoxCeleb2\\train_list.txt",
+        "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_meta2.csv",
+    }
+}
+
+DATASET = "VoxCeleb2"
+AUDIO_DIR = DATASET_INFO[DATASET]["AUDIO_DIR"]
+AUDIO_LIST_DIR = DATASET_INFO[DATASET]["AUDIO_LIST_DIR"]
+AUDIO_META_DIR = DATASET_INFO[DATASET]["AUDIO_META_DIR"]
+
 BATCH_SIZE = 64
 
 # ========== 載入模型 ==========
@@ -40,6 +56,7 @@ speaker_extractor = SpeakerEmbeddingExtractor(
 )
 
 # ========== Dataloader ==========
+# dataset = InferenceDataset(AUDIO_DIR, AUDIO_META_DIR, suffix=".wav")
 dataset = InferenceDataset(AUDIO_DIR, AUDIO_LIST_DIR, AUDIO_META_DIR, suffix=".m4a")
 loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
@@ -59,7 +76,7 @@ all_embeddings = torch.cat(all_embeddings, dim=0)
 
 # ========== 儲存 embeddings ==========
 MODEL = next((k for k, v in MODEL_list.items() if v == MODEL_ID), None)
-torch.save({"embeddings": all_embeddings, "speaker_ids": speaker_ids, "genders": genders}, f"result/{MODEL}/{MODEL}_embeddings.pt")
+torch.save({"embeddings": all_embeddings, "speaker_ids": speaker_ids, "genders": genders}, f"result/{MODEL}/{DATASET}_{MODEL}_embeddings.pt")
 print(f"推論完成，共 {len(all_embeddings)} 個向量")
 
 

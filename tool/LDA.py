@@ -6,7 +6,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 # =====================
 # 載入資料
 # =====================
-data = torch.load("/app/result/ECAPA-TDNN/ECAPA-TDNN_embeddings.pt")
+data = torch.load("./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings.pt")
 
 X = data["embeddings"]          # Tensor [N, D]
 y_raw = np.array(data["genders"])
@@ -56,7 +56,7 @@ plt.title("LDA Projection of ECAPA-TDNN Embeddings (Gender)")
 plt.legend()
 plt.tight_layout()
 
-plt.savefig("lda_gender_ecapa.png", dpi=300)
+plt.savefig("VoxCeleb2_lda_gender_ecapa.png", dpi=300)
 plt.show()
 
-print("LDA plot saved: lda_gender_ecapa.png")
+print("LDA plot saved: VoxCeleb2_lda_gender_ecapa.png")

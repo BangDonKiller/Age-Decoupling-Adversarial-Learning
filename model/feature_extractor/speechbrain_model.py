@@ -85,6 +85,6 @@ class SpeakerEmbeddingExtractor(nn.Module):
         with torch.no_grad():
             embeddings = self.classifier.encode_batch(waveform)
             # 輸出 shape 是 (batch, 1, embedding_dim)，我們將其壓縮
-            embeddings = embeddings.squeeze()
+            embeddings = embeddings.squeeze(1)
         
         return embeddings

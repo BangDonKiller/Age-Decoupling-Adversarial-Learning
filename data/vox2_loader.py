@@ -72,7 +72,7 @@ class InferenceDataset(Dataset):
         self.datalist = self.get_audio_paths(self.audio_list)
 
     def __len__(self):
-        return len(self.audio_list)
+        return len(self.datalist)
     
     def read_meta_file(self, meta_path: str):
         df = pd.read_csv(meta_path, encoding="latin1")
@@ -104,7 +104,16 @@ class InferenceDataset(Dataset):
             full_path = self.audio_dir / audio_path
             gender = self.meta[speaker_id]            
             data_list.append((speaker_id, gender, full_path))
-        return data_list
+            
+        # 測試改動(每個說話者只取一個檔案)
+        unique_speakers = {}
+        filtered_data_list = []
+        for item in data_list:
+            speaker_id = item[0]
+            if speaker_id not in unique_speakers:
+                unique_speakers[speaker_id] = True
+                filtered_data_list.append(item)
+        return filtered_data_list
         
     def _load_and_preprocess_audio(self, file_path: str) -> torch.Tensor:
         """load + resample + mono"""
