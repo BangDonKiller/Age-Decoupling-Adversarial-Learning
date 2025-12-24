@@ -33,18 +33,19 @@ DATASET_INFO = {
         "AUDIO_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav",
         "AUDIO_LIST_DIR": None,
         "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_meta.csv",
+        "audio_suffix": ".wav",
     },
     "VoxCeleb2": {
         "AUDIO_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac",
-        "AUDIO_LIST_DIR": "D:\\Dataset\\VoxCeleb2\\train_list.txt",
         "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_meta2.csv",
+        "audio_suffix": ".m4a",
     }
 }
 
 DATASET = "VoxCeleb2"
 AUDIO_DIR = DATASET_INFO[DATASET]["AUDIO_DIR"]
-AUDIO_LIST_DIR = DATASET_INFO[DATASET]["AUDIO_LIST_DIR"]
 AUDIO_META_DIR = DATASET_INFO[DATASET]["AUDIO_META_DIR"]
+AUDIO_SUFFIX = DATASET_INFO[DATASET]["audio_suffix"]
 
 BATCH_SIZE = 64
 
@@ -56,8 +57,7 @@ speaker_extractor = SpeakerEmbeddingExtractor(
 )
 
 # ========== Dataloader ==========
-# dataset = InferenceDataset(AUDIO_DIR, AUDIO_META_DIR, suffix=".wav")
-dataset = InferenceDataset(AUDIO_DIR, AUDIO_LIST_DIR, AUDIO_META_DIR, suffix=".m4a")
+dataset = InferenceDataset(AUDIO_DIR, AUDIO_META_DIR, suffix=AUDIO_SUFFIX)
 loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 # ========== Batch 推論 ==========

@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-# from params import param
 from speechbrain.lobes.models.ResNet import ResNet
 from speechbrain.inference import EncoderClassifier
 from pathlib import Path
@@ -26,15 +25,6 @@ class SpeakerEmbeddingExtractor(nn.Module):
         model_id (str): Hugging Face Hub 上的模型 ID。
         device (str, optional): 運行的設備 ('cpu' or 'cuda')。預設為 'cpu'。
         savedir (str, optional): 模型下載後儲存的本地路徑。預設為 'pretrained_models'。
-    
-    Example:
-        >>> extractor = SpeakerEmbeddingExtractor(
-        ...     model_id="speechbrain/spkrec-ecapa-tdnn-voxceleb",
-        ...     device="cuda"
-        ... )
-        >>> embedding = extractor.get_embedding_from_file("path/to/audio.wav")
-        # 或者直接呼叫
-        >>> embedding = extractor("path/to/audio.wav")
     """
     def __init__(self, model_id: str, device: str = "cpu", savedir: str = "pretrained_models"):
         super().__init__()

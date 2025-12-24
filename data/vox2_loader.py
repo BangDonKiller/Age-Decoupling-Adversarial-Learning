@@ -4,6 +4,7 @@ import torch
 import torchaudio
 import torchaudio.transforms as T
 from torch.utils.data import Dataset
+import random
 
 class TrainDataset(Dataset):
     def __init__(self, file_dir, file_list):
@@ -52,24 +53,14 @@ class TrainDataset(Dataset):
 class InferenceDataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
 
-    def __init__(self, audio_dir: str, audio_list_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
+    def __init__(self, audio_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
         self.audio_dir = Path(audio_dir)
-        self.audio_list_dir = Path(audio_list_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
         self.audio_list = []
         self.target_sr = target_sample_rate
         
-        # # read the audio file list
-        with open(self.audio_list_dir, "r") as f:
-            for line in f:
-                filepath = line.strip()
-                if filepath.endswith(suffix):
-                    self.audio_list.append(filepath)
-                # if len(self.audio_list) >= 10000:
-                #     break
-        
         self.meta = self.read_meta_file(self.audio_meta_dir)
-        self.datalist = self.get_audio_paths(self.audio_list)
+        self.datalist = self.get_audio_paths()
 
     def __len__(self):
         return len(self.datalist)
@@ -87,33 +78,31 @@ class InferenceDataset(Dataset):
 
         df["col1"] = df["splitted"].apply(lambda x: x[1] if len(x) > 1 else None)
         df["col3"] = df["splitted"].apply(lambda x: x[3] if len(x) > 3 else None)
+        df["col4"] = df["splitted"].apply(lambda x: x[4] if len(x) > 4 else None)
 
         # 移除 key 或 value 是 None 的列（避免髒資料）
-        df_valid = df.dropna(subset=["col1", "col3"])
+        df_valid = df.dropna(subset=["col1", "col3", "col4"])
+        df_dev = df_valid[df_valid["col4"] == "dev"]
 
         # 建立字典 col1 中的值當 key，col3 中的值當 value 
-        meta_dict = dict(zip(df_valid["col1"], df_valid["col3"]))
+        meta_dict = dict(zip(df_dev["col1"], df_dev["col3"]))
         
         return meta_dict
     
-    def get_audio_paths(self, audio_list):
+    def get_audio_paths(self):
         data_list = []
-        for relative_path in audio_list:
-            speaker_id = relative_path.split()[0]
-            audio_path = relative_path.split()[1]
-            full_path = self.audio_dir / audio_path
-            gender = self.meta[speaker_id]            
-            data_list.append((speaker_id, gender, full_path))
+        for speaker_id, gender in self.meta.items():
+            audio_dir = self.audio_dir / speaker_id
+        
+        # 把該說話者的所有音訊檔案加入list
+            speaker_audio_files = list(audio_dir.rglob("*.m4a"))
             
-        # 測試改動(每個說話者只取一個檔案)
-        unique_speakers = {}
-        filtered_data_list = []
-        for item in data_list:
-            speaker_id = item[0]
-            if speaker_id not in unique_speakers:
-                unique_speakers[speaker_id] = True
-                filtered_data_list.append(item)
-        return filtered_data_list
+            audio_path = random.choice(speaker_audio_files)
+
+            data_list.append((speaker_id, gender, audio_path))
+            
+        print(f"Total {len(data_list)} speakers' audio files loaded.")
+        return data_list
         
     def _load_and_preprocess_audio(self, file_path: str) -> torch.Tensor:
         """load + resample + mono"""
@@ -140,3 +129,11 @@ class InferenceDataset(Dataset):
         speaker_id, gender, path = self.datalist[idx]
         waveform = self._load_and_preprocess_audio(str(path))
         return waveform, speaker_id, gender
+    
+if __name__ == "__main__":
+    # 測試 Dataset
+    audio_dir = "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac"
+    audio_meta_dir = "D:\\Dataset\\VoxCeleb2\\vox2_meta2.csv"
+    
+    dataset = InferenceDataset(audio_dir, audio_meta_dir, suffix=".m4a")
+    print(f"Dataset size: {len(dataset)}")
