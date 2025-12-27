@@ -4,7 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 
 # 讀取資料
-data = torch.load("./result/ECAPA-TDNN/VoxCeleb1_ECAPA-TDNN_embeddings.pt")
+data = torch.load("./result/ECAPA-TDNN/LibriSpeech_ECAPA-TDNN_embeddings.pt")
 
 X = data["embeddings"].numpy()     # [N, D]
 y = np.array(data["genders"])      # e.g. ['f', 'm']
@@ -26,7 +26,7 @@ X_tsne = tsne.fit_transform(X)
 plt.figure(figsize=(10, 8))
 
 # 女生（深紅）
-mask_f = y == "f"
+mask_f = y == "F"
 plt.scatter(
     X_tsne[mask_f, 0],
     X_tsne[mask_f, 1],
@@ -37,7 +37,7 @@ plt.scatter(
 )
 
 # 男生（深藍）
-mask_m = y == "m"
+mask_m = y == "M"
 plt.scatter(
     X_tsne[mask_m, 0],
     X_tsne[mask_m, 1],
@@ -48,9 +48,9 @@ plt.scatter(
 )
 
 plt.legend(markerscale=3)
-plt.title("t-SNE of ECAPA-TDNN VoxCeleb1 Speaker Embeddings")
+plt.title("t-SNE of ECAPA-TDNN LibriSpeech Speaker Embeddings")
 plt.xlabel("t-SNE dim 1")
 plt.ylabel("t-SNE dim 2")
 plt.tight_layout()
-plt.savefig("VoxCeleb1_tsne_gender_ecapa.png", dpi=300)
+plt.savefig("LibriSpeech_tsne_gender_ecapa.png", dpi=300)
 plt.show()

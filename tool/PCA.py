@@ -87,14 +87,14 @@ def subsample_for_visualization(X, y, max_points=50000, seed=42):
 
 
 # 載入資料
-data = torch.load("./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings.pt")
+data = torch.load("./result/ECAPA-TDNN/LibriSpeech_ECAPA-TDNN_embeddings.pt")
 embeddings = data["embeddings"]
 y = np.array(data["genders"])
 
 # 把embeddings做L2正規化
 embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
 
-label_map = {'f': 'female', 'm': 'male'}
+label_map = {'F': 'female', 'M': 'male'}
 color_map = {'female': '#c44e52', 'male': '#4c72b0'}
 
 # === 2D PCA ===
@@ -104,8 +104,8 @@ plot_pca_2d(
     y,
     label_map,
     color_map,
-    title="VoxCeleb2 ECAPA-TDNN Embeddings PCA (2D)",
-    save_path="./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings_pca2d.png"
+    title="LibriSpeech ECAPA-TDNN Embeddings PCA (2D)",
+    save_path="./result/ECAPA-TDNN/LibriSpeech_ECAPA-TDNN_embeddings_pca2d.png"
 )
 print("2D PCA plot saved.")
 
@@ -121,7 +121,7 @@ plot_pca_3d_interactive_safe(
     X_vis,
     y_vis,
     label_map,
-    "./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings_pca3d_interactive.html"
+    "./result/ECAPA-TDNN/LibriSpeech_ECAPA-TDNN_embeddings_pca3d_interactive.html"
 )
 
 

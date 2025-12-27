@@ -7,7 +7,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import silhouette_score
 import torch
 
-data = torch.load("./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings.pt")
+data = torch.load("./result/ECAPA-TDNN/LibriSpeech_ECAPA-TDNN_embeddings.pt")
 X = data["embeddings"].numpy()     # [N, D]
 y = np.array(data["genders"])      # e.g. ['f', 'm']
 

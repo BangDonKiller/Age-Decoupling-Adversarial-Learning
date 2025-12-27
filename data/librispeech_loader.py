@@ -32,7 +32,7 @@ class InferenceDataset(Dataset):
             gender = parts[1].strip()
             subset = parts[2].strip()
             
-            if subset in ["train-clean-100", "dev-clean", "test-clean"]:       
+            if subset in ["train-clean-100", "dev-clean", "test-clean", "train-other-500"]:       
                 utts_dir = self.audio_dir / subset / "LibriSpeech" / subset / speaker_id
                 utt = random.choice(list(utts_dir.rglob(f"*{'.flac'}")))
                 audio_list.append((str(utt), speaker_id, gender))

@@ -6,7 +6,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 # =====================
 # 載入資料
 # =====================
-data = torch.load("./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings.pt")
+data = torch.load("./result/ECAPA-TDNN/LibriSpeech_ECAPA-TDNN_embeddings.pt")
 
 X = data["embeddings"]          # Tensor [N, D]
 y_raw = np.array(data["genders"])
@@ -16,7 +16,7 @@ if hasattr(X, "cpu"):
     X = X.cpu().numpy()
 
 # label mapping
-label_map = {'f': 'female', 'm': 'male'}
+label_map = {'F': 'female', 'M': 'male'}
 y = np.array([label_map[g] for g in y_raw])
 
 color_map = {'female': '#c44e52', 'male': '#4c72b0'}
@@ -56,7 +56,7 @@ plt.title("LDA Projection of ECAPA-TDNN Embeddings (Gender)")
 plt.legend()
 plt.tight_layout()
 
-plt.savefig("VoxCeleb2_lda_gender_ecapa.png", dpi=300)
+plt.savefig("LibriSpeech_lda_gender_ecapa.png", dpi=300)
 plt.show()
 
-print("LDA plot saved: VoxCeleb2_lda_gender_ecapa.png")
+print("LDA plot saved: LibriSpeech_lda_gender_ecapa.png")
