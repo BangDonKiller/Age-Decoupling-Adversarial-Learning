@@ -17,7 +17,7 @@ class InferenceDataset(Dataset):
     def __len__(self):
         return len(self.datalist)
     
-    def read_meta_file(self, meta_path, max_items=1000):
+    def read_meta_file(self, meta_path, max_items=20000):
         datalist = []
         sexual = {"male": 0, "female": 0}
 
@@ -30,13 +30,13 @@ class InferenceDataset(Dataset):
                 speaker_id = row["speaker_id"]
                 gender = row["gender"]
 
-                # 如果說話者有重複，就跳過
-                if speaker_id not in seen_speakers:
-                    # 男性與女性資料各500筆
-                    if gender in sexual and sexual[gender] < (max_items / 2):
-                        datalist.append((audio, speaker_id, gender))
-                        sexual[gender] += 1
-                        seen_speakers.add(speaker_id) # 將新的 speaker_id 加入 set
+                # # 如果說話者有重複，就跳過
+                # if speaker_id not in seen_speakers:
+                # 男性與女性資料各10000筆
+                if gender in sexual and sexual[gender] < (max_items / 2):
+                    datalist.append((audio, speaker_id, gender))
+                    sexual[gender] += 1
+                    seen_speakers.add(speaker_id) # 將新的 speaker_id 加入 set
 
                 # 檢查是否已滿，如果滿了就直接 return
                 if len(datalist) >= max_items:

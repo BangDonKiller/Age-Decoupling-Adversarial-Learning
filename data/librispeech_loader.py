@@ -34,7 +34,8 @@ class InferenceDataset(Dataset):
             
             if subset in ["train-clean-100", "dev-clean", "test-clean", "train-other-500"]:       
                 utts_dir = self.audio_dir / subset / "LibriSpeech" / subset / speaker_id
-                utt = random.choice(list(utts_dir.rglob(f"*{'.flac'}")))
+                utts = list(utts_dir.rglob(f"*{'.flac'}"))
+                utt = random.sample(utts, min(10, len(utts)))  # 每個說話者最多取10個檔案
                 audio_list.append((str(utt), speaker_id, gender))
                 
         # 看性別的數量
