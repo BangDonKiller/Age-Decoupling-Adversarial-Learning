@@ -97,9 +97,11 @@ class InferenceDataset(Dataset):
         # 把該說話者的所有音訊檔案加入list
             speaker_audio_files = list(audio_dir.rglob("*.m4a"))
             
-            audio_path = random.choice(speaker_audio_files)
+            # 隨機選10個音訊檔案
+            audio_paths = random.sample(speaker_audio_files, min(10, len(speaker_audio_files)))
 
-            data_list.append((speaker_id, gender, audio_path))
+            for audio_path in audio_paths:
+                data_list.append((speaker_id, gender, audio_path))
             
         print(f"Total {len(data_list)} speakers' audio files loaded.")
         return data_list

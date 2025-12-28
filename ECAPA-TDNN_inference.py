@@ -1,9 +1,9 @@
 import torch
 from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
 # from data.vox1_loader import InferenceDataset
-# from data.vox2_loader import InferenceDataset
+from data.vox2_loader import InferenceDataset
 # from data.librispeech_loader import InferenceDataset
-from data.GLOBE_loader import InferenceDataset
+# from data.GLOBE_loader import InferenceDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from pathlib import Path
@@ -54,9 +54,9 @@ DATASET_INFO = {
     },
 }
 
-DATASET = "GLOBE"
+DATASET = "VoxCeleb2"
 AUDIO_DIR = DATASET_INFO[DATASET]["AUDIO_DIR"]
-# AUDIO_META_DIR = DATASET_INFO[DATASET]["AUDIO_META_DIR"]
+AUDIO_META_DIR = DATASET_INFO[DATASET]["AUDIO_META_DIR"]
 AUDIO_SUFFIX = DATASET_INFO[DATASET]["audio_suffix"]
 
 BATCH_SIZE = 64
@@ -69,8 +69,8 @@ speaker_extractor = SpeakerEmbeddingExtractor(
 )
 
 # ========== Dataloader ==========
-# dataset = InferenceDataset(AUDIO_DIR, AUDIO_META_DIR, suffix=AUDIO_SUFFIX)
-dataset = InferenceDataset(AUDIO_DIR, suffix=AUDIO_SUFFIX)
+dataset = InferenceDataset(AUDIO_DIR, AUDIO_META_DIR, suffix=AUDIO_SUFFIX)
+# dataset = InferenceDataset(AUDIO_DIR, suffix=AUDIO_SUFFIX)
 loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 # ========== Batch 推論 ==========
