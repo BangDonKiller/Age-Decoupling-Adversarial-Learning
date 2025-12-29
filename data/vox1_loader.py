@@ -201,7 +201,10 @@ class InferenceDataset(Dataset):
             speaker_audio_path = self.audio_dir / speaker_id
             utts = [str(p) for p in speaker_audio_path.rglob("*.wav")]
             utt = random.sample(utts, min(10, len(utts)))  # 每個說話者最多取10個檔案
-            data_list.append((Path(utt), speaker_id, gender))
+            
+            for u in utt:
+                data_list.append((Path(u), speaker_id, gender))
+            
         return data_list
         
     def _load_and_preprocess_audio(self, file_path: str) -> torch.Tensor:

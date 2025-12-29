@@ -36,7 +36,9 @@ class InferenceDataset(Dataset):
                 utts_dir = self.audio_dir / subset / "LibriSpeech" / subset / speaker_id
                 utts = list(utts_dir.rglob(f"*{'.flac'}"))
                 utt = random.sample(utts, min(10, len(utts)))  # 每個說話者最多取10個檔案
-                audio_list.append((str(utt), speaker_id, gender))
+                
+                for u in utt:
+                    audio_list.append((str(u), speaker_id, gender))
                 
         # 看性別的數量
         gender_counts = {"M": 0, "F": 0}
