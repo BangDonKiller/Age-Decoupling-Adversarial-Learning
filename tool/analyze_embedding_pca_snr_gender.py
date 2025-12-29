@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+project_root = Path(__file__).resolve().parent.parent
+sys.path.append(str(project_root))
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,6 +15,7 @@ from data.GLOBE_loader import InferenceDataset
 # from data.librispeech_loader import InferenceDataset
 from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
 from params.param import DEVICE, BATCH_SIZE, DATASET_INFO, MODEL_ID
+
 
 # 設定你的路徑
 DATASET = "GLOBE"  # "VoxCeleb1", "VoxCeleb2", "LibriSpeech", "GLOBE"
