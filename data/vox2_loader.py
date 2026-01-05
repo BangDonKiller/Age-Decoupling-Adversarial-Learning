@@ -167,17 +167,17 @@ class InferenceDataset(Dataset):
                 data_list.append((str(random_select),speaker_id,gender,utt_info["age"]))
                 
         # count the speaker, gender, age group amount in datalist
-        speaker_count = len(set([item[1] for item in data_list]))
-        gender_count = {}
-        age_group_count = {}
-        for item in data_list:
-            gender = item[2]
-            age_group = item[3]
-            gender_count[gender] = gender_count.get(gender, 0) + 1
-            age_group_count[age_group] = age_group_count.get(age_group, 0) + 1
-        print(f"Total speakers: {speaker_count}")
-        print("Gender counts:", gender_count)
-        print("Age group counts:", age_group_count)
+        # speaker_count = len(set([item[1] for item in data_list]))
+        # gender_count = {}
+        # age_group_count = {}
+        # for item in data_list:
+        #     gender = item[2]
+        #     age_group = item[3]
+        #     gender_count[gender] = gender_count.get(gender, 0) + 1
+        #     age_group_count[age_group] = age_group_count.get(age_group, 0) + 1
+        # print(f"Total speakers: {speaker_count}")
+        # print("Gender counts:", gender_count)
+        # print("Age group counts:", age_group_count)
 
         return data_list
         
