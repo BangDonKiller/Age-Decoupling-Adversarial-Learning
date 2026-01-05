@@ -20,10 +20,10 @@ sys.path.append(str(project_root))
 
 from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
 from params.param import DATASET_INFO, MODEL_ID, DEVICE, BATCH_SIZE
-from data.librispeech_loader import InferenceDataset
+# from data.librispeech_loader import InferenceDataset
 # from data.vox2_loader import InferenceDataset
 # from data.vox1_loader import InferenceDataset
-# from data.GLOBE_loader import InferenceDataset
+from data.GLOBE_loader import InferenceDataset
 
 # ==========================================
 # 1. 初始化 OpenSMILE
@@ -186,7 +186,7 @@ def main():
 
     # 在這裡切換你要分析的資料集
     # 建議跑兩次，一次 VoxCeleb1，一次 Librispeech 做對比
-    datasets_to_run = ["LibriSpeech"] 
+    datasets_to_run = ["GLOBE"] 
     
     for ds_name in datasets_to_run:
         # 1. 取得資料

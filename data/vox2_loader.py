@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 import torchaudio
 import torchaudio.transforms as T
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import random
 
 class TrainDataset(Dataset):
@@ -56,7 +56,6 @@ class InferenceDataset(Dataset):
     def __init__(self, audio_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
-        self.audio_list = []
         self.target_sr = target_sample_rate
         
         self.meta = self.read_meta_file(self.audio_meta_dir)
@@ -66,44 +65,120 @@ class InferenceDataset(Dataset):
         return len(self.datalist)
     
     def read_meta_file(self, meta_path: str):
-        df = pd.read_csv(meta_path, encoding="latin1")
-
-        # 先拆成 list
-        df["splitted"] = (
-            df.iloc[:, 0]
-            .str.strip()
-            .str.split("\t")
-            .apply(lambda xs: [x.strip() for x in xs])
+        """
+        讀取 metadata 檔案，回傳 dict 結構如下：
+        {
+            "speaker_id_1": {
+                "gender": "M",
+                "utts": {   
+                    "utterance_1": {"age": 25},
+                    "utterance_2": {"age": 30},
+                    ...
+                }
+            },
+            "speaker_id_2": {
+                "gender": "F",
+                "utts": {
+                    "utterance_1": {"age": 22},
+                    "utterance_2": {"age": 28},
+                    ...
+                }
+            }
+        }
+        """
+        df = pd.read_csv(
+            meta_path,
+            sep=",",
+            header=0,  # 表示第一列是 header，要跳過
+            usecols=[0,1,2,3],  # 只抓這四欄，避免多餘欄位
+            dtype={"age": str}   # 先讀成字串，後續再轉數字
         )
 
-        df["col1"] = df["splitted"].apply(lambda x: x[1] if len(x) > 1 else None)
-        df["col3"] = df["splitted"].apply(lambda x: x[3] if len(x) > 3 else None)
-        df["col4"] = df["splitted"].apply(lambda x: x[4] if len(x) > 4 else None)
+        meta_dict = {}
+        age_groups = {
+            range(0, 11): "child",        # 0-10
+            range(11, 21): "tens",        # 11-20
+            range(21, 31): "twenties",    # 21-30
+            range(31, 41): "thirties",    # 31-40
+            range(41, 51): "forties",     # 41-50
+            range(51, 61): "fifties",     # 51-60
+            range(61, 71): "sixties",     # 61-70
+            range(71, 150): "others"      # 71-149
+        }
 
-        # 移除 key 或 value 是 None 的列（避免髒資料）
-        df_valid = df.dropna(subset=["col1", "col3", "col4"])
-        df_dev = df_valid[df_valid["col4"] == "dev"]
 
-        # 建立字典 col1 中的值當 key，col3 中的值當 value 
-        meta_dict = dict(zip(df_dev["col1"], df_dev["col3"]))
-        
+        for _, row in df.iterrows():
+            speaker = row["speaker_id"] if "speaker_id" in df.columns else row.iloc[0]
+            utt = row["utterance"] if "utterance" in df.columns else row.iloc[1]
+            # turn age into age group
+            age_str = row["age"] if "age" in df.columns else row.iloc[2]
+            try:
+                age = int(age_str)
+                age_group = next((group for age_range, group in age_groups.items() if age in age_range), "others")
+            except ValueError:
+                age_group = "others"
+                print(f"Warning: Invalid age '{age_str}' for speaker '{speaker}', utterance '{utt}'. Assigned to 'others' group.")
+            gender = row["gender"] if "gender" in df.columns else row.iloc[3]
+
+            # speaker 第一次出現
+            if speaker not in meta_dict:
+                meta_dict[speaker] = {
+                    "gender": gender,
+                    "utts": {}
+                }
+
+            # 同一 speaker 底下加入不同 utterance
+            meta_dict[speaker]["utts"][utt] = {
+                "age": age_group
+            }
+            
+        # count the age group amount
+        # age_group_count = {}
+        # for speaker_info in meta_dict.values():
+        #     for utt_info in speaker_info["utts"].values():
+        #         age_group = utt_info["age"]
+        #         if age_group not in age_group_count:
+        #             age_group_count[age_group] = 0
+        #         age_group_count[age_group] += 1
+
+        # print("Age group counts:", age_group_count)
         return meta_dict
     
-    def get_audio_paths(self):
+    def get_audio_paths(self, num_utts_per_speaker=10):
         data_list = []
-        for speaker_id, gender in self.meta.items():
-            audio_dir = self.audio_dir / speaker_id
-        
-        # 把該說話者的所有音訊檔案加入list
-            speaker_audio_files = list(audio_dir.rglob("*.m4a"))
-            
-            # 隨機選10個音訊檔案
-            audio_paths = random.sample(speaker_audio_files, min(10, len(speaker_audio_files)))
 
-            for audio_path in audio_paths:
-                data_list.append((speaker_id, gender, audio_path))
-            
-        print(f"Total {len(data_list)} speakers' audio files loaded.")
+        for speaker_id, info in self.meta.items():
+            gender = info["gender"]
+            utts = list(info["utts"].keys())
+
+            # 該 speaker 的 utterance 不足 10 個 → 全拿
+            sampled_utts = random.sample(
+                utts,
+                k=min(num_utts_per_speaker, len(utts))
+            )
+
+            for utt in sampled_utts:
+                audio_folder = Path(self.audio_dir) / speaker_id / f"{utt}"
+                audio_path = list(audio_folder.rglob(f"*.m4a"))
+                random_select = random.sample(audio_path, k=1)[0]
+
+                utt_info = info["utts"][utt]
+
+                data_list.append((str(random_select),speaker_id,gender,utt_info["age"]))
+                
+        # count the speaker, gender, age group amount in datalist
+        speaker_count = len(set([item[1] for item in data_list]))
+        gender_count = {}
+        age_group_count = {}
+        for item in data_list:
+            gender = item[2]
+            age_group = item[3]
+            gender_count[gender] = gender_count.get(gender, 0) + 1
+            age_group_count[age_group] = age_group_count.get(age_group, 0) + 1
+        print(f"Total speakers: {speaker_count}")
+        print("Gender counts:", gender_count)
+        print("Age group counts:", age_group_count)
+
         return data_list
         
     def _load_and_preprocess_audio(self, file_path: str) -> torch.Tensor:
@@ -128,14 +203,24 @@ class InferenceDataset(Dataset):
         return signal
 
     def __getitem__(self, idx):
-        speaker_id, gender, path = self.datalist[idx]
+        path, speaker_id, gender, age = self.datalist[idx]
         waveform = self._load_and_preprocess_audio(str(path))
-        return waveform, speaker_id, gender
+        return waveform, speaker_id, gender, age
     
 if __name__ == "__main__":
     # 測試 Dataset
     audio_dir = "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac"
-    audio_meta_dir = "D:\\Dataset\\VoxCeleb2\\vox2_meta2.csv"
+    audio_meta_dir = "D:\\Dataset\\VoxCeleb2\\vox2_meta.csv"
     
     dataset = InferenceDataset(audio_dir, audio_meta_dir, suffix=".m4a")
     print(f"Dataset size: {len(dataset)}")
+    
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+    for batch in dataloader:
+        waveforms, speaker_ids, genders, ages = batch
+        print(f"Waveforms shape: {waveforms.shape}")
+        print(f"Speaker IDs: {speaker_ids}")
+        print(f"Genders: {genders}")
+        print(f"Ages: {ages}")
+        
+        

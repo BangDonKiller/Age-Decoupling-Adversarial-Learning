@@ -110,9 +110,10 @@ def perform_gender_cca(csv_path, dataset_name):
 
 def main():
     datasets = {
-        # "VoxCeleb1": "VoxCeleb1_raw_data.csv",
-        # "Librispeech": "Librispeech_raw_data.csv" 
-        "VoxCeleb2": "VoxCeleb2_raw_data.csv",
+        "VoxCeleb1": "./result/ECAPA-TDNN/VoxCeleb1_raw_data.csv",
+        # "Librispeech": "./result/ECAPA-TDNN/Librispeech_raw_data.csv" ,
+        "VoxCeleb2": "./result/ECAPA-TDNN/VoxCeleb2_raw_data.csv",
+        # "GLOBE": "./result/ECAPA-TDNN/GLOBE_raw_data.csv",
     }
     
     for name, path in datasets.items():
