@@ -29,12 +29,13 @@ class InferenceDataset(Dataset):
                 audio = row["audio"]['bytes']
                 speaker_id = row["speaker_id"]
                 gender = row["gender"]
+                age = row["age"]
 
                 # # 如果說話者有重複，就跳過
                 # if speaker_id not in seen_speakers:
                 # 男性與女性資料各10000筆
                 if gender in sexual and sexual[gender] < (max_items / 2):
-                    datalist.append((audio, speaker_id, gender))
+                    datalist.append((audio, speaker_id, gender, age))
                     sexual[gender] += 1
                     seen_speakers.add(speaker_id) # 將新的 speaker_id 加入 set
 
@@ -43,6 +44,16 @@ class InferenceDataset(Dataset):
                     print(f"資料列表已滿 {max_items} 筆，提前結束。")
                     return datalist # <--- 直接返回結果，終止所有迴圈
 
+
+        # count the age amount
+        # age_count = {}
+        # for item in datalist:
+        #     age = item[3]
+        #     if age not in age_count:
+        #         age_count[age] = 0
+        #     age_count[age] += 1
+        # print("年齡分佈：", age_count)
+        
         print("所有檔案處理完畢。")
         return datalist
         
@@ -77,26 +88,24 @@ class InferenceDataset(Dataset):
         return signal
 
     def __getitem__(self, idx):
-        path, speaker_id, gender = self.datalist[idx]
+        path, speaker_id, gender, age = self.datalist[idx]
         waveform = self._load_and_preprocess_audio_from_bytes(path)
-        return waveform, speaker_id, gender
+        return waveform, speaker_id, gender, age
 
-# if __name__ == "__main__":
-#     # 測試 TrainDataset
-#     from pathlib import Path
+if __name__ == "__main__":
+    train_path = list(Path("D:\\Dataset\\GLOBE\\data").rglob("train-*.parquet"))
+    val_path = list(Path("D:\\Dataset\\GLOBE\\data").rglob("val-*.parquet"))
+    test_path = list(Path("D:\\Dataset\\GLOBE\\data").rglob("test-*.parquet"))
 
-#     train_path = list(Path("D:\\Dataset\\GLOBE\\data").rglob("train-*.parquet"))
-#     val_path = list(Path("D:\\Dataset\\GLOBE\\data").rglob("val-*.parquet"))
-#     test_path = list(Path("D:\\Dataset\\GLOBE\\data").rglob("test-*.parquet"))
-
-#     dataset = InferenceDataset(meta_dir=test_path)
+    dataset = InferenceDataset(meta_dir=test_path)
     
-#     dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
     
-#     for i, (waveforms, speaker_ids, genders) in enumerate(dataloader):
-#         print(f"Batch {i}:")
-#         print(f"  Waveforms shape: {waveforms.shape}")
-#         print(f"  Speaker IDs: {speaker_ids}")
-#         print(f"  Genders: {genders}")
-#         if i == 2:  # 只看前三個 batch
-#             break
+    for i, (waveforms, speaker_ids, genders, ages) in enumerate(dataloader):
+        print(f"Batch {i}:")
+        print(f"  Waveforms shape: {waveforms.shape}")
+        print(f"  Speaker IDs: {speaker_ids}")
+        print(f"  Genders: {genders}")
+        print(f"  Ages: {ages}")
+        if i == 2:  # 只看前三個 batch
+            break
