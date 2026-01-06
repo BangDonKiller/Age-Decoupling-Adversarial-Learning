@@ -6,57 +6,61 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 # =====================
 # 載入資料
 # =====================
-data = torch.load("./result/ECAPA-TDNN/GLOBE_ECAPA-TDNN_embeddings.pt")
+data = torch.load("./result/ECAPA-TDNN/TIMIT_ECAPA-TDNN_embeddings.pt")
 
-X = data["embeddings"]          # Tensor [N, D]
-y_raw = np.array(data["genders"])
+X = data["embeddings"]   # Tensor [N, D]
+ages = data["ages"]      # list or tensor [N]
 
-# tensor -> numpy
-if hasattr(X, "cpu"):
+# =====================
+# 前處理
+# =====================
+if torch.is_tensor(X):
     X = X.cpu().numpy()
 
-# label mapping
-label_map = {'female': 'female', 'male': 'male'}
-y = np.array([label_map[g] for g in y_raw])
-
-color_map = {'female': '#c44e52', 'male': '#4c72b0'}
-
-print("X shape:", X.shape)
-print("y classes:", np.unique(y))
+if torch.is_tensor(ages):
+    ages = ages.cpu().numpy()
+else:
+    ages = np.array(ages)
 
 # =====================
-# LDA（2 類 → 1 維）
+# LDA 降維（7 類 → 最多 6 維，這裡取前 2）
 # =====================
-lda = LinearDiscriminantAnalysis(n_components=1)
-X_lda = lda.fit_transform(X, y)   # shape: [N, 1]
-
-print("X_lda shape:", X_lda.shape)
+lda = LinearDiscriminantAnalysis(n_components=2)
+X_lda = lda.fit_transform(X, ages)
 
 # =====================
-# 視覺化（1D → 2D 用 jitter）
+# 繪圖（每個 age group 最多 200 點）
 # =====================
-plt.figure(figsize=(10, 4))
+plt.figure(figsize=(8, 6))
 
-for label in np.unique(y):
-    idx = y == label
-    jitter = np.random.normal(0, 0.02, size=idx.sum())
+np.random.seed(42)  # 確保可重現
+
+max_points_per_class = 200
+age_groups = np.unique(ages)
+
+for age in age_groups:
+    idx = np.where(ages == age)[0]
+
+    # 若該類樣本超過 200，隨機抽樣
+    if len(idx) > max_points_per_class:
+        idx = np.random.choice(idx, max_points_per_class, replace=False)
 
     plt.scatter(
         X_lda[idx, 0],
-        jitter,
-        s=5,
-        alpha=0.3,
-        label=label,
-        color=color_map[label]
+        X_lda[idx, 1],
+        label=f"Age group {age}",
+        alpha=0.7,
+        s=20
     )
 
-plt.yticks([])
 plt.xlabel("LDA Component 1")
-plt.title("LDA Projection of ECAPA-TDNN Embeddings (Gender)")
+plt.ylabel("LDA Component 2")
+plt.title("TIMIT LDA Projection of ECAPA-TDNN Embeddings")
 plt.legend()
+plt.grid(True)
 plt.tight_layout()
-
-plt.savefig("GLOBE_lda_gender_ecapa.png", dpi=300)
+plt.savefig(
+    "./result/ECAPA-TDNN/TIMIT_ECAPA-TDNN_age_lda.png",
+    dpi=300
+)
 plt.show()
-
-print("LDA plot saved: GLOBE_lda_gender_ecapa.png")

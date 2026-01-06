@@ -30,14 +30,13 @@ MODEL_ID = MODEL_list["ECAPA-TDNN"]
 
 DATASET_INFO = {
     "VoxCeleb1": {
-        "AUDIO_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav",
-        "AUDIO_LIST_DIR": None,
+        "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
         "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_meta.csv",
         "audio_suffix": ".wav",
     },
     "VoxCeleb2": {
         "AUDIO_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac",
-        "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_meta2.csv",
+        "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_meta.csv",
         "audio_suffix": ".m4a",
     },
     "LibriSpeech": {
@@ -48,5 +47,10 @@ DATASET_INFO = {
     "GLOBE": {
         "AUDIO_DIR": list(Path("D:\\Dataset\\GLOBE\\data").rglob("train-*.parquet")),
         "audio_suffix": ".parquet", 
+    },
+    "TIMIT": {
+        "AUDIO_DIR": "D:\\Dataset\\TIMIT\\data\\TRAIN",
+        "AUDIO_META_DIR": "D:\\Dataset\\TIMIT\\train_meta_data.csv",
+        "audio_suffix": ".wav",
     },
 }
