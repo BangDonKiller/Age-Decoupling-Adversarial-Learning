@@ -178,6 +178,16 @@ class InferenceDataset(Dataset):
         self.audio_meta_dir = Path(audio_meta_dir)
         self.target_sr = target_sample_rate
         
+        self.conv_age = {
+            range(0, 21): 0,
+            range(21, 31): 1,
+            range(31, 41): 2,
+            range(41, 51): 3,
+            range(51, 61): 4,
+            range(61, 71): 5,
+            range(71, 81): 6,
+        }
+        
         self.meta = self.read_meta_file(self.audio_meta_dir)
         self.datalist = self.get_audio_paths()
 
@@ -191,16 +201,16 @@ class InferenceDataset(Dataset):
             "speaker_id_1": {
                 "gender": "M",
                 "utts": {   
-                    "utterance_1": {"age": 25},
-                    "utterance_2": {"age": 30},
+                    "utterance_1": {"age": 2},
+                    "utterance_2": {"age": 5},
                     ...
                 }
             },
             "speaker_id_2": {
                 "gender": "F",
                 "utts": {
-                    "utterance_1": {"age": 22},
-                    "utterance_2": {"age": 28},
+                    "utterance_1": {"age": 3},
+                    "utterance_2": {"age": 4},
                     ...
                 }
             }
@@ -215,29 +225,19 @@ class InferenceDataset(Dataset):
         )
 
         meta_dict = {}
-        age_groups = {
-            range(0, 11): "child",        # 0-10
-            range(11, 21): "tens",        # 11-20
-            range(21, 31): "twenties",    # 21-30
-            range(31, 41): "thirties",    # 31-40
-            range(41, 51): "forties",     # 41-50
-            range(51, 61): "fifties",     # 51-60
-            range(61, 71): "sixties",     # 61-70
-            range(71, 150): "others"      # 71-149
-        }
-
 
         for _, row in df.iterrows():
             speaker = row["speaker_id"] if "speaker_id" in df.columns else row.iloc[0]
             utt = row["utterance"] if "utterance" in df.columns else row.iloc[1]
             # turn age into age group
             age_str = row["age"] if "age" in df.columns else row.iloc[2]
-            try:
-                age = int(age_str)
-                age_group = next((group for age_range, group in age_groups.items() if age in age_range), "others")
-            except ValueError:
-                age_group = "others"
-                print(f"Warning: Invalid age '{age_str}' for speaker '{speaker}', utterance '{utt}'. Assigned to 'others' group.")
+            
+            # 年齡分群
+            age = int(age_str)
+            converted_age = self.conv_age.get(next((r for r in self.conv_age if age in r), None), -1)
+            if converted_age == -1:
+                print(f"Unknown age group: {age} for speaker {speaker}")
+            
             gender = row["gender"] if "gender" in df.columns else row.iloc[3]
 
             # speaker 第一次出現
@@ -249,7 +249,7 @@ class InferenceDataset(Dataset):
 
             # 同一 speaker 底下加入不同 utterance
             meta_dict[speaker]["utts"][utt] = {
-                "age": age_group
+                "age": converted_age
             }
     
         return meta_dict

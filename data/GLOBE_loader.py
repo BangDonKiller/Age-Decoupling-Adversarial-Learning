@@ -12,7 +12,17 @@ class InferenceDataset(Dataset):
     def __init__(self, meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
         self.meta_dir = meta_dir
         self.target_sr = target_sample_rate
+        self.conv_age = {
+            'teens': 0,
+            'twenties': 1,
+            'thirties': 2,
+            'fourties': 3,
+            'fifties': 4,
+            'sixties': 5,
+            'seventies': 6,
+        }
         self.datalist = self.read_meta_file(meta_dir)
+        
 
     def __len__(self):
         return len(self.datalist)
@@ -30,12 +40,16 @@ class InferenceDataset(Dataset):
                 speaker_id = row["speaker_id"]
                 gender = row["gender"]
                 age = row["age"]
+                
+                converted_age = self.conv_age[age] if age in self.conv_age else -1
+                if converted_age == -1:
+                    print(f"Unknown age group: {age} for speaker {speaker_id}")
 
                 # # 如果說話者有重複，就跳過
                 # if speaker_id not in seen_speakers:
                 # 男性與女性資料各10000筆
                 if gender in sexual and sexual[gender] < (max_items / 2):
-                    datalist.append((audio, speaker_id, gender, age))
+                    datalist.append((audio, speaker_id, gender, converted_age))
                     sexual[gender] += 1
                     seen_speakers.add(speaker_id) # 將新的 speaker_id 加入 set
 
@@ -43,7 +57,6 @@ class InferenceDataset(Dataset):
                 if len(datalist) >= max_items:
                     print(f"資料列表已滿 {max_items} 筆，提前結束。")
                     return datalist # <--- 直接返回結果，終止所有迴圈
-
 
         # count the age amount
         # age_count = {}

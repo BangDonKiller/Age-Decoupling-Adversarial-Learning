@@ -20,13 +20,13 @@ class InferenceDataset(Dataset):
         self.target_sr = target_sample_rate
         
         self.conv_age = {
-            range(0, 11): 0,
-            range(11, 21): 1,
-            range(21, 31): 2,
-            range(31, 41): 3,
-            range(41, 51): 4,
-            range(51, 61): 5,
-            range(61, 200): 6,
+            range(0, 21): 0,
+            range(21, 31): 1,
+            range(31, 41): 2,
+            range(41, 51): 3,
+            range(51, 61): 4,
+            range(61, 71): 5,
+            range(71, 81): 6,
         }
         
         self.datalist = self.read_meta_file(self.audio_meta_dir)
@@ -52,16 +52,30 @@ class InferenceDataset(Dataset):
             
             # 年齡分群
             age = int(age)
-            for age_range, age_group in self.conv_age.items():
-                if age in age_range:
-                    age = age_group
-                    break
+            converted_age = self.conv_age.get(next((r for r in self.conv_age if age in r), None), -1)
+            if converted_age == -1:
+                print(f"Unknown age group: {age} for speaker {speaker_id}")
+                    
             
             path = Path(self.audio_dir) / env / speaker_id
             audiolist = [p for p in path.rglob("*") if p.suffix == ".wav"]
 
             for audio_path in audiolist:
-                datalist.append((audio_path, speaker_id, gender, age))
+                datalist.append((audio_path, speaker_id, gender, converted_age))
+                
+        # count the speaker, gender, age group distribution
+        # speaker_set = set()
+        # gender_count = {}
+        # age_group_count = {}
+        
+        # for _, speaker_id, gender, age in datalist:
+        #     speaker_set.add(speaker_id)
+        #     gender_count[gender] = gender_count.get(gender, 0) + 1
+        #     age_group_count[age] = age_group_count.get(age, 0) + 1
+            
+        # print(f"Total speakers: {len(speaker_set)}")
+        # print(f"Gender distribution: {gender_count}")
+        # print(f"Age group distribution: {age_group_count}")
         
         return datalist
     
