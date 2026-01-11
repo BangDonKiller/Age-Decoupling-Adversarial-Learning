@@ -1,15 +1,10 @@
 import numpy as np
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
-from sklearn.svm import LinearSVC, SVC
 from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LinearRegression
 from scipy.stats import spearmanr, pearsonr
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-
-
 import torch
 
 # =========================
@@ -45,72 +40,8 @@ def run_tsne(X, perplexity=30):
     return tsne.fit_transform(X)
 
 # =========================
-# 4. Linear SVM (Age group prediction)
-# =========================
-svm = LinearSVC(
-    C=1.0,
-    class_weight='balanced',
-    max_iter=3000
-)
-
-svm_acc = cross_val_score(svm, X, y, cv=5)
-print("Linear SVM (age group) acc:", svm_acc)
-print("Mean acc:", svm_acc.mean())
-
-# =========================
-# 5. kNN local purity
+# 4. kNN local purity
 # =========================
 knn = KNeighborsClassifier(n_neighbors=5)
 knn_acc = cross_val_score(knn, X, y, cv=5).mean()
 print("kNN (age group) acc:", knn_acc)
-
-# =========================
-# 6. Linear Regression + Correlation (Age direction)
-# =========================
-
-# train / test split（不需要 CV）
-X_tr, X_te, y_tr, y_te = train_test_split(
-    X, y,
-    test_size=0.2,
-    random_state=42
-)
-
-# Linear regression
-reg = LinearRegression()
-reg.fit(X_tr, y_tr)
-
-# Predict age index
-y_pred = reg.predict(X_te)
-
-# Correlation analysis
-pearson_corr, _ = pearsonr(y_te, y_pred)
-spearman_corr, _ = spearmanr(y_te, y_pred)
-
-print("LinearReg + Corr")
-print("Pearson r:", pearson_corr)
-print("Spearman ρ:", spearman_corr)
-
-# =========================
-# 7. RBF SVM (Nonlinear age structure test)
-# =========================
-
-rbf_svm = Pipeline([
-    ("scaler", StandardScaler()),   # ★ RBF 必須
-    ("svm", SVC(
-        kernel="rbf",
-        C=1.0,
-        gamma="scale",              # ★ 安全預設
-        class_weight="balanced"
-    ))
-])
-
-rbf_acc = cross_val_score(
-    rbf_svm,
-    X,
-    y,
-    cv=5,
-    n_jobs=1
-)
-
-print("RBF SVM (age group) acc:", rbf_acc)
-print("Mean acc:", rbf_acc.mean())

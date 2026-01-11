@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import numpy as np
 from sklearn.model_selection import train_test_split
+from scipy.stats import spearmanr, pearsonr
 
 # =========================
 # 1. Load data
@@ -62,11 +63,21 @@ for epoch in range(num_epochs):
 # 6. Evaluation
 # =========================
 LR.eval()
+outputs = []
 with torch.no_grad():
     test_outputs = LR(X_te_tensor)
+    outputs.append(test_outputs)
     _, predicted = torch.max(test_outputs, 1)
     correct = (predicted == y_te_tensor).sum().item()
     total = y_te_tensor.size(0)
     accuracy = correct / total
     print("Logistic Regression (age group) acc:", accuracy)
+    
+# 計算 Correlation
+y_te_np = y_te_tensor.cpu().numpy()
+predicted_np = predicted.cpu().numpy()
+pearson_corr, _ = pearsonr(y_te_np, predicted_np)
+spearman_corr, _ = spearmanr(y_te_np, predicted_np)
+print("Pearson correlation (age group):", pearson_corr)
+print("Spearman correlation (age group):", spearman_corr)
 # =========================
