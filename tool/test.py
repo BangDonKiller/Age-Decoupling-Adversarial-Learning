@@ -1,41 +1,116 @@
 import numpy as np
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
+from sklearn.svm import LinearSVC, SVC
+from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import silhouette_score
+from sklearn.linear_model import LinearRegression
+from scipy.stats import spearmanr, pearsonr
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+
+
 import torch
 
-data = torch.load("./result/ECAPA-TDNN/VoxCeleb2_ECAPA-TDNN_embeddings.pt")
-X = data["embeddings"].numpy()     # [N, D]
-y = np.array(data["genders"])      # e.g. ['f', 'm']
-ids = data["speaker_ids"]
+# =========================
+# 1. Load data
+# =========================
+data = torch.load("./result/ECAPA-TDNN/GLOBE_ECAPA-TDNN_embeddings.pt")
 
+X = data["embeddings"].numpy()      # [N, D]
+ages = np.array(data["ages"])       # 年齡組 label，例如 0~6
 
-# X, y 已存在
-# 1) PCA explained variance
+y = ages   # ★ 以年齡組作為預測目標（多類別）
+
+print("X shape:", X.shape)
+print("Age groups:", np.unique(y))
+
+# =========================
+# 2. PCA explained variance
+# =========================
 pca = PCA(n_components=10).fit(X)
 print("explained var ratio (pc1..5):", pca.explained_variance_ratio_[:5])
 
-# 2) PCA 2D 投影（視覺化用）
-X_pca2 = PCA(n_components=2).fit_transform(X)
-
-# 3) t-SNE 固定參數
+# =========================
+# 3. t-SNE（目前未使用，保留）
+# =========================
 def run_tsne(X, perplexity=30):
-    tsne = TSNE(n_components=2, init='pca', perplexity=perplexity, random_state=42)
+    tsne = TSNE(
+        n_components=2,
+        init='pca',
+        perplexity=perplexity,
+        metric='cosine',
+        random_state=42
+    )
     return tsne.fit_transform(X)
 
-X_tsne = run_tsne(X, perplexity=30)
+# =========================
+# 4. Linear SVM (Age group prediction)
+# =========================
+svm = LinearSVC(
+    C=1.0,
+    class_weight='balanced',
+    max_iter=3000
+)
 
-# 4) 線性分類器
-clf = LogisticRegression(max_iter=2000)
-print("LogReg acc:", cross_val_score(clf, X, y, cv=5).mean())
+svm_acc = cross_val_score(svm, X, y, cv=5)
+print("Linear SVM (age group) acc:", svm_acc)
+print("Mean acc:", svm_acc.mean())
 
-# 5) kNN local purity
+# =========================
+# 5. kNN local purity
+# =========================
 knn = KNeighborsClassifier(n_neighbors=5)
-print("kNN acc:", cross_val_score(knn, X, y, cv=5).mean())
-# 畫出KNN分為五個群的圖形，並且只把其中的10個說話者的樣本點標示出來，其他就不用了
+knn_acc = cross_val_score(knn, X, y, cv=5).mean()
+print("kNN (age group) acc:", knn_acc)
 
-# 6) silhouette 在 tsne 空間
-print("silhouette (tsne):", silhouette_score(X_tsne, y))
+# =========================
+# 6. Linear Regression + Correlation (Age direction)
+# =========================
+
+# train / test split（不需要 CV）
+X_tr, X_te, y_tr, y_te = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42
+)
+
+# Linear regression
+reg = LinearRegression()
+reg.fit(X_tr, y_tr)
+
+# Predict age index
+y_pred = reg.predict(X_te)
+
+# Correlation analysis
+pearson_corr, _ = pearsonr(y_te, y_pred)
+spearman_corr, _ = spearmanr(y_te, y_pred)
+
+print("LinearReg + Corr")
+print("Pearson r:", pearson_corr)
+print("Spearman ρ:", spearman_corr)
+
+# =========================
+# 7. RBF SVM (Nonlinear age structure test)
+# =========================
+
+rbf_svm = Pipeline([
+    ("scaler", StandardScaler()),   # ★ RBF 必須
+    ("svm", SVC(
+        kernel="rbf",
+        C=1.0,
+        gamma="scale",              # ★ 安全預設
+        class_weight="balanced"
+    ))
+])
+
+rbf_acc = cross_val_score(
+    rbf_svm,
+    X,
+    y,
+    cv=5,
+    n_jobs=1
+)
+
+print("RBF SVM (age group) acc:", rbf_acc)
+print("Mean acc:", rbf_acc.mean())
