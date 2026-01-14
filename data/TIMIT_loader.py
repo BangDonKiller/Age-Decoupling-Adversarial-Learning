@@ -7,9 +7,9 @@ from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 import warnings
 
-
 warnings.filterwarnings("ignore")
 warnings.filterwarnings("ignore", category=FutureWarning)
+random.seed(42)
 
 class PairwiseDataset(Dataset):
     """讀取成對的音檔並 preprocess 到 16kHz 單聲道張量"""
@@ -45,7 +45,6 @@ class PairwiseDataset(Dataset):
                 datalist.append((audio_path, speaker_id))
                 
         return datalist
-    
 
     def create_pairwise_indices(self, same_per_speaker=10, diff_per_speaker=10):
         """創建成對的音檔索引 (positive/negative pairs)"""
@@ -88,7 +87,7 @@ class PairwiseDataset(Dataset):
                 # pick a different speaker
                 other = random.choice(other_speakers)
                 b = random.choice(speaker_dict[other])
-                pairs.append((0, a, b))  # 0 表示不同 speaker
+                pairs.append((0, a, b))
                 
         # Shuffle all pairs
         random.shuffle(pairs)
