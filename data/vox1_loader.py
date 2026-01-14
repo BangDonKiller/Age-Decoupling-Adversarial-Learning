@@ -12,135 +12,48 @@ import warnings
 warnings.filterwarnings("ignore")
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-class TrainDataset(Dataset):
-    def __init__(self, file_dir, meta_dir, pairs_per_speaker=5, seed=42):
+class PairwiseDataset(Dataset):
+    def __init__(self, file_dir, audio_meta_dir, seed=42):
         """
         file_dir: voxceleb1 根目錄
         meta_dir: voxceleb1_meta.csv 路徑
         依據 meta 建立說話者到語音檔案的映射(目前只取 dev 中的資料)
         """
         self.file_dir = file_dir
-        self.meta = self.read_meta(meta_dir)
-        self.spk2utts = self.speaker_utterance_dict()
-        self.all_speakers = list(self.spk2utts.keys())
-        
-        # 在初始化時，為所有說話者創建一個完整的 datalist
-        # split_train_valid 函數將會重新生成專用的 datalist
-        self.datalist = self._generate_pairs_for_speakers(
-            self.all_speakers, self.all_speakers, pairs_per_speaker, seed
-        )
+        self.datalist = self.read_txt(meta_dir)
+
         print(f"Dataset 初始化完成，總共有 {len(self.datalist)} 筆資料。")
 
     def __len__(self):
         return len(self.datalist)
     
-    def read_meta(self, meta_dir):
-        df = pd.read_csv(meta_dir, encoding="latin1")
-        df["splitted"] = df.iloc[:, 0].str.strip().str.split("\t").apply(lambda xs: [x.strip() for x in xs])
-        df["col0"] = df["splitted"].apply(lambda x: x[0] if len(x) > 0 else None)
-        df["col4"] = df["splitted"].apply(lambda x: x[4] if len(x) > 4 else None)
-        df_valid = df.dropna(subset=["col0", "col4"])
-        df_dev = df_valid[df_valid["col4"] == "dev"]
-        return dict(zip(df_dev["col0"], df_dev["col4"]))
-    
-    def speaker_utterance_dict(self):
-        spk2utts = {}
-        for spk, _ in self.meta.items():
-            if spk not in spk2utts:
-                speaker_audio_path = self.file_dir / spk
-                utts = [str(p) for p in speaker_audio_path.rglob("*.wav")]
-                if len(utts) > 0: # 確保說話者有音檔
-                    spk2utts[spk] = utts
-        return spk2utts
-    
-    def _generate_pairs_for_speakers(self, target_speakers, pool_speakers, pairs_per_speaker, seed):
-        """
-        輔助函數：為指定的說話者列表生成音訊對。
-        - target_speakers: 需要為其生成配對的主要說話者列表。
-        - pool_speakers:   生成負樣本時，從這個池子裡挑選其他說話者。
-        - pairs_per_speaker: 每個說話者生成的正/負樣本對數量。
-        - seed:            隨機種子。
-        """
-        random.seed(seed)
+    def read_txt(self, meta_dir):
         datalist = []
         
-        for spk in target_speakers:
-            utts = self.spk2utts.get(spk, [])
-
-            if len(utts) < 2:
-                continue
-
-            # ===== 正樣本：同一說話者 =====
-            for _ in range(pairs_per_speaker):
-                utt1, utt2 = random.sample(utts, 2)
-                datalist.append((1, utt1, utt2))
-
-            # ===== 負樣本：不同說話者（從 pool_speakers 中挑選） =====
-            for _ in range(pairs_per_speaker):
-                other_spk = random.choice(pool_speakers)
-                # 確保挑到的不是自己
-                while other_spk == spk:
-                    other_spk = random.choice(pool_speakers)
-                
-                other_utts = self.spk2utts.get(other_spk, [])
-                if not other_utts:
-                    continue
-
-                utt1 = random.choice(utts)
-                utt2 = random.choice(other_utts)
-                datalist.append((0, utt1, utt2))
+        with open(meta_dir, "r") as f:
+            lines = f.readlines()
+            
+        for line in lines:
+            line = line.split(" ")
+            is_same_speaker = int(line[0])
+            spk1_path = self.find_audio_path(line[1])
+            spk2_path = self.find_audio_path(line[2].strip())
+            
+            datalist.append((is_same_speaker, spk1_path, spk2_path))
+            
+        # 計算有多少組正對、有多少組負對
+        pos_count = sum(1 for item in datalist if item[0] == 1)
+        neg_count = sum(1 for item in datalist if item[0] == 0)
+        print(f"正對數量: {pos_count}, 負對數量: {neg_count}")    
         
-        random.shuffle(datalist)
         return datalist
-
-    def split_train_valid(self, valid_ratio=0.1, pairs_per_speaker=5, seed=42):
-        """
-        【新版】以 Speaker-Disjoint 的方式分割數據集。
-        """
-        print("\n進行 speaker-disjoint 資料分割...")
-        
-        # 1. 分割說話者列表
-        train_speakers, valid_speakers = train_test_split(
-            self.all_speakers,
-            test_size=valid_ratio,
-            random_state=seed,
-            shuffle=True
-        )
-        print(f"總說話者: {len(self.all_speakers)}")
-        print(f"訓練集說話者數量: {len(train_speakers)}")
-        print(f"驗證集說話者數量: {len(valid_speakers)}")
-
-        # 2. 【驗證】確認說話者沒有重複
-        train_spk_set = set(train_speakers)
-        valid_spk_set = set(valid_speakers)
-        intersection = train_spk_set.intersection(valid_spk_set)
-        
-        print(f"訓練集與驗證集的說話者交集數量: {len(intersection)}")
-        assert len(intersection) == 0, "錯誤：訓練集和驗證集之間存在重疊的說話者！"
-        print("✅ 說話者分割驗證成功，無重疊。")
-
-        # 3. 為訓練集和驗證集分別生成數據對
-        # 訓練集的負樣本池是訓練集本身
-        train_datalist = self._generate_pairs_for_speakers(
-            train_speakers, train_speakers, pairs_per_speaker, seed
-        )
-        # 驗證集的負樣本池是驗證集本身
-        valid_datalist = self._generate_pairs_for_speakers(
-            valid_speakers, valid_speakers, pairs_per_speaker, seed
-        )
-        
-        # 為了能使用 Subset，我們將兩個 datalist 合併，並記住各自的索引範圍
-        self.datalist = train_datalist + valid_datalist
-        train_indices = list(range(len(train_datalist)))
-        valid_indices = list(range(len(train_datalist), len(self.datalist)))
-        
-        print(f"生成訓練樣本數: {len(train_datalist)}")
-        print(f"生成驗證樣本數: {len(valid_datalist)}")
-
-        train_subset = Subset(self, train_indices)
-        valid_subset = Subset(self, valid_indices)
-        
-        return train_subset, valid_subset
+    
+    def find_audio_path(self, relative_path):
+        for audio_dir in self.file_dir:
+            audio_path = Path(audio_dir) / relative_path
+            if audio_path.exists():
+                return str(audio_path)
+        raise FileNotFoundError(f"Audio file {relative_path} not found in any of the provided directories.")
     
     def _audio_processing(self, wav_path):
         try:
@@ -325,19 +238,18 @@ if __name__ == "__main__":
         Path("D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav"), 
         Path("D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav")
     ]
-    meta_dir = Path("D:\\Dataset\\VoxCeleb1\\vox1_meta.csv")
+    meta_dir = Path("D:\\Dataset\\VoxCeleb1\\vox1_test.txt")
 
-    inference_dataset = InferenceDataset(audio_dir=file_dir, audio_meta_dir=meta_dir)
-    print(f"InferenceDataset 長度: {len(inference_dataset)}")
+    dataset = PairwiseDataset(file_dir=file_dir, audio_meta_dir=meta_dir)
+    print(f"Dataset 長度: {len(dataset)}")
 
-    inference_dataloader = DataLoader(inference_dataset, batch_size=4, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 
-    # 印出前三個
-    for i, (waveforms, speaker_ids, genders, ages) in enumerate(inference_dataloader):
+    # # 印出前三個
+    for i, (is_same, spk1, spk2) in enumerate(dataloader):
         print(f"Batch {i+1}:")
-        print(f"Waveforms shape: {waveforms.shape}")
-        print(f"Speaker IDs: {speaker_ids}")
-        print(f"Genders: {genders}")
-        print(f"Ages: {ages}")
+        print(f"  is_same: {is_same}")
+        print(f"  spk1 shape: {spk1.shape}")
+        print(f"  spk2 shape: {spk2.shape}")
         if i == 2:
             break
