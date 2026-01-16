@@ -4,3 +4,4 @@ result/
 official_pretrained_models/
 checkpoints/
 pretrained_models
+logs/
