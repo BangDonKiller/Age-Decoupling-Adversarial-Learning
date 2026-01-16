@@ -27,6 +27,16 @@ class Vox2Dataset(Dataset):
         
         self.meta = self.read_meta_file(self.audio_meta_dir)
         self.datalist = self.get_audio_paths()
+        
+        self.speaker2idx = {
+            speaker_id: idx
+            for idx, speaker_id in enumerate(sorted(self.meta.keys()))
+        }
+        
+        self.idx2speaker = {
+            idx: speaker_id
+            for speaker_id, idx in self.speaker2idx.items()
+        }
 
     def __len__(self):
         return len(self.datalist)
@@ -88,6 +98,9 @@ class Vox2Dataset(Dataset):
             meta_dict[speaker]["utts"][utt] = {
                 "age": converted_age
             }
+            
+        # print the speaker count
+        print(f"Total speakers in meta: {len(meta_dict)}")
 
         return meta_dict
     
@@ -113,7 +126,7 @@ class Vox2Dataset(Dataset):
 
                 data_list.append((str(random_select),speaker_id,gender,utt_info["age"]))
                 
-        # count the speaker, gender, age group amount in datalist
+        # count the speaker, gender, age group amount in datalist, and print the min and max utterance amount among speakers
         # speaker_count = len(set([item[1] for item in data_list]))
         # gender_count = {}
         # age_group_count = {}
@@ -125,6 +138,13 @@ class Vox2Dataset(Dataset):
         # print(f"Total speakers: {speaker_count}")
         # print("Gender counts:", gender_count)
         # print("Age group counts:", age_group_count)
+        
+        # utt_counts = {}
+        # for item in data_list:
+        #     speaker_id = item[1]
+        #     utt_counts[speaker_id] = utt_counts.get(speaker_id, 0) + 1
+        # print(f"Min utterances per speaker: {min(utt_counts.values())}")
+        # print(f"Max utterances per speaker: {max(utt_counts.values())}")
 
         return data_list
         
@@ -150,16 +170,17 @@ class Vox2Dataset(Dataset):
         return signal
 
     def __getitem__(self, idx):
-        path, speaker_id, gender, age = self.datalist[idx]
+        path, speaker_id, _, age = self.datalist[idx]
+        speaker_idx = self.speaker2idx[speaker_id]
         waveform = self._load_and_preprocess_audio(str(path))
-        return waveform, speaker_id, gender, age
+        return waveform, speaker_idx, age
     
 if __name__ == "__main__":
     # 測試 Dataset
     audio_dir = "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac"
     audio_meta_dir = "D:\\Dataset\\VoxCeleb2\\vox2_meta.csv"
     
-    dataset = InferenceDataset(audio_dir, audio_meta_dir, suffix=".m4a")
+    dataset = Vox2Dataset(audio_dir, audio_meta_dir, suffix=".m4a")
     print(f"Dataset size: {len(dataset)}")
     
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True)

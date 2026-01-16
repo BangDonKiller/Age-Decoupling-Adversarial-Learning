@@ -30,9 +30,16 @@ MODEL_ID = MODEL_list["ECAPA-TDNN"]
 
 DATASET_INFO = {
     "VoxCeleb1": {
-        "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-        "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_meta.csv",
-        "audio_suffix": ".wav",
+        "Train": {
+            "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
+            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_test.txt",
+            "audio_suffix": ".wav",
+        },
+        "Inference": {
+            "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
+            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_meta.csv",
+            "audio_suffix": ".wav",
+        }
     },
     "VoxCeleb2": {
         "AUDIO_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac",

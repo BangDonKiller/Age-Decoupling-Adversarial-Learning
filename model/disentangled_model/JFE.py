@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+from ..feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
 
 class JFENetwork(nn.Module):
-    def __init__(self, input_dim=192, spk_dim=128, age_dim=64, num_speakers=1000, num_age_classes=7):
+    def __init__(self, input_dim=192, spk_dim=128, age_dim=64, num_speakers=1000, num_age_groups=7):
         super(JFENetwork, self).__init__()
         
         self.spk_dim = spk_dim
@@ -13,7 +13,7 @@ class JFENetwork(nn.Module):
         # 1. 骨幹網路 (Backbone Network)
         self.backbone = SpeakerEmbeddingExtractor(
             model_id="speechbrain/spkrec-ecapa-voxceleb",
-            device="gpu" if torch.cuda.is_available() else "cpu"
+            device="cuda" if torch.cuda.is_available() else "cpu"
         )
         self.backbone.eval()  # 骨幹網路不進行訓練
         
@@ -36,10 +36,10 @@ class JFENetwork(nn.Module):
         self.classifier_age = nn.Sequential(
             nn.Linear(age_dim, age_dim//2),
             nn.ReLU(),
-            nn.Linear(age_dim//2, num_age_classes)
+            nn.Linear(age_dim//2, num_age_groups)
         )
 
-    def forward(self, x):
+    def forward(self, x, mode):
         with torch.no_grad():
             feature = self.backbone(x)
             
@@ -50,7 +50,14 @@ class JFENetwork(nn.Module):
         h_spk = latent[:, :self.spk_dim] 
         
         # 2. 提取年齡向量 w_age (即論文中的 w_nuis)
-        h_age = latent[:, self.spk_dim:] 
+        h_age = latent[:, self.spk_dim:]
+        
+        if mode != "train" and mode != "val":
+            return {
+                "spkr_emb": feature,
+                "w_spkr": h_spk,
+                "w_age": h_age,
+            } 
         
         # --- 進行分類 (Cross-Classification) ---
         # 這裡會產生四種 logits，對應論文 Table 1
@@ -68,6 +75,7 @@ class JFENetwork(nn.Module):
         logits_spkr_sub = self.classifier_spkr(h_age)
         
         return {
+            "spkr_emb": feature,
             "w_spkr": h_spk,
             "w_age": h_age,
             "logits_spkr_main": logits_spkr_main,

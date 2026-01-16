@@ -3,8 +3,7 @@ import pandas as pd
 import torch
 import torchaudio
 import torchaudio.transforms as T
-from torch.utils.data import Dataset, Subset, DataLoader
-from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 import warnings
 
@@ -13,14 +12,14 @@ warnings.filterwarnings("ignore")
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 class PairwiseDataset(Dataset):
-    def __init__(self, file_dir, audio_meta_dir, seed=42):
+    def __init__(self, audio_dir, audio_meta_dir):
         """
         file_dir: voxceleb1 根目錄
         meta_dir: voxceleb1_meta.csv 路徑
         依據 meta 建立說話者到語音檔案的映射(目前只取 dev 中的資料)
         """
-        self.file_dir = file_dir
-        self.datalist = self.read_txt(meta_dir)
+        self.file_dir = audio_dir
+        self.datalist = self.read_txt(audio_meta_dir)
 
         print(f"Dataset 初始化完成，總共有 {len(self.datalist)} 筆資料。")
 
@@ -38,8 +37,10 @@ class PairwiseDataset(Dataset):
             is_same_speaker = int(line[0])
             spk1_path = self.find_audio_path(line[1])
             spk2_path = self.find_audio_path(line[2].strip())
+            spk1_id = line[1].split("/")[0]
+            spk2_id = line[2].split("/")[0]
             
-            datalist.append((is_same_speaker, spk1_path, spk2_path))
+            datalist.append((is_same_speaker, spk1_id, spk2_id, spk1_path, spk2_path))
             
         # 計算有多少組正對、有多少組負對
         pos_count = sum(1 for item in datalist if item[0] == 1)
@@ -76,10 +77,10 @@ class PairwiseDataset(Dataset):
         return signal
 
     def __getitem__(self, idx):
-        is_same_speaker, spk1_audio_path, spk2_audio_path = self.datalist[idx]
+        is_same_speaker, spk1_id, spk2_id, spk1_audio_path, spk2_audio_path = self.datalist[idx]
         signal1 = self._audio_processing(spk1_audio_path)
         signal2 = self._audio_processing(spk2_audio_path)
-        return torch.tensor(is_same_speaker, dtype=torch.float32), signal1, signal2
+        return torch.tensor(is_same_speaker, dtype=torch.float32), spk1_id, spk2_id, signal1, signal2
 
 
 
@@ -240,7 +241,7 @@ if __name__ == "__main__":
     ]
     meta_dir = Path("D:\\Dataset\\VoxCeleb1\\vox1_test.txt")
 
-    dataset = PairwiseDataset(file_dir=file_dir, audio_meta_dir=meta_dir)
+    dataset = PairwiseDataset(audio_dir=file_dir, audio_meta_dir=meta_dir)
     print(f"Dataset 長度: {len(dataset)}")
 
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
