@@ -32,7 +32,7 @@ DATASET_INFO = {
     "VoxCeleb1": {
         "Train": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_test.txt",
+            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-O.txt",
             "audio_suffix": ".wav",
         },
         "Inference": {

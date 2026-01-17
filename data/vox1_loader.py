@@ -30,7 +30,7 @@ class PairwiseDataset(Dataset):
         datalist = []
         
         with open(meta_dir, "r") as f:
-            lines = f.readlines()
+            lines = f.readlines()[:30000]
             
         for line in lines:
             line = line.split(" ")
@@ -239,7 +239,7 @@ if __name__ == "__main__":
         Path("D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav"), 
         Path("D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav")
     ]
-    meta_dir = Path("D:\\Dataset\\VoxCeleb1\\vox1_test.txt")
+    meta_dir = Path("D:\\Dataset\\VoxCeleb1\\Vox-CA5.txt")
 
     dataset = PairwiseDataset(audio_dir=file_dir, audio_meta_dir=meta_dir)
     print(f"Dataset 長度: {len(dataset)}")
