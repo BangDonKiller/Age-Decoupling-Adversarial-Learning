@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from ..feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
 
 class JFENetwork(nn.Module):
-    def __init__(self, input_dim=192, spk_dim=128, age_dim=64, num_speakers=1000, num_age_groups=7):
+    def __init__(self, MODEL_ID, input_dim=192, spk_dim=128, age_dim=64, num_speakers=1000, num_age_groups=7):
         super(JFENetwork, self).__init__()
         
         self.spk_dim = spk_dim
@@ -12,7 +12,7 @@ class JFENetwork(nn.Module):
 
         # 1. 骨幹網路 (Backbone Network)
         self.backbone = SpeakerEmbeddingExtractor(
-            model_id="speechbrain/spkrec-ecapa-voxceleb",
+            model_id=MODEL_ID,
             device="cuda" if torch.cuda.is_available() else "cpu"
         )
         self.backbone.eval()  # 骨幹網路不進行訓練
@@ -52,7 +52,7 @@ class JFENetwork(nn.Module):
         # 2. 提取年齡向量 w_age (即論文中的 w_nuis)
         h_age = latent[:, self.spk_dim:]
         
-        if mode != "train" and mode != "val":
+        if mode != "train":
             return {
                 "spkr_emb": feature,
                 "w_spkr": h_spk,

@@ -37,7 +37,7 @@ class SpeakerEmbeddingExtractor(nn.Module):
         
         self.classifier = EncoderClassifier.from_hparams(
             source=model_id, 
-            savedir=self.savedir,
+            # savedir=self.savedir,
             run_opts={"device": device}
         )
 

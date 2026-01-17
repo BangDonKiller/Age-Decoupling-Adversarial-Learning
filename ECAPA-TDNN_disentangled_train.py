@@ -6,7 +6,7 @@ from model.disentangled_model.JFE import JFENetwork, JFELoss
 from tool.EER import compute_eer
 from data.vox2_loader import Vox2Dataset
 from data.vox1_loader import PairwiseDataset
-from params.param import DATASET_INFO, BATCH_SIZE
+from params.param import DATASET_INFO, BATCH_SIZE, MODEL_ID
 from torch.utils.tensorboard import SummaryWriter
 import os
 import csv
@@ -22,25 +22,16 @@ torch.cuda.manual_seed_all(SEED)
 # ==========================================
 dataset = 'VoxCeleb2'
 
+# 驗證集大小佔 10%
+g = torch.Generator()
+g.manual_seed(SEED)
+
 train_dataset = Vox2Dataset(
     audio_dir=DATASET_INFO[dataset]['AUDIO_DIR'],
     audio_meta_dir=DATASET_INFO[dataset]['AUDIO_META_DIR'],
     target_sample_rate=16000,
     suffix=DATASET_INFO[dataset]['audio_suffix']
 )
-
-# 驗證集大小佔 10%
-val_size = int(0.1 * len(train_dataset))
-train_size = len(train_dataset) - val_size
-g = torch.Generator()
-g.manual_seed(SEED)
-
-train_dataset, val_dataset = torch.utils.data.random_split(
-    train_dataset,
-    [train_size, val_size],
-    generator=torch.Generator().manual_seed(SEED)
-)
-
 test_dataset = PairwiseDataset(
     audio_dir=DATASET_INFO['VoxCeleb1']["Train"]['AUDIO_DIR'],
     audio_meta_dir=DATASET_INFO['VoxCeleb1']["Train"]['AUDIO_META_DIR'],
@@ -50,7 +41,6 @@ test_dataset = PairwiseDataset(
 BATCH_SIZE = BATCH_SIZE
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, generator=g)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 # ==========================================
@@ -60,6 +50,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 根據你的資料自動設定參數
 model = JFENetwork(
+    MODEL_ID,
     input_dim=192, 
     spk_dim=96, 
     age_dim=96, 
@@ -73,11 +64,12 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.5)
 
 # 訓練參數
-EPOCHS = 5
+EPOCHS = 2
 best_val_loss = float('inf')
 best_score_balanced = -float('inf')
 best_spk_acc = 0.0
 best_leak_privacy = float('inf')
+best_EER = float('inf')
 
 # ==========================================
 # TensorBoard & CSV Logger
@@ -103,20 +95,11 @@ csv_writer.writerow([
     "train_age_acc",
     "train_age_leak",
     "train_id_leak",
-    "val_loss",
-    "val_loss_spkr",
-    "val_loss_age",
-    "val_entropy_age",
-    "val_entropy_spkr",
-    "val_mapc",
-    "val_spk_acc",
-    "val_age_acc",
-    "val_age_leak",
-    "val_id_leak"
+    "val_eer_before",
+    "val_eer_after"
 ])
 
 print("Logger initialized.")
-
 
 # ==========================================
 # 3. 訓練迴圈
@@ -184,61 +167,86 @@ for epoch in range(EPOCHS):
     # 4. 驗證迴圈
     # ==========================================
     model.eval()
-    val_loss = 0.0
-    val_loss_spkr = 0.0
-    val_loss_age = 0.0
-    val_entropy_age = 0.0
-    val_entropy_spkr = 0.0
-    val_mapc = 0.0
-    val_correct_spk = 0
-    val_correct_age = 0
-    val_correct_age_sub = 0
-    val_correct_id_sub = 0
-    val_samples = 0
+    before_scores = []       # 解耦前 cosine scores
+    disentangled_scores = [] # 解耦後 cosine scores
+    before_disentagled_list = []
+    after_disentagled_list = []
+    is_same_labels = []
+    final_ids = []
     
     with torch.no_grad():
-        for emb, label_spk, label_age in tqdm(val_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
-            val_hspk_list = []
-            val_spk_label_list = []
+        for is_same, id1, id2, emb1, emb2 in tqdm(test_loader, desc="Extracting Embeddings"):
+            emb1 = emb1.to(device)
+            emb2 = emb2.to(device)
+
+            # forward
+            out1 = model(emb1, mode="test")
+            out2 = model(emb2, mode="test")
+
+            # =========================
+            # 解耦前 (h_spk / spkr_emb)
+            # =========================
+            spk_emb1 = out1['spkr_emb']
+            spk_emb2 = out2['spkr_emb']
             
-            emb, label_spk, label_age = emb.to(device), label_spk.to(device), label_age.to(device)
-
-            # 重點是看 h1 到底還殘留多少年齡資訊
-            outputs = model(emb, mode = "val")
-
-            loss, loss_dict = criterion(outputs, label_spk, label_age)
-
-            val_loss += loss.item()
-            val_loss_spkr += loss_dict['loss_spkr']
-            val_loss_age += loss_dict['loss_age']
-            val_entropy_age += loss_dict['entropy_age']
-            val_entropy_spkr += loss_dict['entropy_spkr']
-            val_mapc += loss_dict['mapc']
-            _, pred_s_main = torch.max(outputs['logits_spkr_main'], 1) # 從 h_spk 預測說話者
-            _, pred_a_main = torch.max(outputs['logits_age_main'], 1) # 從 h_age 預測年齡
-            _, pred_s_sub = torch.max(outputs['logits_spkr_sub'], 1) # 從 h_age 預測說話者 (洩漏)
-            _, pred_a_sub = torch.max(outputs['logits_age_sub'], 1) # 從 h_spk 預測年齡 (洩漏)
-            val_correct_spk += (pred_s_main == label_spk).sum().item()
-            val_correct_age += (pred_a_main == label_age).sum().item()
-            val_correct_id_sub += (pred_s_sub == label_spk).sum().item()
-            val_correct_age_sub += (pred_a_sub == label_age).sum().item()
-            val_samples += label_spk.size(0)
+            spk_emb1 = F.normalize(spk_emb1, p=2, dim=1)
+            spk_emb2 = F.normalize(spk_emb2, p=2, dim=1)
             
-    avg_val_loss = val_loss / len(val_loader)
-    avg_val_loss_spkr = val_loss_spkr / len(val_loader)
-    avg_val_loss_age = val_loss_age / len(val_loader)
-    avg_val_entropy_age = val_entropy_age / len(val_loader)
-    avg_val_entropy_spkr = val_entropy_spkr / len(val_loader)
-    avg_val_mapc = val_mapc / len(val_loader)
-    val_acc_spk = 100 * val_correct_spk / val_samples   
-    val_acc_age = 100 * val_correct_age / val_samples
-    val_acc_age_leak = 100 * val_correct_age_sub / val_samples
-    val_acc_id_leak = 100 * val_correct_id_sub / val_samples
+            before_disentagled_list.append(out1['spkr_emb'].cpu())
+            before_disentagled_list.append(out2['spkr_emb'].cpu())
+
+            score_before = F.cosine_similarity(spk_emb1, spk_emb2, dim=1)
+            before_scores.append(score_before.cpu())
+
+            # =========================
+            # 解耦後 (w_spkr)
+            # =========================
+            w_spk1 = out1['w_spkr']
+            w_spk2 = out2['w_spkr']
+            
+            w_spk1 = F.normalize(w_spk1, p=2, dim=1)
+            w_spk2 = F.normalize(w_spk2, p=2, dim=1)
+            
+            after_disentagled_list.append(out1['w_spkr'].cpu())
+            after_disentagled_list.append(out2['w_spkr'].cpu())
+
+            score_after = F.cosine_similarity(w_spk1, w_spk2, dim=1)
+            disentangled_scores.append(score_after.cpu())
+
+            is_same_labels.append(is_same.cpu())
+            final_ids.extend(id1)  # 對應 out1
+            final_ids.extend(id2)  # 對應 out2
+            
+    # =========================
+    # concat & EER
+    # =========================
+    final_labels = torch.cat(is_same_labels, dim=0).numpy()
+    final_before_scores = torch.cat(before_scores, dim=0).numpy()
+    final_after_scores = torch.cat(disentangled_scores, dim=0).numpy()
+
+    eer_before = compute_eer(final_before_scores, final_labels)
+    eer_after = compute_eer(final_after_scores, final_labels)
+
+    print(f"Test EER (Before Disentangle, h_spk): {eer_before * 100:.2f}%")
+    print(f"Test EER (After  Disentangle, w_spkr): {eer_after * 100:.2f}%")
+
+    final_before_embs = torch.cat(before_disentagled_list, dim=0)
+    final_embs = torch.cat(after_disentagled_list, dim=0)
+    
+    if best_EER > eer_after:
+        best_EER = eer_after
+        torch.save(model.state_dict(), 'best_model.pth')
+        torch.save({
+            'embeddings': final_embs,
+            'before_embeddings': final_before_embs,
+            'ids': final_ids,
+        }, 'disentangled_test_embeddings.pt')
+        print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
     
     
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
           f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% "
-          f"|| Val Loss: {avg_val_loss:.4f} | Spk Acc: {val_acc_spk:.2f}% | Age Acc: {val_acc_age:.2f}% | Age Leak: {val_acc_age_leak:.2f}% | ID Leak: {val_acc_id_leak:.2f}% ")
+          f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
     # TensorBoard logging
@@ -253,17 +261,9 @@ for epoch in range(EPOCHS):
     writer.add_scalar("Accuracy/Train_Age", acc_age, epoch)
     writer.add_scalar("Leak/Train_Age", acc_age_leak, epoch)
     writer.add_scalar("Leak/Train_ID", acc_id_leak, epoch)
-
-    writer.add_scalar("Loss/Val", avg_val_loss, epoch)
-    writer.add_scalar("Loss/Val_Spk", avg_val_loss_spkr, epoch)
-    writer.add_scalar("Loss/Val_Age", avg_val_loss_age, epoch)
-    writer.add_scalar("Entropy/Val_Age", avg_val_entropy_age, epoch)
-    writer.add_scalar("Entropy/Val_Spk", avg_val_entropy_spkr, epoch)
-    writer.add_scalar("MAPC/Val", avg_val_mapc, epoch)
-    writer.add_scalar("Accuracy/Val_Spk", val_acc_spk, epoch)
-    writer.add_scalar("Accuracy/Val_Age", val_acc_age, epoch)
-    writer.add_scalar("Leak/Val_Age", val_acc_age_leak, epoch)
-    writer.add_scalar("Leak/Val_ID", val_acc_id_leak, epoch)
+    
+    writer.add_scalar("EER/Val_Before_Disentangle", eer_before, epoch)
+    writer.add_scalar("EER/Val_After_Disentangle", eer_after, epoch)
 
     # ==========================================
     # CSV logging
@@ -280,127 +280,12 @@ for epoch in range(EPOCHS):
         acc_age,
         acc_age_leak,
         acc_id_leak,
-        avg_val_loss,
-        avg_val_loss_spkr,
-        avg_val_loss_age,
-        avg_val_entropy_age,
-        avg_val_entropy_spkr,
-        avg_val_mapc,
-        val_acc_spk,
-        val_acc_age,
-        val_acc_age_leak,
-        val_acc_id_leak
+        eer_before,
+        eer_after
     ])
     csv_file.flush() 
-    
-    # 1. 計算綜合分數 (Balanced Score)
-    # 這代表: 每犧牲 1% 的 Spk Acc，必須換來 1% 以上的 Leak 下降才划算
-    # 你可以調整權重: current_score = val_acc_spk - 0.5 * val_acc_age_leak
-    current_score = val_acc_spk - val_acc_age_leak
-    if current_score > best_score_balanced:
-        best_score_balanced = current_score
-        torch.save(model.state_dict(), 'best_balanced.pth')
-        print(f"  -> [Saved] Best Balanced Model (Score: {current_score:.2f} | Spk: {val_acc_spk:.2f}% | Leak: {val_acc_age_leak:.2f}%)")
-    
-    # 2. 條件式極致隱私 (Constrained Privacy)
-    # 門檻建議: 90% (視你的容忍度而定，如果 90% 太高，可降至 85%)
-    SPK_ACC_THRESHOLD = 90.0
-    if val_acc_spk >= SPK_ACC_THRESHOLD:
-        if val_acc_age_leak < best_leak_privacy:
-            best_leak_privacy = val_acc_age_leak
-            torch.save(model.state_dict(), 'best_privacy.pth')
-            print(f"  -> [Saved] Best Privacy Model (Leak: {val_acc_age_leak:.2f}% | Spk: {val_acc_spk:.2f}%)")    
-
-
-# 印出綜合分數最好的模型說話者準確率與洩漏率
-print(f"Best Balanced Score: {best_score_balanced:.2f}")
-
-print("Training Finished!")
-
-# ==========================================
-# 5. 提取解耦後的 Embedding (Test Set)
-# ==========================================
-# 載入最佳模型
-model.load_state_dict(torch.load('best_balanced.pth'))
-model.eval()
-model.to(device)
-
-before_scores = []       # 解耦前 cosine scores
-disentangled_scores = [] # 解耦後 cosine scores
-before_disentagled_list = []
-after_disentagled_list = []
-is_same_labels = []
-final_ids = []
-
-print("現在開始在測試集上提取解耦後的 Embedding...")
-
-with torch.no_grad():
-    for is_same, id1, id2, emb1, emb2 in tqdm(test_loader, desc="Extracting Embeddings"):
-        emb1 = emb1.to(device)
-        emb2 = emb2.to(device)
-
-        # forward
-        out1 = model(emb1, mode="test")
-        out2 = model(emb2, mode="test")
-
-        # =========================
-        # 解耦前 (h_spk / spkr_emb)
-        # =========================
-        spk_emb1 = out1['spkr_emb']
-        spk_emb2 = out2['spkr_emb']
-        
-        spk_emb1 = F.normalize(spk_emb1, p=2, dim=1)
-        spk_emb2 = F.normalize(spk_emb2, p=2, dim=1)
-        
-        before_disentagled_list.append(out1['spkr_emb'].cpu())
-        before_disentagled_list.append(out2['spkr_emb'].cpu())
-
-        score_before = F.cosine_similarity(spk_emb1, spk_emb2, dim=1)
-        before_scores.append(score_before.cpu())
-
-        # =========================
-        # 解耦後 (w_spkr)
-        # =========================
-        w_spk1 = out1['w_spkr']
-        w_spk2 = out2['w_spkr']
-        
-        w_spk1 = F.normalize(w_spk1, p=2, dim=1)
-        w_spk2 = F.normalize(w_spk2, p=2, dim=1)
-        
-        after_disentagled_list.append(out1['w_spkr'].cpu())
-        after_disentagled_list.append(out2['w_spkr'].cpu())
-
-        score_after = F.cosine_similarity(w_spk1, w_spk2, dim=1)
-        disentangled_scores.append(score_after.cpu())
-
-        is_same_labels.append(is_same.cpu())
-        final_ids.extend(id1)  # 對應 out1
-        final_ids.extend(id2)  # 對應 out2
-
-# =========================
-# concat & EER
-# =========================
-final_labels = torch.cat(is_same_labels, dim=0).numpy()
-final_before_scores = torch.cat(before_scores, dim=0).numpy()
-final_after_scores = torch.cat(disentangled_scores, dim=0).numpy()
-
-eer_before = compute_eer(final_before_scores, final_labels)
-eer_after = compute_eer(final_after_scores, final_labels)
-
-print(f"Test EER (Before Disentangle, h_spk): {eer_before * 100:.2f}%")
-print(f"Test EER (After  Disentangle, w_spkr): {eer_after * 100:.2f}%")
-
-final_before_embs = torch.cat(before_disentagled_list, dim=0)
-final_embs = torch.cat(after_disentagled_list, dim=0)
-
-# 儲存結果，供後續 PCA/CCA 分析使用
-torch.save({
-    'embeddings': final_embs,
-    'before_embeddings': final_before_embs,
-    'ids': final_ids,
-}, 'disentangled_test_embeddings.pt')
 
 writer.close()
 csv_file.close()
 
-print(f"Disentangled embeddings saved with shape: {final_embs.shape}")
+print("Training Finished!")
