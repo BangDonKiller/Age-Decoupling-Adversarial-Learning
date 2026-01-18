@@ -238,7 +238,7 @@ for epoch in range(EPOCHS):
     
     if best_EER > eer_after:
         best_EER = eer_after
-        torch.save(model.state_dict(), 'best_model.pth')
+        torch.save(model.state_dict(), f'./checkpoint/{val_dataset}_best_model.pth')
         torch.save({
             'embeddings': final_embs,
             'before_embeddings': final_before_embs,
@@ -247,7 +247,7 @@ for epoch in range(EPOCHS):
         print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
         
     if epoch == EPOCHS - 1:
-        torch.save(model.state_dict(), 'last_model.pth')
+        torch.save(model.state_dict(), f'./checkpoint/{val_dataset}_last_model.pth')
         torch.save({   
             'embeddings': final_embs,
             'before_embeddings': final_before_embs,
