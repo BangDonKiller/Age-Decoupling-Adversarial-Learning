@@ -21,8 +21,8 @@ torch.cuda.manual_seed_all(SEED)
 # 1. 資料準備與前處理
 # ==========================================
 dataset = 'VoxCeleb2'
+val_dataset = 'Vox-O'
 
-# 驗證集大小佔 10%
 g = torch.Generator()
 g.manual_seed(SEED)
 
@@ -33,8 +33,8 @@ train_dataset = Vox2Dataset(
     suffix=DATASET_INFO[dataset]['audio_suffix']
 )
 test_dataset = PairwiseDataset(
-    audio_dir=DATASET_INFO['VoxCeleb1']["Train"]['AUDIO_DIR'],
-    audio_meta_dir=DATASET_INFO['VoxCeleb1']["Train"]['AUDIO_META_DIR'],
+    audio_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
+    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR'],
 )
 
 # 封裝成 DataLoader
@@ -76,7 +76,9 @@ best_EER = float('inf')
 # TensorBoard & CSV Logger
 # ==========================================
 log_dir = "logs/jfe"
+checkpoint_dir = "checkpoints"
 os.makedirs(log_dir, exist_ok=True)
+os.makedirs(checkpoint_dir, exist_ok=True)
 
 writer = SummaryWriter(log_dir=log_dir)
 
@@ -241,12 +243,21 @@ for epoch in range(EPOCHS):
             'embeddings': final_embs,
             'before_embeddings': final_before_embs,
             'ids': final_ids,
-        }, 'best_disentangled_embeddings.pt')
+        }, os.path.join(checkpoint_dir, f'{val_dataset}_best_disentangled_embeddings.pt'))
         print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
+        
+    if epoch == EPOCHS - 1:
+        torch.save(model.state_dict(), 'last_model.pth')
+        torch.save({   
+            'embeddings': final_embs,
+            'before_embeddings': final_before_embs,
+            'ids': final_ids,
+        }, os.path.join(checkpoint_dir, f'{val_dataset}_last_disentangled_embeddings.pt'))
+        print("儲存最終模型。")
     
     
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
-          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% "
+          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} "
           f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
