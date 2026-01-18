@@ -61,7 +61,8 @@ model = JFENetwork(
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # Loss Functions
-criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.5)
+age_weights = train_dataset.age_class_weights.to(device)
+criterion = JFELoss(age_weights, lambda_entropy=0.1, lambda_mapc=0.5)
 
 # 訓練參數
 EPOCHS = 2
@@ -240,7 +241,7 @@ for epoch in range(EPOCHS):
             'embeddings': final_embs,
             'before_embeddings': final_before_embs,
             'ids': final_ids,
-        }, 'disentangled_test_embeddings.pt')
+        }, 'best_disentangled_embeddings.pt')
         print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
     
     

@@ -85,11 +85,13 @@ class JFENetwork(nn.Module):
         }
 
 class JFELoss(nn.Module):
-    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1):
+    def __init__(self, age_weights, lambda_entropy=0.1, lambda_mapc=0.1):
         super(JFELoss, self).__init__()
+        self.age_weights = age_weights
         self.lambda_entropy = lambda_entropy
         self.lambda_mapc = lambda_mapc
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.ce_loss_spkr = nn.CrossEntropyLoss()
+        self.ce_loss_age = nn.CrossEntropyLoss(weight=age_weights)
 
     def compute_entropy(self, logits):
         """
@@ -139,8 +141,8 @@ class JFELoss(nn.Module):
         """
         
         # 1. Discriminative Losses (公式 14, 15) - 越小越好
-        loss_spkr_main = self.ce_loss(outputs['logits_spkr_main'], target_spkr)
-        loss_age_main = self.ce_loss(outputs['logits_age_main'], target_age)
+        loss_spkr_main = self.ce_loss_spkr(outputs['logits_spkr_main'], target_spkr)
+        loss_age_main = self.ce_loss_age(outputs['logits_age_main'], target_age)
         
         # 2. Entropy Losses (公式 16, 17) - 越大越好
         # 注意：論文公式 (19) 是減去這些 Loss。

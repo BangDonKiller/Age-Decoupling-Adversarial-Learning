@@ -6,6 +6,7 @@ import torchaudio
 import torchaudio.transforms as T
 from torch.utils.data import Dataset, DataLoader
 import random
+from collections import Counter
 
 class Vox2Dataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
@@ -37,9 +38,37 @@ class Vox2Dataset(Dataset):
             idx: speaker_id
             for speaker_id, idx in self.speaker2idx.items()
         }
+        
+        self.num_age_classes = len(self.conv_age)
+        self.age_class_weights = self._calculate_age_weights()
 
     def __len__(self):
         return len(self.datalist)
+    
+    def _calculate_age_weights(self):
+        """[新增] 計算解決 Long Tail 問題的類別權重"""
+        print("正在計算年齡類別權重 (Class Balancing)...")
+        
+        # 1. 從 datalist 中提取所有的年齡標籤 (index 3 是 age)
+        all_ages = [item[3] for item in self.datalist]
+        
+        # 2. 統計每個類別的數量
+        counts = Counter(all_ages)
+        total_samples = len(all_ages)
+        weights = []
+        
+        # 3. 計算逆類別頻率權重
+        for i in range(self.num_age_classes):
+            count = counts.get(i, 0)
+            if count > 0:
+                # 公式: N_total / (N_classes * N_samples_of_class)
+                w = total_samples / (self.num_age_classes * count)
+            else:
+                w = 1.0 # 理論上不該發生，防呆
+            weights.append(w)
+            # print(f"  Age Group {i}: {count} samples -> Weight: {w:.4f}")
+            
+        return torch.FloatTensor(weights)
     
     def read_meta_file(self, meta_path: str):
         """
