@@ -82,7 +82,7 @@ os.makedirs(checkpoint_dir, exist_ok=True)
 
 writer = SummaryWriter(log_dir=log_dir)
 
-csv_path = os.path.join(log_dir, "metrics.csv")
+csv_path = os.path.join(log_dir, f"{val_dataset}_metrics.csv")
 csv_file = open(csv_path, mode="w", newline="")
 csv_writer = csv.writer(csv_file)
 
