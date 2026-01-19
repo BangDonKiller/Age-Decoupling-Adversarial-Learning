@@ -91,7 +91,7 @@ class JFELoss(nn.Module):
         self.lambda_entropy = lambda_entropy
         self.lambda_mapc = lambda_mapc
         self.ce_loss_spkr = nn.CrossEntropyLoss()
-        self.ce_loss_age = nn.CrossEntropyLoss(weight=age_weights)
+        self.ce_loss_age = nn.CrossEntropyLoss()
 
     def compute_entropy(self, logits):
         """
