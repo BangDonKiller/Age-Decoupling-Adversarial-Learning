@@ -1,15 +1,17 @@
 import torch
 import torch.nn.functional as F
+import torchaudio
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from model.disentangled_model.JFE import JFENetwork, JFELoss
 from tool.EER import compute_eer
 from data.vox2_loader import Vox2Dataset
-from data.vox1_loader import PairwiseDataset
+# from data.vox1_loader import PairwiseDataset
 from params.param import DATASET_INFO, BATCH_SIZE, MODEL_ID
 from torch.utils.tensorboard import SummaryWriter
 import os
 import csv
+from pathlib import Path
 
 SEED = 42
 
@@ -32,16 +34,128 @@ train_dataset = Vox2Dataset(
     target_sample_rate=16000,
     suffix=DATASET_INFO[dataset]['audio_suffix']
 )
-test_dataset = PairwiseDataset(
-    audio_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
-    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR'],
-)
+
+def eval_network(model, audio_dirs, audio_meta_dir, device, max_pairs=20000):
+    """
+    Speaker verification evaluation on pairwise trials (e.g. Vox-O)
+
+    Returns:
+        eer_before (float)
+        eer_after  (float)
+        final_before_embs (Tensor)
+        final_after_embs  (Tensor)
+        final_ids (List[str])
+    """
+
+    model.eval()
+
+    def find_audio_path(relative_path):
+        for audio_dir in audio_dirs:
+            audio_path = Path(audio_dir) / relative_path
+            if audio_path.exists():
+                return str(audio_path)
+        raise FileNotFoundError(f"{relative_path} not found in audio_dirs")
+
+    # =========================
+    # 1. Load trial list
+    # =========================
+    datalist = []
+    with open(audio_meta_dir, "r") as f:
+        lines = f.readlines()[:max_pairs]
+
+    for line in lines:
+        line = line.strip().split(" ")
+        is_same = int(line[0])
+
+        spk1_rel = line[1]
+        spk2_rel = line[2]
+
+        spk1_path = find_audio_path(spk1_rel)
+        spk2_path = find_audio_path(spk2_rel)
+
+        spk1_id = spk1_rel.split("/")[0]
+        spk2_id = spk2_rel.split("/")[0]
+
+        datalist.append((is_same, spk1_id, spk2_id, spk1_path, spk2_path))
+
+    pos = sum(1 for x in datalist if x[0] == 1)
+    neg = sum(1 for x in datalist if x[0] == 0)
+    print(f"[Eval] Positive pairs: {pos}, Negative pairs: {neg}")
+
+    # =========================
+    # 2. Containers
+    # =========================
+    before_scores = []
+    after_scores = []
+    labels = []
+
+    before_embs = []
+    after_embs = []
+    final_ids = []
+
+    # =========================
+    # 3. Forward (pairwise)
+    # =========================
+    with torch.no_grad():
+        for is_same, id1, id2, path1, path2 in tqdm(datalist, desc="Evaluating"):
+
+            emb1, sr1 = torchaudio.load(path1)
+            emb2, sr2 = torchaudio.load(path2)
+
+            emb1 = emb1.to(device)
+            emb2 = emb2.to(device)
+
+            out1 = model(emb1, mode="test")
+            out2 = model(emb2, mode="test")
+
+            # -------- Before disentangle (h_spk) --------
+            h1 = F.normalize(out1["spkr_emb"], p=2, dim=1)
+            h2 = F.normalize(out2["spkr_emb"], p=2, dim=1)
+
+            score_before = F.cosine_similarity(h1, h2).cpu()
+            before_scores.append(score_before)
+
+            before_embs.append(out1["spkr_emb"].cpu())
+            before_embs.append(out2["spkr_emb"].cpu())
+
+            # -------- After disentangle (w_spkr) --------
+            w1 = F.normalize(out1["w_spkr"], p=2, dim=1)
+            w2 = F.normalize(out2["w_spkr"], p=2, dim=1)
+
+            score_after = F.cosine_similarity(w1, w2).cpu()
+            after_scores.append(score_after)
+
+            after_embs.append(out1["w_spkr"].cpu())
+            after_embs.append(out2["w_spkr"].cpu())
+
+            labels.append(is_same)
+            final_ids.extend([id1, id2])
+
+    # =========================
+    # 4. EER
+    # =========================
+    final_labels = torch.tensor(labels).numpy()
+    final_before_scores = torch.cat(before_scores).numpy()
+    final_after_scores = torch.cat(after_scores).numpy()
+
+    eer_before = compute_eer(final_before_scores, final_labels)
+    eer_after = compute_eer(final_after_scores, final_labels)
+
+    final_before_embs = torch.cat(before_embs, dim=0)
+    final_after_embs = torch.cat(after_embs, dim=0)
+
+    return (
+        eer_before,
+        eer_after,
+        final_before_embs,
+        final_after_embs,
+        final_ids
+    )        
 
 # 封裝成 DataLoader
 BATCH_SIZE = BATCH_SIZE
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 # ==========================================
 # 2. 模型初始化
@@ -169,88 +283,29 @@ for epoch in range(EPOCHS):
     # ==========================================
     # 4. 驗證迴圈
     # ==========================================
-    model.eval()
-    before_scores = []       # 解耦前 cosine scores
-    disentangled_scores = [] # 解耦後 cosine scores
-    before_disentagled_list = []
-    after_disentagled_list = []
-    is_same_labels = []
-    final_ids = []
-    
-    with torch.no_grad():
-        for is_same, id1, id2, emb1, emb2 in tqdm(test_loader, desc="Extracting Embeddings"):
-            emb1 = emb1.to(device)
-            emb2 = emb2.to(device)
+    eer_before, eer_after, before_embs, after_embs, final_ids = eval_network(
+        model,
+        audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
+        audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR'],
+        device=device
+    )
 
-            # forward
-            out1 = model(emb1, mode="test")
-            out2 = model(emb2, mode="test")
-
-            # =========================
-            # 解耦前 (h_spk / spkr_emb)
-            # =========================
-            spk_emb1 = out1['spkr_emb']
-            spk_emb2 = out2['spkr_emb']
-            
-            spk_emb1 = F.normalize(spk_emb1, p=2, dim=1)
-            spk_emb2 = F.normalize(spk_emb2, p=2, dim=1)
-            
-            before_disentagled_list.append(out1['spkr_emb'].cpu())
-            before_disentagled_list.append(out2['spkr_emb'].cpu())
-
-            score_before = F.cosine_similarity(spk_emb1, spk_emb2, dim=1)
-            before_scores.append(score_before.cpu())
-
-            # =========================
-            # 解耦後 (w_spkr)
-            # =========================
-            w_spk1 = out1['w_spkr']
-            w_spk2 = out2['w_spkr']
-            
-            w_spk1 = F.normalize(w_spk1, p=2, dim=1)
-            w_spk2 = F.normalize(w_spk2, p=2, dim=1)
-            
-            after_disentagled_list.append(out1['w_spkr'].cpu())
-            after_disentagled_list.append(out2['w_spkr'].cpu())
-
-            score_after = F.cosine_similarity(w_spk1, w_spk2, dim=1)
-            disentangled_scores.append(score_after.cpu())
-
-            is_same_labels.append(is_same.cpu())
-            final_ids.extend(id1)  # 對應 out1
-            final_ids.extend(id2)  # 對應 out2
-            
-    # =========================
-    # concat & EER
-    # =========================
-    final_labels = torch.cat(is_same_labels, dim=0).numpy()
-    final_before_scores = torch.cat(before_scores, dim=0).numpy()
-    final_after_scores = torch.cat(disentangled_scores, dim=0).numpy()
-
-    eer_before = compute_eer(final_before_scores, final_labels)
-    eer_after = compute_eer(final_after_scores, final_labels)
-
-    print(f"Test EER (Before Disentangle, h_spk): {eer_before * 100:.2f}%")
-    print(f"Test EER (After  Disentangle, w_spkr): {eer_after * 100:.2f}%")
-
-    final_before_embs = torch.cat(before_disentagled_list, dim=0)
-    final_embs = torch.cat(after_disentagled_list, dim=0)
     
     if best_EER > eer_after:
         best_EER = eer_after
-        torch.save(model.state_dict(), f'./checkpoint/{val_dataset}_best_model.pth')
+        torch.save(model.state_dict(), f'./checkpoints/{val_dataset}_best_model.pth')
         torch.save({
-            'embeddings': final_embs,
-            'before_embeddings': final_before_embs,
+            'embeddings': after_embs,
+            'before_embeddings': before_embs,
             'ids': final_ids,
         }, os.path.join(checkpoint_dir, f'{val_dataset}_best_disentangled_embeddings.pt'))
         print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
         
     if epoch == EPOCHS - 1:
-        torch.save(model.state_dict(), f'./checkpoint/{val_dataset}_last_model.pth')
+        torch.save(model.state_dict(), f'./checkpoints/{val_dataset}_last_model.pth')
         torch.save({   
-            'embeddings': final_embs,
-            'before_embeddings': final_before_embs,
+            'embeddings': after_embs,
+            'before_embeddings': before_embs,
             'ids': final_ids,
         }, os.path.join(checkpoint_dir, f'{val_dataset}_last_disentangled_embeddings.pt'))
         print("儲存最終模型。")
