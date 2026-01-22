@@ -85,9 +85,8 @@ class JFENetwork(nn.Module):
         }
 
 class JFELoss(nn.Module):
-    def __init__(self, age_weights, lambda_entropy=0.1, lambda_mapc=0.1):
+    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1):
         super(JFELoss, self).__init__()
-        self.age_weights = age_weights
         self.lambda_entropy = lambda_entropy
         self.lambda_mapc = lambda_mapc
         self.ce_loss_spkr = nn.CrossEntropyLoss()

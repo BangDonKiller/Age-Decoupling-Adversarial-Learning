@@ -181,8 +181,7 @@ model = JFENetwork(
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # Loss Functions
-age_weights = train_dataset.age_class_weights.to(device)
-criterion = JFELoss(age_weights, lambda_entropy=0.1, lambda_mapc=0.5)
+criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.5)
 
 # 訓練參數
 EPOCHS = 1
