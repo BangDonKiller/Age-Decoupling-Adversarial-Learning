@@ -23,32 +23,12 @@ torch.cuda.manual_seed_all(SEED)
 # 1. 資料準備與前處理
 # ==========================================
 dataset = 'VoxCeleb2'
-val_dataset = 'Vox-O'
+val_dataset = 'Vox-CA20'
 
 g = torch.Generator()
 g.manual_seed(SEED)
 
-train_dataset = Vox2Dataset(
-    audio_dir=DATASET_INFO[dataset]['AUDIO_DIR'],
-    audio_meta_dir=DATASET_INFO[dataset]['AUDIO_META_DIR'],
-    target_sample_rate=16000,
-    suffix=DATASET_INFO[dataset]['audio_suffix']
-)
-
-def eval_network(model, audio_dirs, audio_meta_dir, device, max_pairs=20000):
-    """
-    Speaker verification evaluation on pairwise trials (e.g. Vox-O)
-
-    Returns:
-        eer_before (float)
-        eer_after  (float)
-        final_before_embs (Tensor)
-        final_after_embs  (Tensor)
-        final_ids (List[str])
-    """
-
-    model.eval()
-
+def build_eval_dataset(audio_dirs, audio_meta_dir, max_pairs=20000):
     def find_audio_path(relative_path):
         for audio_dir in audio_dirs:
             audio_path = Path(audio_dir) / relative_path
@@ -56,9 +36,6 @@ def eval_network(model, audio_dirs, audio_meta_dir, device, max_pairs=20000):
                 return str(audio_path)
         raise FileNotFoundError(f"{relative_path} not found in audio_dirs")
 
-    # =========================
-    # 1. Load trial list
-    # =========================
     datalist = []
     with open(audio_meta_dir, "r") as f:
         lines = f.readlines()[:max_pairs]
@@ -81,9 +58,38 @@ def eval_network(model, audio_dirs, audio_meta_dir, device, max_pairs=20000):
     pos = sum(1 for x in datalist if x[0] == 1)
     neg = sum(1 for x in datalist if x[0] == 0)
     print(f"[Eval] Positive pairs: {pos}, Negative pairs: {neg}")
+    
+    return datalist
+
+train_dataset = Vox2Dataset(
+    audio_dir=DATASET_INFO[dataset]['AUDIO_DIR'],
+    audio_meta_dir=DATASET_INFO[dataset]['AUDIO_META_DIR'],
+    target_sample_rate=16000,
+    suffix=DATASET_INFO[dataset]['audio_suffix']
+)
+
+eval_dataset = build_eval_dataset(
+    audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
+    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR'],
+    max_pairs=20000
+)
+
+def eval_network(model, datalist):
+    """
+    Speaker verification evaluation on pairwise trials (e.g. Vox-O)
+
+    Returns:
+        eer_before (float)
+        eer_after  (float)
+        final_before_embs (Tensor)
+        final_after_embs  (Tensor)
+        final_ids (List[str])
+    """
+
+    model.eval()
 
     # =========================
-    # 2. Containers
+    # Containers
     # =========================
     before_scores = []
     after_scores = []
@@ -94,7 +100,7 @@ def eval_network(model, audio_dirs, audio_meta_dir, device, max_pairs=20000):
     final_ids = []
 
     # =========================
-    # 3. Forward (pairwise)
+    # Forward (pairwise)
     # =========================
     with torch.no_grad():
         for is_same, id1, id2, path1, path2 in tqdm(datalist, desc="Evaluating"):
@@ -132,7 +138,7 @@ def eval_network(model, audio_dirs, audio_meta_dir, device, max_pairs=20000):
             final_ids.extend([id1, id2])
 
     # =========================
-    # 4. EER
+    # EER
     # =========================
     final_labels = torch.tensor(labels).numpy()
     final_before_scores = torch.cat(before_scores).numpy()
@@ -179,7 +185,7 @@ age_weights = train_dataset.age_class_weights.to(device)
 criterion = JFELoss(age_weights, lambda_entropy=0.1, lambda_mapc=0.5)
 
 # 訓練參數
-EPOCHS = 2
+EPOCHS = 1
 best_val_loss = float('inf')
 best_score_balanced = -float('inf')
 best_spk_acc = 0.0
@@ -285,9 +291,7 @@ for epoch in range(EPOCHS):
     # ==========================================
     eer_before, eer_after, before_embs, after_embs, final_ids = eval_network(
         model,
-        audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
-        audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR'],
-        device=device
+        eval_dataset
     )
 
     

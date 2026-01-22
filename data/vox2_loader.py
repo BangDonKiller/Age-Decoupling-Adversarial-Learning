@@ -40,7 +40,7 @@ class Vox2Dataset(Dataset):
         }
         
         self.num_age_classes = len(self.conv_age)
-        self.age_class_weights = self._calculate_age_weights()
+        # self.age_class_weights = self._calculate_age_weights()
 
     def __len__(self):
         return len(self.datalist)
@@ -129,7 +129,7 @@ class Vox2Dataset(Dataset):
             }
             
         # print the speaker count
-        print(f"Total speakers in meta: {len(meta_dict)}")
+        print(f"訓練資料集的說話者數量: {len(meta_dict)}")
 
         return meta_dict
     

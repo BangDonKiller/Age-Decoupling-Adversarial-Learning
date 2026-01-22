@@ -22,7 +22,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 64
 
 MODEL_list = {
-    "ECAPA-TDNN": "speechbrain/spkrec-ecapa-voxceleb",
+    # "ECAPA-TDNN": "speechbrain/spkrec-ecapa-voxceleb",
+    "ECAPA-TDNN": "yangwang825/ecapa-tdnn-vox2",
     "ResNet34": "speechbrain/spkrec-resnet-voxceleb",
     "x-vector": "",
 }
