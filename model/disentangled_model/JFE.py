@@ -19,10 +19,16 @@ class JFENetwork(nn.Module):
         
         # 2. 全連接神經層
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 160),
-            nn.BatchNorm1d(160),
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Linear(160, spk_dim + age_dim) # 輸出層被切分為 h1 和 h2
+            nn.Linear(512, spk_dim + age_dim) # 輸出層被切分為 h1 和 h2
+        )
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(spk_dim + age_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, input_dim)
         )
         
         # 3. 分類器 (Main Tasks & Subtasks)
@@ -74,6 +80,10 @@ class JFENetwork(nn.Module):
         # w_age -> 預測 說話者 (希望這個很不準)
         logits_spkr_sub = self.classifier_spkr(h_age)
         
+        # C. 重建輸出 (可選)
+        latent_combined = torch.cat((h_spk, h_age), dim=1)
+        x_recon = self.decoder(latent_combined)
+        
         return {
             "spkr_emb": feature,
             "w_spkr": h_spk,
@@ -82,15 +92,18 @@ class JFENetwork(nn.Module):
             "logits_age_main": logits_age_main,
             "logits_age_sub": logits_age_sub,
             "logits_spkr_sub": logits_spkr_sub,
+            "x_recon": x_recon
         }
 
 class JFELoss(nn.Module):
-    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1):
+    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1, lambda_recon=1):
         super(JFELoss, self).__init__()
         self.lambda_entropy = lambda_entropy
         self.lambda_mapc = lambda_mapc
+        self.lambda_recon = lambda_recon
         self.ce_loss_spkr = nn.CrossEntropyLoss()
         self.ce_loss_age = nn.CrossEntropyLoss()
+        self.mse_loss = nn.MSELoss()
 
     def compute_entropy(self, logits):
         """
@@ -155,18 +168,23 @@ class JFELoss(nn.Module):
         # 為了方便優化器，我們直接加上 MAPC term。
         loss_mapc = self.compute_mapc(outputs['w_spkr'], outputs['w_age'])
         
+        # 4. Reconstruction Loss (可選)
+        loss_recon = self.mse_loss(outputs['x_recon'], outputs['spkr_emb'])
+        
         # 4. Total Loss (公式 19 的變體)
         # Minimize: Main_CE + lambda * MAPC - lambda * Entropy
         total_loss = (loss_spkr_main + loss_age_main) \
                      + (self.lambda_mapc * loss_mapc) \
-                     - (self.lambda_entropy * (entropy_age_sub + entropy_spkr_sub))
+                     - (self.lambda_entropy * (entropy_age_sub + entropy_spkr_sub)) \
+                     + (self.lambda_recon * loss_recon)
                      
         return total_loss, {
             "loss_spkr": loss_spkr_main.item(),
             "loss_age": loss_age_main.item(),
             "entropy_age": entropy_age_sub.item(),
             "entropy_spkr": entropy_spkr_sub.item(),
-            "mapc": loss_mapc.item()
+            "mapc": loss_mapc.item(),
+            "loss_recon": loss_recon.item()
         }
 
 # --- 模擬數據與測試 ---
