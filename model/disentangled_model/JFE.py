@@ -96,11 +96,12 @@ class JFENetwork(nn.Module):
         }
 
 class JFELoss(nn.Module):
-    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1, lambda_recon=1):
+    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1, lambda_recon=1.0, lambda_hsic=1.0):
         super(JFELoss, self).__init__()
         self.lambda_entropy = lambda_entropy
         self.lambda_mapc = lambda_mapc
         self.lambda_recon = lambda_recon
+        self.lambda_hsic = lambda_hsic
         self.ce_loss_spkr = nn.CrossEntropyLoss()
         self.ce_loss_age = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss()
@@ -144,6 +145,39 @@ class JFELoss(nn.Module):
         mapc = torch.abs(correlation).mean()
         
         return mapc
+    
+    def compute_hsic(self, x, y):
+        """
+        新增：計算 HSIC (Hilbert-Schmidt Independence Criterion)
+        作為互資訊 (MI) 的非線性代理損失。
+        x: 身分嵌入 [Batch, 256]
+        y: 年齡標籤 [Batch]
+        """
+        # 1. 準備數據
+        if y.dim() == 1:
+            y = y.view(-1, 1).float()
+        
+        n = x.size(0)
+        
+        # 2. 計算 RBF 核矩陣 (Similarity Matrices)
+        def rbf_kernel(mat):
+            dist = torch.pdist(mat).pow(2)
+            sigma = torch.median(dist) # 使用中位數技巧自動調整頻寬
+            k_mat = torch.exp(-dist / (2 * sigma + 1e-8))
+            # 這裡簡化為直接矩陣運算
+            dists = torch.cdist(mat, mat).pow(2)
+            return torch.exp(-dists / (2 * sigma + 1e-8))
+
+        K = rbf_kernel(x)
+        L = rbf_kernel(y)
+
+        # 3. 中心化矩陣 H = I - (1/n)11^T
+        H = torch.eye(n).to(x.device) - (1.0 / n) * torch.ones((n, n)).to(x.device)
+
+        # 4. HSIC = trace(KHLH) / (n-1)^2
+        # 我們希望最小化 HSIC
+        hsic = torch.trace(K @ H @ L @ H) / ((n - 1) ** 2)
+        return hsic
 
     def forward(self, outputs, target_spkr, target_age):
         """
@@ -171,12 +205,22 @@ class JFELoss(nn.Module):
         # 4. Reconstruction Loss (可選)
         loss_recon = self.mse_loss(outputs['x_recon'], outputs['spkr_emb'])
         
-        # 4. Total Loss (公式 19 的變體)
-        # Minimize: Main_CE + lambda * MAPC - lambda * Entropy
+        # 5. MI Loss 互信息代理 (可選)
+        # 計算「解耦後」的 MI (你要優化的目標)
+        loss_hsic_disentangled = self.compute_hsic(outputs['w_spkr'], target_age)
+        
+        # 計算「基準 (解耦前)」的 MI (純紀錄，不參與反向傳播)
+        # 我們拿骨幹網路直接出來的 spkr_emb 來比
+        with torch.no_grad():
+            baseline_hsic = self.compute_hsic(outputs['spkr_emb'], target_age)
+        
+        # 6. Total Loss (公式 19 的變體)
+        # Minimize: Main_CE + lambda * MAPC - lambda * Entropy + lambda * Causal + lambda * Recon
         total_loss = (loss_spkr_main + loss_age_main) \
                      + (self.lambda_mapc * loss_mapc) \
                      - (self.lambda_entropy * (entropy_age_sub + entropy_spkr_sub)) \
-                     + (self.lambda_recon * loss_recon)
+                     + (self.lambda_recon * loss_recon) \
+                     + (self.lambda_hsic * loss_hsic_disentangled)
                      
         return total_loss, {
             "loss_spkr": loss_spkr_main.item(),
@@ -184,7 +228,9 @@ class JFELoss(nn.Module):
             "entropy_age": entropy_age_sub.item(),
             "entropy_spkr": entropy_spkr_sub.item(),
             "mapc": loss_mapc.item(),
-            "loss_recon": loss_recon.item()
+            "loss_recon": loss_recon.item(),
+            "loss_hsic": loss_hsic_disentangled.item(),
+            "baseline_hsic": baseline_hsic.item()
         }
 
 # --- 模擬數據與測試 ---
