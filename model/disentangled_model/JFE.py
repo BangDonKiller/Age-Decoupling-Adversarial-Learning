@@ -16,6 +16,7 @@ class JFENetwork(nn.Module):
             device="cuda" if torch.cuda.is_available() else "cpu"
         )
         self.backbone.eval()  # 骨幹網路不進行訓練
+        self.backbone.requires_grad_(False)
         
         # 2. 全連接神經層
         self.encoder = nn.Sequential(
@@ -222,7 +223,16 @@ class JFELoss(nn.Module):
                      + (self.lambda_recon * loss_recon) \
                      + (self.lambda_hsic * loss_hsic_disentangled)
                      
-        return total_loss, {
+        loss_disentangled = (self.lambda_mapc * loss_mapc) \
+                     - (self.lambda_entropy * (entropy_age_sub + entropy_spkr_sub)) \
+                     + (self.lambda_hsic * loss_hsic_disentangled)
+        
+        loss_nuisance = loss_age_main + loss_disentangled + (self.lambda_recon * loss_recon)
+        
+        # 7. 返回總損失與各部分損失值
+        task_losses = [loss_spkr_main, loss_nuisance]
+                     
+        return total_loss, task_losses, {
             "loss_spkr": loss_spkr_main.item(),
             "loss_age": loss_age_main.item(),
             "entropy_age": entropy_age_sub.item(),
