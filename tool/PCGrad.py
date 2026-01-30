@@ -7,65 +7,54 @@ class PCGrad:
         self._optim = optimizer
 
     def step(self, losses):
-        """
-        按照 PCGrad 論文 Algorithm 1 實作：
-        1. 分別計算每個任務的梯度 g_i
-        2. 對每個 g_i，將其投影到與其衝突的其他任務 g_j 的法平面上
-        3. 將所有手術後的梯度加總 (Sum) 作為最終更新方向
-        """
         task_grads = []
-
-        # 1. 取得每個任務的獨立梯度
         for loss in losses:
             self._optim.zero_grad()
-            # retain_graph=True 是必要的，因為多個任務共享同一個前向傳播圖
             loss.backward(retain_graph=True)
             task_grads.append(self._get_grad())
 
-        # 2. 準備存放「手術後」梯度的列表 (複製一份原始梯度)
-        # 論文中定義 Gi_pc = gi
-        pc_grads = [g.clone() for g in task_grads]
+        # --- 新增：觀察手術前（原始總梯度）的量級 ---
+        # 這是如果不做 PCGrad，模型原本會拿到的總更新向量
+        raw_grad_sum = torch.stack(task_grads).sum(dim=0)
+        pre_norm = torch.norm(raw_grad_sum).item()
+        # ----------------------------------------
 
+        pc_grads = [g.clone() for g in task_grads]
         num_conflicts = 0
         sum_cos_sim = 0.0
         total_pairs = 0
 
-        # 3. 執行梯度手術 (兩兩比對)
         for i in range(len(task_grads)):
-            # 隨機打亂其他任務的順序，增加穩定性
             others = list(range(len(task_grads)))
             others.remove(i)
             random.shuffle(others)
-
             for j in others:
-                g_j = task_grads[j] # 參考基準是原始梯度
-                
-                # 計算內積
+                g_j = task_grads[j]
                 dot_product = torch.dot(pc_grads[i], g_j)
-                
-                # 統計用：只計算一次每對任務的原始相似度
                 if i < j:
                     norm_prod = (torch.norm(pc_grads[i]) * torch.norm(g_j) + 1e-8)
                     sum_cos_sim += (dot_product / norm_prod).item()
                     total_pairs += 1
 
-                # 如果衝突 (內積為負)
                 if dot_product < 0:
                     num_conflicts += 1
-                    # 手術投影：gi = gi - ( (gi · gj) / ||gj||^2 ) * gj
                     pc_grads[i] -= (dot_product / (torch.norm(g_j) ** 2 + 1e-8)) * g_j
 
-        # 4. 關鍵修正：將所有手術後的梯度加總 (Sum)
-        # 這是論文 Algorithm 1 的最後一步，確保更新力道不會縮水
         merged_grad = torch.stack(pc_grads).sum(dim=0)
 
-        # 5. 寫回模型並執行更新
+        # --- 新增：觀察手術後（投影後的總梯度）的量級 ---
+        post_norm = torch.norm(merged_grad).item()
+        # 計算縮減比例：post / pre (如果小於 1 代表梯度變短了)
+        shrinkage_ratio = post_norm / (pre_norm + 1e-8)
+        # ----------------------------------------
+
         self._set_grad(merged_grad)
         self._optim.step()
 
         return {
-            "conflicts": num_conflicts,
-            "avg_cos_sim": sum_cos_sim / total_pairs if total_pairs > 0 else 0.0
+            "pre_norm": pre_norm,
+            "post_norm": post_norm,
+            "shrinkage_ratio": shrinkage_ratio
         }
 
     def _get_grad(self):

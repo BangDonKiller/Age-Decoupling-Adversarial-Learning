@@ -190,7 +190,7 @@ optimizer = torch.optim.Adam(
 pc_optimizer = PCGrad(optimizer)
 
 # Loss Functions
-criterion = JFELoss(lambda_entropy=0.0, lambda_mapc=0.0, lambda_recon=0.1, lambda_hsic=0.0)
+criterion = JFELoss(lambda_entropy=0.0, lambda_mapc=0.0, lambda_recon=0.0, lambda_hsic=0.0)
 
 # 訓練參數
 EPOCHS = 10
@@ -257,8 +257,9 @@ for epoch in range(EPOCHS):
     correct_age_sub = 0
     correct_id_sub = 0
     total_samples = 0
-    total_conflicts = 0
-    total_cos_sim = 0.0
+    total_pre_norm = 0.0
+    total_post_norm = 0.0
+    total_shrinkage = 0.0
     
     for emb, label_spk, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
         emb, label_spk, label_age = emb.to(device), label_spk.to(device), label_age.to(device)
@@ -284,8 +285,9 @@ for epoch in range(EPOCHS):
         train_recon_loss += loss_dict['loss_recon']
         train_hsic_loss += loss_dict['loss_hsic']
         train_basic_hsic += loss_dict['baseline_hsic']
-        total_conflicts += grad_stats["conflicts"]
-        total_cos_sim += grad_stats["avg_cos_sim"]
+        total_pre_norm += grad_stats["pre_norm"]
+        total_post_norm += grad_stats["post_norm"]
+        total_shrinkage += grad_stats["shrinkage_ratio"]
         
         # 計算準確率 (監控用)
         _, pred_s_main = torch.max(outputs['logits_spkr_main'], 1) # 從 h_spk 預測說話者
@@ -307,8 +309,9 @@ for epoch in range(EPOCHS):
     avg_recon_loss = train_recon_loss / len(train_loader)
     avg_hsic_loss = train_hsic_loss / len(train_loader)
     avg_basic_hsic = train_basic_hsic / len(train_loader)
-    avg_conflicts = total_conflicts / len(train_loader)
-    avg_grad_cos = total_cos_sim / len(train_loader)
+    avg_pre_norm = total_pre_norm / len(train_loader)
+    avg_post_norm = total_post_norm / len(train_loader)
+    avg_shrinkage = total_shrinkage / len(train_loader)
     acc_spk = 100 * correct_spk / total_samples
     acc_age = 100 * correct_age / total_samples
     acc_age_leak = 100 * correct_age_sub / total_samples
@@ -344,8 +347,8 @@ for epoch in range(EPOCHS):
     
     
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
-          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} | Recon Loss: {avg_recon_loss:.4f} | HSIC Loss: {avg_hsic_loss:.4f} | Basic HSIC: {avg_basic_hsic:.4f} | Avg Conflicts: {avg_conflicts:.2f} | Avg Grad CosSim: {avg_grad_cos:.4f} "
-          f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
+          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} | Recon Loss: {avg_recon_loss:.4f} | HSIC Loss: {avg_hsic_loss:.4f} | Basic HSIC: {avg_basic_hsic:.4f} | Pre-Norm: {avg_pre_norm:.4f} | Post-Norm: {avg_post_norm:.4f} | Shrinkage: {avg_shrinkage:.4f} "
+          f"\n|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
     # TensorBoard logging
@@ -365,8 +368,9 @@ for epoch in range(EPOCHS):
     writer.add_scalar("HSIC/Train_Basic", avg_basic_hsic, epoch)
     writer.add_scalar("EER/Val_Before_Disentangle", eer_before, epoch)
     writer.add_scalar("EER/Val_After_Disentangle", eer_after, epoch)
-    writer.add_scalar("PCGrad/Conflict_Count_Per_Step", avg_conflicts, epoch)
-    writer.add_scalar("PCGrad/Task_Gradient_Cosine_Similarity", avg_grad_cos, epoch)
+    writer.add_scalar("PCGrad/Pre_Norm", avg_pre_norm, epoch)
+    writer.add_scalar("PCGrad/Post_Norm", avg_post_norm, epoch)
+    writer.add_scalar("PCGrad/Shrinkage", avg_shrinkage, epoch)
 
     # ==========================================
     # CSV logging
