@@ -4,40 +4,59 @@ from pathlib import Path
 import torch
 import torchaudio
 import torchaudio.transforms as T
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, Sampler
 import random
-from collections import Counter
 
 class AgeGroupBatchSampler(Sampler):
-    """
-    自定義取樣器：確保每個 Step 同時抽出 壯年(Anchor) 與 非壯年(Others) 的 Batch。
-    這是為了滿足 GR 演算法中對齊梯度的需求。
-    """
     def __init__(self, dataset, batch_size):
         self.batch_size = batch_size
-        # 將索引按年齡組分類
         self.age_indices = {0: [], 1: [], 2: []}
-        for i, (_, _, _, age) in enumerate(dataset.datalist):
-            self.age_indices[age].append(i)
         
-        # 以壯年組(1)為基準，決定有多少個 Step
+        # 建立索引映射
+        for i, (_, _, _, age) in enumerate(dataset.datalist):
+            if age in self.age_indices:
+                self.age_indices[age].append(i)
+        
+        # 以壯年組 (1) 為基準，這確保了每一輪都能跑完所有核心數據
         self.num_batches = len(self.age_indices[1]) // batch_size
+        
+        print(f"[Sampler] 訓練 Step 數已對齊壯年組: {self.num_batches}")
+        print(f"[Sampler] 幼年組將循環使用約 {self.num_batches * batch_size / len(self.age_indices[0]):.1f} 次")
+        print(f"[Sampler] 老年組將循環使用約 {self.num_batches * batch_size / len(self.age_indices[2]):.1f} 次")
 
     def __iter__(self):
-        # 每個 Step 隨機打亂索引
+        # 每個 Epoch 開始前打亂
         for k in self.age_indices:
             random.shuffle(self.age_indices[k])
             
+        # 用於記錄小組別目前抽到哪裡的指標
+        pointers = {0: 0, 2: 0}
+        
         for i in range(self.num_batches):
-            # 抽出壯年組 Batch
-            anchor_batch = self.age_indices[1][i * self.batch_size : (i + 1) * self.batch_size]
-            # 隨機抽出一個非壯年組(0 或 2)的 Batch
-            other_age = random.choice([0, 2])
-            # 隨機取樣以匹配 Batch 大小
-            other_batch = random.sample(self.age_indices[other_age], self.batch_size)
+            # 1. 壯年組：正常順序抽取
+            batch_1 = self.age_indices[1][i * self.batch_size : (i + 1) * self.batch_size]
             
-            # 回傳一對 Batch：(壯年, 其他)
-            yield anchor_batch + other_batch
+            # 2. 幼年組與老年組：循環抽取邏輯
+            def get_cyclic_batch(age):
+                start = pointers[age]
+                end = start + self.batch_size
+                
+                # 如果快抽完了，就重新打亂並回到頭部
+                if end > len(self.age_indices[age]):
+                    random.shuffle(self.age_indices[age])
+                    pointers[age] = 0
+                    start = 0
+                    end = self.batch_size
+                
+                batch = self.age_indices[age][start:end]
+                pointers[age] = end
+                return batch
+
+            batch_0 = get_cyclic_batch(0)
+            batch_2 = get_cyclic_batch(2)
+            
+            # 依序回傳 0, 1, 2 組的索引拼接
+            yield batch_0 + batch_1 + batch_2
 
     def __len__(self):
         return self.num_batches

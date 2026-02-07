@@ -57,7 +57,7 @@ eval_dataset = build_eval_dataset(
     audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR']
 )
 
-# 使用自定義取樣器
+# 使用自定義取樣器 (一次抽出三組索引: 0, 1, 2)
 train_sampler = AgeGroupBatchSampler(train_dataset, batch_size=BATCH_SIZE)
 train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, num_workers=0)
 
@@ -95,10 +95,10 @@ def eval_network(model, datalist):
 # ==========================================
 model = JFENetwork(MODEL_ID, input_dim=192, spk_dim=256, age_dim=256, num_speakers=5990, num_age_groups=3).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-# 這裡將 lambda_hsic 設為 0.0，因為你已經拔掉了
 criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0)
 
-LAMBDA_GR = 0.5 
+# GR 權重
+LAMBDA_GR = 1
 
 log_dir = "logs/jfe_gr"; os.makedirs(log_dir, exist_ok=True)
 checkpoint_dir = "checkpoints"; os.makedirs(checkpoint_dir, exist_ok=True)
@@ -116,14 +116,13 @@ EPOCHS = 10
 best_EER = float('inf')
 
 # ==========================================
-# 3. 訓練迴圈 (核心實作 GR)
+# 3. 訓練迴圈
 # ==========================================
 print(f"Start GR training on {device}...")
 
 for epoch in range(EPOCHS):
     model.train()
     
-    # 紀錄初始化
     total_train_loss = 0.0
     train_loss_spkr, train_loss_age = 0.0, 0.0
     train_entropy_age, train_entropy_spkr = 0.0, 0.0
@@ -138,89 +137,92 @@ for epoch in range(EPOCHS):
         embs, spks, ages = combined_batch
         embs, spks, ages = embs.to(device), spks.to(device), ages.to(device)
         
-        emb_anc, spk_anc, age_anc = embs[:BATCH_SIZE], spks[:BATCH_SIZE], ages[:BATCH_SIZE]
-        emb_oth, spk_oth, age_oth = embs[BATCH_SIZE:], spks[BATCH_SIZE:], ages[BATCH_SIZE:]
+        # 1. 拆分為三組數據 (0: 幼年, 1: 壯年Anchor, 2: 老年)
+        e0, s0, a0 = embs[:BATCH_SIZE], spks[:BATCH_SIZE], ages[:BATCH_SIZE]
+        e1, s1, a1 = embs[BATCH_SIZE:2*BATCH_SIZE], spks[BATCH_SIZE:2*BATCH_SIZE], ages[BATCH_SIZE:2*BATCH_SIZE]
+        e2, s2, a2 = embs[2*BATCH_SIZE:], spks[2*BATCH_SIZE:], ages[2*BATCH_SIZE:]
 
-        # --- 1. 壯年組梯度 ---
-        outputs_anc = model(emb_anc, mode="train")
-        loss_anc, loss_dict_anc = criterion(outputs_anc, spk_anc, age_anc)
-        
-        optimizer.zero_grad()
-        grads_anc = torch.autograd.grad(
-            loss_anc, model.encoder.parameters(), create_graph=True, retain_graph=True
-        )
+        # 2. 分別計算三個梯度 (針對 encoder 參數)
+        def get_grads_and_loss(e, s, a):
+            out = model(e, mode="train")
+            loss, l_dict = criterion(out, s, a)
+            # 獲取 encoder 的梯度
+            grads = torch.autograd.grad(
+                loss, model.encoder.parameters(), create_graph=True, retain_graph=True
+            )
+            return grads, loss, l_dict, out
 
-        # --- 2. 變異組梯度 ---
-        outputs_oth = model(emb_oth, mode="train")
-        loss_oth, loss_dict_oth = criterion(outputs_oth, spk_oth, age_oth)
-        
-        grads_oth = torch.autograd.grad(
-            loss_oth, model.encoder.parameters(), create_graph=True, retain_graph=True
-        )
+        g0, loss0, dict0, out0 = get_grads_and_loss(e0, s0, a0)
+        g1, loss1, dict1, out1 = get_grads_and_loss(e1, s1, a1)
+        g2, loss2, dict2, out2 = get_grads_and_loss(e2, s2, a2)
 
-        # --- 3. 梯度正則化 (GR) ---
-        gr_loss = 0
-        for g0, gk in zip(grads_anc, grads_oth):
-            # gr_loss -= torch.sum(g0 * gk)
-            # 1. 將梯度拉平 (Flatten)
-            g0_flat = g0.contiguous().view(-1)
-            gk_flat = gk.contiguous().view(-1)
+        # 3. 實作論文 Equation 1: 梯度正則化 (使用 Cosine Similarity 確保穩定)
+        gr_step_loss = 0
+        for grad0, grad1, grad2 in zip(g0, g1, g2):
+            g0_f, g1_f, g2_f = grad0.view(-1), grad1.view(-1), grad2.view(-1)
             
-            # 2. 計算餘弦相似度 (Cosine Similarity)
-            # 我們希望相似度趨近 1，所以 Loss 設為 (1 - similarity)
-            # 加上 1e-8 防止除以 0
-            similarity = F.cosine_similarity(g0_flat, gk_flat, dim=0, eps=1e-8)
-            gr_loss += (1.0 - similarity) 
+            # 垂直對齊 (噪音 vs 乾淨)
+            sim01 = F.cosine_similarity(g0_f, g1_f, dim=0, eps=1e-8)
+            sim21 = F.cosine_similarity(g2_f, g1_f, dim=0, eps=1e-8)
+            # 水平對齊 (噪音 vs 噪音)
+            sim02 = F.cosine_similarity(g0_f, g2_f, dim=0, eps=1e-8)
+            
+            gr_step_loss += (1.0 - sim01) + (1.0 - sim21) + (1.0 - sim02)
 
-        # --- 4. 總合損失與更新 ---
-        total_loss = (loss_anc + loss_oth) + LAMBDA_GR * gr_loss
+        # 4. 總合損失與優化
+        total_loss = (loss0 + loss1 + loss2) + LAMBDA_GR * gr_step_loss
         
         optimizer.zero_grad()
         total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0) # 梯度剪裁
         optimizer.step()
         
         # --- 5. 數據紀錄 ---
         total_train_loss += total_loss.item()
-        train_gr_loss += gr_loss.item()
+        train_gr_loss += gr_step_loss.item()
         
-        # 累積兩邊的子損失 (取平均以反映 Batch 狀態)
-        train_loss_spkr += (loss_dict_anc['loss_spkr'] + loss_dict_oth['loss_spkr']) / 2
-        train_loss_age += (loss_dict_anc['loss_age'] + loss_dict_oth['loss_age']) / 2
-        train_entropy_age += (loss_dict_anc['entropy_age'] + loss_dict_oth['entropy_age']) / 2
-        train_entropy_spkr += (loss_dict_anc['entropy_spkr'] + loss_dict_oth['entropy_spkr']) / 2
-        train_mapc += (loss_dict_anc['mapc'] + loss_dict_oth['mapc']) / 2
-        train_recon_loss += (loss_dict_anc['loss_recon'] + loss_dict_oth['loss_recon']) / 2
+        # 累積三組的子損失平均
+        for d in [dict0, dict1, dict2]:
+            train_loss_spkr += d['loss_spkr'] / 3
+            train_loss_age += d['loss_age'] / 3
+            train_entropy_age += d['entropy_age'] / 3
+            train_entropy_spkr += d['entropy_spkr'] / 3
+            train_mapc += d['mapc'] / 3
+            train_recon_loss += d['loss_recon'] / 3
         
-        # 計算準確率 (以 Anchor + Other 合計)
-        outputs_combined_logits_spk = torch.cat([outputs_anc['logits_spkr_main'], outputs_oth['logits_spkr_main']])
-        outputs_combined_logits_age = torch.cat([outputs_anc['logits_age_main'], outputs_oth['logits_age_main']])
-        targets_combined_spk = torch.cat([spk_anc, spk_oth])
-        targets_combined_age = torch.cat([age_anc, age_oth])
+        # 計算準確率 (三組樣本合計)
+        all_logits_spk = torch.cat([out0['logits_spkr_main'], out1['logits_spkr_main'], out2['logits_spkr_main']])
+        all_logits_age = torch.cat([out0['logits_age_main'], out1['logits_age_main'], out2['logits_age_main']])
+        all_targets_spk = torch.cat([s0, s1, s2])
+        all_targets_age = torch.cat([a0, a1, a2])
         
-        _, pred_s = torch.max(outputs_combined_logits_spk, 1)
-        _, pred_a = torch.max(outputs_combined_logits_age, 1)
-        correct_spk += (pred_s == targets_combined_spk).sum().item()
-        correct_age += (pred_a == targets_combined_age).sum().item()
+        _, pred_s = torch.max(all_logits_spk, 1)
+        _, pred_a = torch.max(all_logits_age, 1)
+        correct_spk += (pred_s == all_targets_spk).sum().item()
+        correct_age += (pred_a == all_targets_age).sum().item()
         
         # 洩漏監控
-        _, pred_a_sub = torch.max(torch.cat([outputs_anc['logits_age_sub'], outputs_oth['logits_age_sub']]), 1)
-        _, pred_s_sub = torch.max(torch.cat([outputs_anc['logits_spkr_sub'], outputs_oth['logits_spkr_sub']]), 1)
-        correct_age_sub += (pred_a_sub == targets_combined_age).sum().item()
-        correct_id_sub += (pred_s_sub == targets_combined_spk).sum().item()
+        all_logits_age_sub = torch.cat([out0['logits_age_sub'], out1['logits_age_sub'], out2['logits_age_sub']])
+        all_logits_spk_sub = torch.cat([out0['logits_spkr_sub'], out1['logits_spkr_sub'], out2['logits_spkr_sub']])
+        _, pred_as = torch.max(all_logits_age_sub, 1)
+        _, pred_ss = torch.max(all_logits_spk_sub, 1)
+        correct_age_sub += (pred_as == all_targets_age).sum().item()
+        correct_id_sub += (pred_ss == all_targets_spk).sum().item()
         
-        total_samples += (BATCH_SIZE * 2)
+        total_samples += (BATCH_SIZE * 3)
 
     # ==========================================
-    # 4. 驗證與日誌
+    # 4. 驗證與日誌記錄
     # ==========================================
-    avg_loss = total_train_loss / len(train_loader)
-    avg_gr_loss = train_gr_loss / len(train_loader)
-    avg_spk_loss = train_loss_spkr / len(train_loader)
-    avg_age_loss = train_loss_age / len(train_loader)
-    avg_ent_age = train_entropy_age / len(train_loader)
-    avg_ent_spk = train_entropy_spkr / len(train_loader)
-    avg_mapc = train_mapc / len(train_loader)
-    avg_recon = train_recon_loss / len(train_loader)
+    num_steps = len(train_loader)
+    avg_loss = total_train_loss / num_steps
+    avg_gr = train_gr_loss / num_steps
+    avg_spk_l = train_loss_spkr / num_steps
+    avg_age_l = train_loss_age / num_steps
+    avg_ent_a = train_entropy_age / num_steps
+    avg_ent_s = train_entropy_spkr / num_steps
+    avg_mapc = train_mapc / num_steps
+    avg_recon = train_recon_loss / num_steps
     
     acc_spk = 100 * correct_spk / total_samples
     acc_age = 100 * correct_age / total_samples
@@ -234,19 +236,20 @@ for epoch in range(EPOCHS):
         torch.save(model.state_dict(), f'./checkpoints/{val_dataset}_best_model.pth')
         print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
 
-    print(f"Epoch [{epoch+1}/{EPOCHS}] Loss: {avg_loss:.4f} | GR: {avg_gr_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Before EER: {eer_before * 100:.2f}% | After EER: {eer_after * 100:.2f}%")
+    print(f"Epoch [{epoch+1}/{EPOCHS}] Loss: {avg_loss:.4f} | GR: {avg_gr:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}%")
+    print(f"|| Before EER: {eer_before * 100:.2f}% | After EER: {eer_after * 100:.2f}%")
 
     # TensorBoard
     writer.add_scalar("Loss/Total", avg_loss, epoch)
-    writer.add_scalar("Loss/GR", avg_gr_loss, epoch)
+    writer.add_scalar("Loss/GR", avg_gr, epoch)
     writer.add_scalar("Accuracy/Spk", acc_spk, epoch)
     writer.add_scalar("EER/After", eer_after, epoch)
 
     # CSV
     csv_writer.writerow([
-        epoch + 1, avg_loss, avg_spk_loss, avg_age_loss, 
-        avg_ent_age, avg_ent_spk, avg_mapc, avg_recon, 
-        avg_gr_loss, acc_spk, acc_age, acc_age_leak, acc_id_leak, eer_before, eer_after
+        epoch + 1, avg_loss, avg_spk_l, avg_age_l, 
+        avg_ent_a, avg_ent_s, avg_mapc, avg_recon, 
+        avg_gr, acc_spk, acc_age, acc_age_leak, acc_id_leak, eer_before, eer_after
     ])
     csv_file.flush()
 
