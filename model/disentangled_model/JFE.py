@@ -97,12 +97,13 @@ class JFENetwork(nn.Module):
         }
 
 class JFELoss(nn.Module):
-    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1, lambda_recon=1.0, lambda_hsic=1.0, lambda_gr=0.01):
+    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1, lambda_recon=1.0, lambda_hsic=1.0, lambda_ortho=0.1, lambda_gr=0.01):
         super(JFELoss, self).__init__()
         self.lambda_entropy = lambda_entropy
         self.lambda_mapc = lambda_mapc
         self.lambda_recon = lambda_recon
         self.lambda_hsic = lambda_hsic
+        self.lambda_ortho = lambda_ortho
         self.lambda_gr = lambda_gr
         self.ce_loss_spkr = nn.CrossEntropyLoss()
         self.ce_loss_age = nn.CrossEntropyLoss()
@@ -180,6 +181,24 @@ class JFELoss(nn.Module):
         # 我們希望最小化 HSIC
         hsic = torch.trace(K @ H @ L @ H) / ((n - 1) ** 2)
         return hsic
+    
+    def compute_orthogonal_loss(self, z_id, z_age):
+        """
+        教授建議的正交損失：L_ortho = |z_id^T * z_age|^2
+        目標：讓身份向量與年齡向量在幾何上完全垂直。
+        """
+        # 1. 為了穩定性，我們先將向量做 L2 Normalize (只看角度，不看長度)
+        z_id_norm = F.normalize(z_id, p=2, dim=1)
+        z_age_norm = F.normalize(z_age, p=2, dim=1)
+        
+        # 2. 計算每個樣本的身分與年齡內積 (Batch, 1)
+        # torch.sum(a * b, dim=1) 相當於 a^T * b
+        dot_product = torch.sum(z_id_norm * z_age_norm, dim=1)
+        
+        # 3. 取平方並平均
+        loss_ortho = torch.pow(dot_product, 2).mean()
+        
+        return loss_ortho
 
     def forward(self, outputs, target_spkr, target_age):
         """
@@ -207,12 +226,16 @@ class JFELoss(nn.Module):
         # 4. Reconstruction Loss (可選)
         loss_recon = self.mse_loss(outputs['x_recon'], outputs['spkr_emb'])
         
+        # 5. 樣本間的正交損失 (Orthogonal Loss) - 越小越好
+        loss_ortho = self.compute_orthogonal_loss(outputs['w_spkr'], outputs['w_age'])
+        
         # 6. Total Loss (公式 19 的變體)
         # Minimize: Main_CE + lambda * MAPC - lambda * Entropy + lambda * Causal + lambda * Recon
         total_loss = (loss_spkr_main + loss_age_main) \
                      + (self.lambda_mapc * loss_mapc) \
                      - (self.lambda_entropy * (entropy_age_sub + entropy_spkr_sub)) \
-                     + (self.lambda_recon * loss_recon)
+                     + (self.lambda_recon * loss_recon) \
+                     + (self.lambda_ortho * loss_ortho)
                      
         return total_loss, {
             "loss_spkr": loss_spkr_main.item(),
@@ -221,6 +244,7 @@ class JFELoss(nn.Module):
             "entropy_spkr": entropy_spkr_sub.item(),
             "mapc": loss_mapc.item(),
             "loss_recon": loss_recon.item(),
+            "loss_ortho": loss_ortho.item(),
         }
 
 # --- 模擬數據與測試 ---

@@ -179,7 +179,7 @@ model = JFENetwork(
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # Loss Functions
-criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_hsic=0.0)
+criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_hsic=0.0, lambda_ortho=1.0)
 
 # 訓練參數
 EPOCHS = 10
@@ -212,6 +212,7 @@ csv_writer.writerow([
     "train_entropy_spkr",
     "train_mapc",
     "train_recon_loss",
+    "train_ortho_loss",
     "train_spk_acc",
     "train_age_acc",
     "train_age_leak",
@@ -237,6 +238,7 @@ for epoch in range(EPOCHS):
     train_entropy_spkr = 0.0
     train_mapc = 0.0
     train_recon_loss = 0.0
+    train_ortho_loss = 0.0
     correct_spk = 0
     correct_age = 0
     correct_age_sub = 0
@@ -264,6 +266,7 @@ for epoch in range(EPOCHS):
         train_entropy_spkr += loss_dict['entropy_spkr']
         train_mapc += loss_dict['mapc']
         train_recon_loss += loss_dict['loss_recon']
+        train_ortho_loss += loss_dict['loss_ortho']
         
         # 計算準確率 (監控用)
         _, pred_s_main = torch.max(outputs['logits_spkr_main'], 1) # 從 h_spk 預測說話者
@@ -283,6 +286,7 @@ for epoch in range(EPOCHS):
     avg_entropy_spkr = train_entropy_spkr / len(train_loader)
     avg_mapc = train_mapc / len(train_loader)
     avg_recon_loss = train_recon_loss / len(train_loader)
+    avg_ortho_loss = train_ortho_loss / len(train_loader)
     acc_spk = 100 * correct_spk / total_samples
     acc_age = 100 * correct_age / total_samples
     acc_age_leak = 100 * correct_age_sub / total_samples
@@ -318,7 +322,7 @@ for epoch in range(EPOCHS):
     
     
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
-          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} | Recon Loss: {avg_recon_loss:.4f} |"
+          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} | Recon Loss: {avg_recon_loss:.4f} | Ortho Loss: {avg_ortho_loss:.4f}"
           f"\n|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
@@ -331,6 +335,7 @@ for epoch in range(EPOCHS):
     writer.add_scalar("Entropy/Train_Spk", avg_entropy_spkr, epoch)
     writer.add_scalar("MAPC/Train", avg_mapc, epoch)
     writer.add_scalar("Loss/Train_Recon", avg_recon_loss, epoch)
+    writer.add_scalar("Loss/Train_Ortho", avg_ortho_loss, epoch)
     writer.add_scalar("Accuracy/Train_Spk", acc_spk, epoch)
     writer.add_scalar("Accuracy/Train_Age", acc_age, epoch)
     writer.add_scalar("Leak/Train_Age", acc_age_leak, epoch)
@@ -350,6 +355,7 @@ for epoch in range(EPOCHS):
         avg_entropy_spkr,
         avg_mapc,
         avg_recon_loss,
+        avg_ortho_loss,
         acc_spk,
         acc_age,
         acc_age_leak,
