@@ -31,46 +31,42 @@ MODEL_ID = MODEL_list["ECAPA-TDNN"]
 
 DATASET_INFO = {
     "VoxCeleb1": {
+        "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_meta.csv",
         "Vox-O": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-O.txt",
+            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-O.txt",
             "audio_suffix": ".wav",
         },
         "Vox-E": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-E.txt",
+            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-E.txt",
             "audio_suffix": ".wav",
         },
         "Vox-H": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-H.txt",
+            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-H.txt",
             "audio_suffix": ".wav",
         },
         "Vox-CA5": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-CA5.txt",
+            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-CA5.txt",
             "audio_suffix": ".wav",
         },
         "Vox-CA10": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-CA10.txt",
+            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-CA10.txt",
             "audio_suffix": ".wav",
         },
         "Vox-CA15": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-CA15.txt",
+            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-CA15.txt",
             "audio_suffix": ".wav",
         },
         "Vox-CA20": {
             "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\Vox-CA20.txt",
+            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-CA20.txt",
             "audio_suffix": ".wav",
         },
-        "Inference": {
-            "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb1\\vox1_meta.csv",
-            "audio_suffix": ".wav",
-        }
     },
     "VoxCeleb2": {
         "AUDIO_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac",

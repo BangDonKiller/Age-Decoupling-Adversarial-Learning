@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 import csv
 from pathlib import Path
+import pandas as pd
 
 SEED = 42
 torch.manual_seed(SEED)
@@ -27,34 +28,47 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 g = torch.Generator()
 g.manual_seed(SEED)
 
-def build_eval_dataset(audio_dirs, audio_meta_dir, max_pairs=20000):
+def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=20000):
     def find_audio_path(relative_path):
         for audio_dir in audio_dirs:
             audio_path = Path(audio_dir) / relative_path
             if audio_path.exists():
                 return str(audio_path)
         raise FileNotFoundError(f"{relative_path} not found in audio_dirs")
+    
+    meta_data = pd.read_csv(audio_meta_dir, sep=',')
+    # get the SpeakerID and Gender columns
+    meta_data = meta_data[['SpeakerID', 'Gender']]
+    gender = 'm'  # 只選男性進行評估
 
     datalist = []
-    with open(audio_meta_dir, "r") as f:
+    with open(audio_datalist, "r") as f:
         lines = f.readlines()[:max_pairs]
 
     for line in lines:
         line = line.strip().split(" ")
         is_same = int(line[0]); spk1_rel = line[1]; spk2_rel = line[2]
-        spk1_path = find_audio_path(spk1_rel); spk2_path = find_audio_path(spk2_rel)
         spk1_id = spk1_rel.split("/")[0]; spk2_id = spk2_rel.split("/")[0]
-        datalist.append((is_same, spk1_id, spk2_id, spk1_path, spk2_path))
+        # 如果都是男性才加入評估清單
+        spk1_gender = meta_data[meta_data['SpeakerID'] == spk1_id]['Gender'].iloc[0]
+        spk2_gender = meta_data[meta_data['SpeakerID'] == spk2_id]['Gender'].iloc[0]
+        if spk1_gender == gender and spk2_gender == gender:
+            spk1_path = find_audio_path(spk1_rel); spk2_path = find_audio_path(spk2_rel)
+            datalist.append((is_same, spk1_id, spk2_id, spk1_path, spk2_path))
+            
+    print(f"總共找到 {len(datalist)} 對符合性別條件的評估語音對")
     return datalist
 
 train_dataset = Vox2Dataset(
     audio_dir=DATASET_INFO[dataset]['AUDIO_DIR'],
-    audio_meta_dir=DATASET_INFO[dataset]['AUDIO_META_DIR']
+    audio_meta_dir=DATASET_INFO[dataset]['AUDIO_META_DIR'],
+    gender="m"
 )
 
 eval_dataset = build_eval_dataset(
     audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
-    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR']
+    audio_datalist=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DATALIST'],
+    audio_meta_dir=DATASET_INFO['VoxCeleb1']['AUDIO_META_DIR'],
 )
 
 # 使用自定義取樣器 (一次抽出三組索引: 0, 1, 2)

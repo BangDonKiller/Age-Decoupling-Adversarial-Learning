@@ -69,7 +69,7 @@ train_dataset = Vox2Dataset(
 
 eval_dataset = build_eval_dataset(
     audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
-    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_META_DIR'],
+    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DATALIST'],
     max_pairs=20000
 )
 

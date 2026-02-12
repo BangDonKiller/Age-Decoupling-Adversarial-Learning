@@ -62,10 +62,11 @@ class AgeGroupBatchSampler(Sampler):
         return self.num_batches
 
 class Vox2Dataset(Dataset):
-    def __init__(self, audio_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
+    def __init__(self, audio_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, gender = "m", suffix: str = ".wav"):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
         self.target_sr = target_sample_rate
+        self.gender = gender
         self.conv_age = {
             range(0, 21): 0, 
             range(21, 56): 1, 
@@ -82,8 +83,12 @@ class Vox2Dataset(Dataset):
         for _, row in df.iterrows():
             speaker = row.iloc[0]; utt = row.iloc[1]; age = int(row.iloc[2]); gender = row.iloc[3]
             converted_age = self.conv_age.get(next((r for r in self.conv_age if age in r), None), -1)
-            if speaker not in meta_dict: meta_dict[speaker] = {"gender": gender, "utts": {}}
+            if speaker not in meta_dict: 
+                meta_dict[speaker] = {"gender": gender, "utts": {}}
             meta_dict[speaker]["utts"][utt] = {"age": converted_age}
+            
+        # 我只要性別為男性的資料
+        meta_dict = {k: v for k, v in meta_dict.items() if v["gender"] == self.gender}
         return meta_dict
     
     def get_audio_paths(self, num_utts_per_speaker=10):
