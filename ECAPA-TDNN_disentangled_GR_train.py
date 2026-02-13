@@ -28,7 +28,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 g = torch.Generator()
 g.manual_seed(SEED)
 
-def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=20000):
+def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, gender, max_pairs=20000):
     def find_audio_path(relative_path):
         for audio_dir in audio_dirs:
             audio_path = Path(audio_dir) / relative_path
@@ -39,7 +39,7 @@ def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=200
     meta_data = pd.read_csv(audio_meta_dir, sep=',')
     # get the SpeakerID and Gender columns
     meta_data = meta_data[['SpeakerID', 'Gender']]
-    gender = 'm'  # 只選男性進行評估
+    gender = gender  # 只選指定性別進行評估
 
     datalist = []
     with open(audio_datalist, "r") as f:
@@ -49,7 +49,7 @@ def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=200
         line = line.strip().split(" ")
         is_same = int(line[0]); spk1_rel = line[1]; spk2_rel = line[2]
         spk1_id = spk1_rel.split("/")[0]; spk2_id = spk2_rel.split("/")[0]
-        # 如果都是男性才加入評估清單
+        # 如果都是指定性別才加入評估清單
         spk1_gender = meta_data[meta_data['SpeakerID'] == spk1_id]['Gender'].iloc[0]
         spk2_gender = meta_data[meta_data['SpeakerID'] == spk2_id]['Gender'].iloc[0]
         if spk1_gender == gender and spk2_gender == gender:
@@ -59,16 +59,19 @@ def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=200
     print(f"總共找到 {len(datalist)} 對符合性別條件的評估語音對")
     return datalist
 
+gender = "f"  # 只訓練女性說話者
+
 train_dataset = Vox2Dataset(
     audio_dir=DATASET_INFO[dataset]['AUDIO_DIR'],
     audio_meta_dir=DATASET_INFO[dataset]['AUDIO_META_DIR'],
-    gender="m"
+    gender="f"
 )
 
 eval_dataset = build_eval_dataset(
     audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
     audio_datalist=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DATALIST'],
     audio_meta_dir=DATASET_INFO['VoxCeleb1']['AUDIO_META_DIR'],
+    gender="f"
 )
 
 # 使用自定義取樣器 (一次抽出三組索引: 0, 1, 2)
@@ -112,7 +115,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0)
 
 # GR 權重
-LAMBDA_GR = 1
+LAMBDA_GR = 1.0
 
 log_dir = "logs/jfe_gr"; os.makedirs(log_dir, exist_ok=True)
 checkpoint_dir = "checkpoints"; os.makedirs(checkpoint_dir, exist_ok=True)
