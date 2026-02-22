@@ -1,4 +1,3 @@
-# dataloader.py 完整代碼
 import pandas as pd
 from pathlib import Path
 import torch
@@ -62,16 +61,20 @@ class AgeGroupBatchSampler(Sampler):
         return self.num_batches
 
 class Vox2Dataset(Dataset):
-    def __init__(self, audio_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, gender = "m", suffix: str = ".wav"):
+    def __init__(self, audio_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
         self.target_sr = target_sample_rate
-        self.gender = gender
+        # self.gender = gender
         self.conv_age = {
             range(0, 21): 0, 
             range(21, 56): 1, 
             range(56, 80): 2
         }
+        
+        # 性別映射表：將性別標籤轉為數值 feature
+        self.gender2idx = {"f": 0, "m": 1}
+        
         self.meta = self.read_meta_file(self.audio_meta_dir)
         self.datalist = self.get_audio_paths()
         self.speaker2idx = {s: i for i, s in enumerate(sorted(self.meta.keys()))}
@@ -84,23 +87,32 @@ class Vox2Dataset(Dataset):
             speaker = row.iloc[0]; utt = row.iloc[1]; age = int(row.iloc[2]); gender = row.iloc[3]
             converted_age = self.conv_age.get(next((r for r in self.conv_age if age in r), None), -1)
             if speaker not in meta_dict: 
-                meta_dict[speaker] = {"gender": gender, "utts": {}}
+                meta_dict[speaker] = {"gender": gender.lower(), "utts": {}}
             meta_dict[speaker]["utts"][utt] = {"age": converted_age}
             
-        # 我只要性別為男性的資料
-        meta_dict = {k: v for k, v in meta_dict.items() if v["gender"] == self.gender}
+        # 我只要性別為指定的資料 (目前為 f)
+        # meta_dict = {k: v for k, v in meta_dict.items() if v["gender"] == self.gender}
         return meta_dict
     
     def get_audio_paths(self, num_utts_per_speaker=10):
         data_list = []
         for speaker_id, info in self.meta.items():
+            gender = info["gender"]
             utts = list(info["utts"].keys())
-            sampled_utts = random.sample(utts, k=min(num_utts_per_speaker, len(utts)))
+
+            sampled_utts = random.sample(
+                utts,
+                k=min(num_utts_per_speaker, len(utts))
+            )
+
             for utt in sampled_utts:
                 audio_folder = Path(self.audio_dir) / speaker_id / f"{utt}"
                 audio_path = list(audio_folder.rglob(f"*.m4a"))
                 if not audio_path: continue
-                data_list.append((str(audio_path[0]), speaker_id, info["gender"], info["utts"][utt]["age"]))
+
+                utt_info = info["utts"][utt]
+                # 將性別索引也加入 datalist
+                data_list.append((str(audio_path[0]), speaker_id, self.gender2idx[gender], utt_info["age"]))
         return data_list
         
     def _load_and_preprocess_audio(self, file_path: str) -> torch.Tensor:
@@ -112,5 +124,8 @@ class Vox2Dataset(Dataset):
         return signal
 
     def __getitem__(self, idx):
-        path, _, _, age = self.datalist[idx]
-        return self._load_and_preprocess_audio(str(path)), self.speaker2idx[self.datalist[idx][1]], age
+        path, speaker_id, gender_idx, age = self.datalist[idx]
+        speaker_idx = self.speaker2idx[speaker_id]
+        waveform = self._load_and_preprocess_audio(str(path))
+        # 回傳包含性別索引的資料
+        return waveform, speaker_idx, age, gender_idx

@@ -1,3 +1,4 @@
+# JFE.py 完整代碼
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,9 +19,9 @@ class JFENetwork(nn.Module):
         self.backbone.eval()  # 骨幹網路不進行訓練
         self.backbone.requires_grad_(False)
         
-        # 2. 全連接神經層
+        # 2. 全連接神經層 (更新：輸入維度 + 1 以容納性別特徵)
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 512),
+            nn.Linear(input_dim + 1, 512), 
             nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Linear(512, spk_dim + age_dim) # 輸出層被切分為 h1 和 h2
@@ -46,11 +47,16 @@ class JFENetwork(nn.Module):
             nn.Linear(age_dim//2, num_age_groups)
         )
 
-    def forward(self, x, mode):
+    def forward(self, x, gender, mode):
         with torch.no_grad():
             feature = self.backbone(x)
             
-        latent = self.encoder(feature)
+        # --- 性別特徵化 (Gender as Feature) ---
+        # 將性別資訊與原始特徵拼接，餵入 encoder
+        # gender shape: (Batch), 需轉換為 (Batch, 1) 後拼接
+        feature_with_gender = torch.cat((feature, gender.unsqueeze(1).float()), dim=1)
+            
+        latent = self.encoder(feature_with_gender)
             
         # --- 提取 Embedding Vectors ---
         # 1. 提取說話者向量 w_spkr
@@ -97,140 +103,40 @@ class JFENetwork(nn.Module):
         }
 
 class JFELoss(nn.Module):
-    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.1, lambda_recon=1.0, lambda_hsic=1.0, lambda_ortho=0.1, lambda_gr=0.01):
+    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_ortho=0.1):
         super(JFELoss, self).__init__()
         self.lambda_entropy = lambda_entropy
         self.lambda_mapc = lambda_mapc
         self.lambda_recon = lambda_recon
-        self.lambda_hsic = lambda_hsic
         self.lambda_ortho = lambda_ortho
-        self.lambda_gr = lambda_gr
         self.ce_loss_spkr = nn.CrossEntropyLoss()
         self.ce_loss_age = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss()
 
     def compute_entropy(self, logits):
-        """
-        計算 Entropy。
-        公式: H(p) = - sum(p * log(p))
-        我們希望最大化 Entropy，也就是最小化 -Entropy。
-        但在論文公式 (19) 中是減去 Entropy Loss，所以我們這裡返回 H(p)。
-        """
-        probs = F.softmax(logits, dim=1)
-        log_probs = F.log_softmax(logits, dim=1)
-        entropy = -torch.sum(probs * log_probs, dim=1).mean()
-        return entropy
+        probs = F.softmax(logits, dim=1); log_probs = F.log_softmax(logits, dim=1)
+        return -torch.sum(probs * log_probs, dim=1).mean()
 
     def compute_mapc(self, v1, v2):
-        """
-        計算 MAPC (Mean Absolute Pearson's Correlation) -> 論文公式 (18)
-        計算兩個 Embedding 向量在 Batch 維度上的相關性。
-        """
-        # v1, v2 shape: (Batch, Dim)
-        
-        # 1. 去中心化 (Subtract Mean)
-        v1_mean = v1 - v1.mean(dim=0, keepdim=True)
-        v2_mean = v2 - v2.mean(dim=0, keepdim=True)
-        
-        # 2. 計算標準差 (Std), 加上 epsilon 防止除以 0
-        v1_std = v1.std(dim=0, keepdim=True) + 1e-8
-        v2_std = v2.std(dim=0, keepdim=True) + 1e-8
-        
-        # 3. 計算 Covariance
-        # (Batch, Dim) * (Batch, Dim) -> sum over Batch -> (Dim)
-        # 除以 (Batch_Size - 1) 得到協方差，但因為分子分母都會除，可以省略
-        covariance = (v1_mean * v2_mean).mean(dim=0)
-        
-        # 4. 計算 Correlation
-        correlation = covariance / (v1_std.squeeze() * v2_std.squeeze())
-        
-        # 5. 取絕對值並平均
-        mapc = torch.abs(correlation).mean()
-        
-        return mapc
-    
-    def compute_hsic(self, x, y):
-        """
-        新增：計算 HSIC (Hilbert-Schmidt Independence Criterion)
-        作為互資訊 (MI) 的非線性代理損失。
-        x: 身分嵌入 [Batch, 256]
-        y: 年齡標籤 [Batch]
-        """
-        # 1. 準備數據
-        if y.dim() == 1:
-            y = y.view(-1, 1).float()
-        
-        n = x.size(0)
-        
-        # 2. 計算 RBF 核矩陣 (Similarity Matrices)
-        def rbf_kernel(mat):
-            dist = torch.pdist(mat).pow(2)
-            sigma = torch.median(dist) # 使用中位數技巧自動調整頻寬
-            k_mat = torch.exp(-dist / (2 * sigma + 1e-8))
-            # 這裡簡化為直接矩陣運算
-            dists = torch.cdist(mat, mat).pow(2)
-            return torch.exp(-dists / (2 * sigma + 1e-8))
+        v1_m = v1 - v1.mean(dim=0, keepdim=True); v2_m = v2 - v2.mean(dim=0, keepdim=True)
+        v1_s = v1.std(dim=0, keepdim=True) + 1e-8; v2_s = v2.std(dim=0, keepdim=True) + 1e-8
+        corr = (v1_m * v2_m).mean(dim=0) / (v1_s.squeeze() * v2_s.squeeze())
+        return torch.abs(corr).mean()
 
-        K = rbf_kernel(x)
-        L = rbf_kernel(y)
-
-        # 3. 中心化矩陣 H = I - (1/n)11^T
-        H = torch.eye(n).to(x.device) - (1.0 / n) * torch.ones((n, n)).to(x.device)
-
-        # 4. HSIC = trace(KHLH) / (n-1)^2
-        # 我們希望最小化 HSIC
-        hsic = torch.trace(K @ H @ L @ H) / ((n - 1) ** 2)
-        return hsic
-    
     def compute_orthogonal_loss(self, z_id, z_age):
-        """
-        教授建議的正交損失：L_ortho = |z_id^T * z_age|^2
-        目標：讓身份向量與年齡向量在幾何上完全垂直。
-        """
-        # 1. 為了穩定性，我們先將向量做 L2 Normalize (只看角度，不看長度)
-        z_id_norm = F.normalize(z_id, p=2, dim=1)
-        z_age_norm = F.normalize(z_age, p=2, dim=1)
-        
-        # 2. 計算每個樣本的身分與年齡內積 (Batch, 1)
-        # torch.sum(a * b, dim=1) 相當於 a^T * b
-        dot_product = torch.sum(z_id_norm * z_age_norm, dim=1)
-        
-        # 3. 取平方並平均
-        loss_ortho = torch.pow(dot_product, 2).mean()
-        
-        return loss_ortho
+        """實作教授建議的正交損失"""
+        z_id_n = F.normalize(z_id, p=2, dim=1); z_age_n = F.normalize(z_age, p=2, dim=1)
+        return torch.pow(torch.sum(z_id_n * z_age_n, dim=1), 2).mean()
 
     def forward(self, outputs, target_spkr, target_age):
-        """
-        outputs: JFENetwork 的輸出字典
-        target_spkr: 說話者真實標籤
-        target_age: 年齡真實標籤
-        """
-        
-        # 1. Discriminative Losses (公式 14, 15) - 越小越好
         loss_spkr_main = self.ce_loss_spkr(outputs['logits_spkr_main'], target_spkr)
         loss_age_main = self.ce_loss_age(outputs['logits_age_main'], target_age)
-        
-        # 2. Entropy Losses (公式 16, 17) - 越大越好
-        # 注意：論文公式 (19) 是減去這些 Loss。
-        # 這裡我們計算出 entropy 值，稍後在 total loss 做減法
-        entropy_age_sub = self.compute_entropy(outputs['logits_age_sub'])     # w_spkr 猜年齡的困惑度
-        entropy_spkr_sub = self.compute_entropy(outputs['logits_spkr_sub'])   # w_age 猜人的困惑度
-        
-        # 3. MAPC Loss (公式 18) - 越小越好 (我們希望相關性是 0)
-        # 論文寫 "Negative MAPC based disentanglement losses"，並在公式19用減號
-        # 實際上目標是 Minimize MAPC。
-        # 為了方便優化器，我們直接加上 MAPC term。
+        entropy_age_sub = self.compute_entropy(outputs['logits_age_sub'])
+        entropy_spkr_sub = self.compute_entropy(outputs['logits_spkr_sub'])
         loss_mapc = self.compute_mapc(outputs['w_spkr'], outputs['w_age'])
-        
-        # 4. Reconstruction Loss (可選)
         loss_recon = self.mse_loss(outputs['x_recon'], outputs['spkr_emb'])
-        
-        # 5. 樣本間的正交損失 (Orthogonal Loss) - 越小越好
         loss_ortho = self.compute_orthogonal_loss(outputs['w_spkr'], outputs['w_age'])
         
-        # 6. Total Loss (公式 19 的變體)
-        # Minimize: Main_CE + lambda * MAPC - lambda * Entropy + lambda * Causal + lambda * Recon
         total_loss = (loss_spkr_main + loss_age_main) \
                      + (self.lambda_mapc * loss_mapc) \
                      - (self.lambda_entropy * (entropy_age_sub + entropy_spkr_sub)) \
@@ -238,58 +144,7 @@ class JFELoss(nn.Module):
                      + (self.lambda_ortho * loss_ortho)
                      
         return total_loss, {
-            "loss_spkr": loss_spkr_main.item(),
-            "loss_age": loss_age_main.item(),
-            "entropy_age": entropy_age_sub.item(),
-            "entropy_spkr": entropy_spkr_sub.item(),
-            "mapc": loss_mapc.item(),
-            "loss_recon": loss_recon.item(),
-            "loss_ortho": loss_ortho.item(),
+            "loss_spkr": loss_spkr_main.item(), "loss_age": loss_age_main.item(),
+            "entropy_age": entropy_age_sub.item(), "entropy_spkr": entropy_spkr_sub.item(),
+            "mapc": loss_mapc.item(), "loss_recon": loss_recon.item(), "loss_ortho": loss_ortho.item()
         }
-
-# --- 模擬數據與測試 ---
-if __name__ == "__main__":
-    # 設定參數
-    BATCH_SIZE = 32
-    NUM_SPEAKERS = 100
-    NUM_AGE_CLASSES = 5  # 假設將年齡分為 5 個區間 (例如: <20, 20-30, 30-40, 40-50, >50)
-    INPUT_DIM = 30       # MFCC 維度
-    TIME_STEPS = 200     # 語音長度
-    EMBED_DIM = 256
-
-    # 1. 建立模型與 Loss
-    model = JFENetwork(NUM_SPEAKERS, NUM_AGE_CLASSES, INPUT_DIM, EMBED_DIM)
-    criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.5)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-
-    # 2. 產生假數據
-    dummy_input = torch.randn(BATCH_SIZE, INPUT_DIM, TIME_STEPS) # (32, 30, 200)
-    dummy_target_spkr = torch.randint(0, NUM_SPEAKERS, (BATCH_SIZE,))
-    dummy_target_age = torch.randint(0, NUM_AGE_CLASSES, (BATCH_SIZE,))
-
-    # 3. 訓練步驟範例
-    model.train()
-    
-    # Forward
-    outputs = model(dummy_input)
-    
-    # Calculate Loss
-    loss, loss_dict = criterion(outputs, dummy_target_spkr, dummy_target_age)
-    
-    # Backward
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    
-    # 4. 輸出結果檢查
-    print(f"Total Loss: {loss.item():.4f}")
-    print("詳細 Loss 組成:")
-    print(f"  - Speaker CE (Main): {loss_dict['loss_spkr']:.4f} (需下降)")
-    print(f"  - Age CE (Main):     {loss_dict['loss_age']:.4f} (需下降)")
-    print(f"  - MAPC:              {loss_dict['mapc']:.4f} (需下降)")
-    print(f"  - Entropy (Age Sub): {loss_dict['entropy_age']:.4f} (需上升)")
-    
-    # 檢查 Embedding 形狀
-    print(f"\nEmbedding Shape w_spkr: {outputs['w_spkr'].shape}")
-    print(f"Embedding Shape w_age: {outputs['w_age'].shape}")
-    print("測試完成。")
