@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 import csv
 from pathlib import Path
+import pandas as pd
 
 SEED = 42
 
@@ -27,37 +28,30 @@ val_dataset = 'Vox-CA20'
 g = torch.Generator()
 g.manual_seed(SEED)
 
-def build_eval_dataset(audio_dirs, audio_meta_dir, max_pairs=20000):
+def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=20000):
     def find_audio_path(relative_path):
         for audio_dir in audio_dirs:
             audio_path = Path(audio_dir) / relative_path
-            if audio_path.exists():
-                return str(audio_path)
-        raise FileNotFoundError(f"{relative_path} not found in audio_dirs")
+            if audio_path.exists(): return str(audio_path)
+        raise FileNotFoundError(f"{relative_path} not found")
+    
+    meta_data = pd.read_csv(audio_meta_dir, sep=',')
+    meta_data = meta_data[['SpeakerID', 'Gender']]
+    gender_map = {"f": 0, "m": 1}
 
     datalist = []
-    with open(audio_meta_dir, "r") as f:
+    with open(audio_datalist, "r") as f:
         lines = f.readlines()[:max_pairs]
 
     for line in lines:
         line = line.strip().split(" ")
-        is_same = int(line[0])
-
-        spk1_rel = line[1]
-        spk2_rel = line[2]
-
-        spk1_path = find_audio_path(spk1_rel)
-        spk2_path = find_audio_path(spk2_rel)
-
-        spk1_id = spk1_rel.split("/")[0]
-        spk2_id = spk2_rel.split("/")[0]
-
-        datalist.append((is_same, spk1_id, spk2_id, spk1_path, spk2_path))
-
-    pos = sum(1 for x in datalist if x[0] == 1)
-    neg = sum(1 for x in datalist if x[0] == 0)
-    print(f"[Eval] Positive pairs: {pos}, Negative pairs: {neg}")
-    
+        is_same = int(line[0]); spk1_id = line[1].split("/")[0]; spk2_id = line[2].split("/")[0]
+        # 獲取性別標籤
+        g1 = gender_map[meta_data[meta_data['SpeakerID'] == spk1_id]['Gender'].iloc[0].lower()]
+        g2 = gender_map[meta_data[meta_data['SpeakerID'] == spk2_id]['Gender'].iloc[0].lower()]
+        datalist.append((is_same, spk1_id, spk2_id, find_audio_path(line[1]), find_audio_path(line[2]), g1, g2))
+            
+    print(f"總共找到 {len(datalist)} 對評估語音對 (包含所有性別)")
     return datalist
 
 train_dataset = Vox2Dataset(
@@ -69,7 +63,8 @@ train_dataset = Vox2Dataset(
 
 eval_dataset = build_eval_dataset(
     audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
-    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DATALIST'],
+    audio_datalist=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DATALIST'],
+    audio_meta_dir=DATASET_INFO['VoxCeleb1']['AUDIO_META_DIR'],
     max_pairs=20000
 )
 
@@ -102,7 +97,7 @@ def eval_network(model, datalist):
     # Forward (pairwise)
     # =========================
     with torch.no_grad():
-        for is_same, id1, id2, path1, path2 in tqdm(datalist, desc="Evaluating"):
+        for is_same, id1, id2, path1, path2, g1, g2 in tqdm(datalist, desc="Evaluating"):
 
             emb1, sr1 = torchaudio.load(path1)
             emb2, sr2 = torchaudio.load(path2)
@@ -110,8 +105,8 @@ def eval_network(model, datalist):
             emb1 = emb1.to(device)
             emb2 = emb2.to(device)
 
-            out1 = model(emb1, mode="test")
-            out2 = model(emb2, mode="test")
+            out1 = model(emb1, gender=torch.tensor([g1], device=device), mode="test")
+            out2 = model(emb2, gender=torch.tensor([g2], device=device), mode="test")
 
             # -------- Before disentangle (h_spk) --------
             h1 = F.normalize(out1["spkr_emb"], p=2, dim=1)
@@ -179,7 +174,7 @@ model = JFENetwork(
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # Loss Functions
-criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_hsic=0.0, lambda_ortho=1.0)
+criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_ortho=0.0)
 
 # 訓練參數
 EPOCHS = 10
@@ -245,11 +240,11 @@ for epoch in range(EPOCHS):
     correct_id_sub = 0
     total_samples = 0
     
-    for emb, label_spk, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
-        emb, label_spk, label_age = emb.to(device), label_spk.to(device), label_age.to(device)
+    for emb, label_spk, gender, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
+        emb, label_spk, gender, label_age = emb.to(device), label_spk.to(device), gender.to(device), label_age.to(device)
         
         # Forward
-        outputs = model(emb, mode = "train")
+        outputs = model(emb, gender=gender, mode = "train")
 
         # 計算 Loss
         loss, loss_dict = criterion(outputs, label_spk, label_age)

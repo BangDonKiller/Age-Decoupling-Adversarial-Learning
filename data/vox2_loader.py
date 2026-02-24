@@ -199,10 +199,11 @@ class Vox2Dataset(Dataset):
         return signal
 
     def __getitem__(self, idx):
-        path, speaker_id, _, age = self.datalist[idx]
+        path, speaker_id, gender, age = self.datalist[idx]
         speaker_idx = self.speaker2idx[speaker_id]
+        gender_idx = 1 if gender.lower() == 'm' else 0
         waveform = self._load_and_preprocess_audio(str(path))
-        return waveform, speaker_idx, age
+        return waveform, speaker_idx, gender_idx, age
     
 if __name__ == "__main__":
     # 測試 Dataset

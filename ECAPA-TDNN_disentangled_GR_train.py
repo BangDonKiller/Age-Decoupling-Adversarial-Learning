@@ -25,7 +25,8 @@ dataset = 'VoxCeleb2'
 val_dataset = 'Vox-CA20'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-g = torch.Generator(); g.manual_seed(SEED)
+g = torch.Generator()
+g.manual_seed(SEED)
 
 def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=20000):
     def find_audio_path(relative_path):
@@ -118,7 +119,6 @@ for epoch in range(EPOCHS):
     model.train()
     total_train_loss, train_gr_loss = 0, 0
     correct_spk, correct_age, total_samples = 0, 0, 0
-    best_EER = float('inf')
     
     for combined_batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
         embs, spks, ages, genders = combined_batch
