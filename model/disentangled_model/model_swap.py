@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from ..feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
 
-class JFENetwork(nn.Module):
-    def __init__(self, MODEL_ID, input_dim=192, spk_dim=128, age_dim=64, num_speakers=1000, num_age_groups=7):
-        super(JFENetwork, self).__init__()
+class JFENetworkSwap(nn.Module):
+    def __init__(self, MODEL_ID, input_dim=192, spk_dim=256, age_dim=256, num_speakers=5990, num_age_groups=7):
+        super(JFENetworkSwap, self).__init__()
         
         self.spk_dim = spk_dim
         self.age_dim = age_dim
@@ -17,6 +17,7 @@ class JFENetwork(nn.Module):
         self.backbone.eval()
         self.backbone.requires_grad_(False)
         
+        # Encoder: (Feature + Gender) -> Latent
         self.encoder = nn.Sequential(
             nn.Linear(input_dim + 1, 512), 
             nn.BatchNorm1d(512),
@@ -24,6 +25,7 @@ class JFENetwork(nn.Module):
             nn.Linear(512, spk_dim + age_dim)
         )
         
+        # Decoder: Latent -> Feature Reconstruction
         self.decoder = nn.Sequential(
             nn.Linear(spk_dim + age_dim, 512),
             nn.ReLU(),
@@ -41,24 +43,30 @@ class JFENetwork(nn.Module):
             nn.Linear(age_dim//2, num_age_groups)
         )
 
-    def forward(self, x, gender, mode):
-        # 注意：在 train 模式下，為了計算 Jacobian，我們會在 train.py 拆解這個 forward
+    def forward_encoder(self, feature, gender):
+        """輔助函式：讓 feature 重新進入 encoder (用於 Swap 流程)"""
+        feat_gen = torch.cat((feature, gender.unsqueeze(1).float()), dim=1)
+        latent = self.encoder(feat_gen)
+        return latent[:, :self.spk_dim], latent[:, self.spk_dim:]
+
+    def forward(self, x, gender, mode="train"):
         with torch.no_grad():
             feature = self.backbone(x)
         
-        feature_with_gender = torch.cat((feature, gender.unsqueeze(1).float()), dim=1)
-        latent = self.encoder(feature_with_gender)
-        h_spk = latent[:, :self.spk_dim] 
-        h_age = latent[:, self.spk_dim:]
+        h_spk, h_age = self.forward_encoder(feature, gender)
         
         if mode != "train":
             return {"spkr_emb": feature, "w_spkr": h_spk, "w_age": h_age} 
         
+        # 基本分類
         logits_spkr_main = self.classifier_spkr(h_spk)
         logits_age_main = self.classifier_age(h_age)
+        
+        # 洩漏檢測 (對抗/熵用)
         logits_age_sub = self.classifier_age(h_spk)
         logits_spkr_sub = self.classifier_spkr(h_age)
         
+        # 原始重構
         x_recon = self.decoder(torch.cat((h_spk, h_age), dim=1))
         
         return {
@@ -72,15 +80,14 @@ class JFENetwork(nn.Module):
             "x_recon": x_recon
         }
 
-class JFELoss(nn.Module):
-    def __init__(self, lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_ortho=0.1):
-        super(JFELoss, self).__init__()
+class JFELossSwap(nn.Module):
+    def __init__(self, lambda_entropy=0.1, lambda_recon=1.0, lambda_ortho=0.1, lambda_swap=0.5):
+        super(JFELossSwap, self).__init__()
         self.lambda_entropy = lambda_entropy
-        self.lambda_mapc = lambda_mapc
         self.lambda_recon = lambda_recon
         self.lambda_ortho = lambda_ortho
-        self.ce_loss_spkr = nn.CrossEntropyLoss()
-        self.ce_loss_age = nn.CrossEntropyLoss()
+        self.lambda_swap = lambda_swap
+        self.ce_loss = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss()
 
     def compute_entropy(self, logits):
@@ -88,33 +95,41 @@ class JFELoss(nn.Module):
         log_probs = F.log_softmax(logits, dim=1)
         return -torch.sum(probs * log_probs, dim=1).mean()
 
-    def compute_mapc(self, v1, v2):
-        v1_m = v1 - v1.mean(dim=0, keepdim=True); v2_m = v2 - v2.mean(dim=0, keepdim=True)
-        v1_s = v1.std(dim=0, keepdim=True) + 1e-8; v2_s = v2.std(dim=0, keepdim=True) + 1e-8
-        corr = (v1_m * v2_m).mean(dim=0) / (v1_s.squeeze() * v2_s.squeeze())
-        return torch.abs(corr).mean()
-
     def compute_orthogonal_loss(self, z_id, z_age):
-        z_id_n = F.normalize(z_id, p=2, dim=1); z_age_n = F.normalize(z_age, p=2, dim=1)
+        z_id_n = F.normalize(z_id, p=2, dim=1)
+        z_age_n = F.normalize(z_age, p=2, dim=1)
         return torch.pow(torch.sum(z_id_n * z_age_n, dim=1), 2).mean()
 
-    def forward(self, outputs, target_spkr, target_age):
-        loss_spkr_main = self.ce_loss_spkr(outputs['logits_spkr_main'], target_spkr)
-        loss_age_main = self.ce_loss_age(outputs['logits_age_main'], target_age)
-        entropy_age_sub = self.compute_entropy(outputs['logits_age_sub'])
-        entropy_spkr_sub = self.compute_entropy(outputs['logits_spkr_sub'])
-        loss_mapc = self.compute_mapc(outputs['w_spkr'], outputs['w_age'])
-        loss_recon = self.mse_loss(outputs['x_recon'], outputs['spkr_emb'])
+    def forward(self, outputs, target_spkr, target_age, swap_results=None, target_age_swapped=None):
+        # 1. 基礎任務 Loss
+        loss_spkr = self.ce_loss(outputs['logits_spkr_main'], target_spkr)
+        loss_age = self.ce_loss(outputs['logits_age_main'], target_age)
+        
+        # 2. 洩漏懲罰 (Entropy 越大代表洩漏越少)
+        ent_age = self.compute_entropy(outputs['logits_age_sub'])
+        ent_spk = self.compute_entropy(outputs['logits_spkr_sub'])
+        
+        # 3. 幾何約束
         loss_ortho = self.compute_orthogonal_loss(outputs['w_spkr'], outputs['w_age'])
+        loss_recon = self.mse_loss(outputs['x_recon'], outputs['spkr_emb'])
+        
+        # 4. 核心創新：Swap 循環一致性 Loss
+        loss_swap = 0
+        if swap_results is not None:
+            # 重構出的特徵必須保持原來的身份
+            l_swap_spk = self.ce_loss(swap_results['logits_spkr'], target_spkr)
+            # 重構出的特徵必須符合新換過來的年齡
+            l_swap_age = self.ce_loss(swap_results['logits_age'], target_age_swapped)
+            loss_swap = l_swap_spk + l_swap_age
 
-        total_loss = (loss_spkr_main + loss_age_main) \
-                     + (self.lambda_mapc * loss_mapc) \
-                     - (self.lambda_entropy * (entropy_age_sub + entropy_spkr_sub)) \
+        total_loss = (loss_spkr + loss_age) \
+                     - (self.lambda_entropy * (ent_age + ent_spk)) \
                      + (self.lambda_recon * loss_recon) \
                      + (self.lambda_ortho * loss_ortho) \
+                     + (self.lambda_swap * loss_swap)
                      
         return total_loss, {
-            "loss_spkr": loss_spkr_main.item(), "loss_age": loss_age_main.item(),
-            "entropy_age": entropy_age_sub.item(), "entropy_spkr": entropy_spkr_sub.item(),
-            "mapc": loss_mapc.item(), "loss_recon": loss_recon.item(), "loss_ortho": loss_ortho.item(),
+            "loss_spkr": loss_spkr.item(), "loss_age": loss_age.item(), "loss_entropy": (ent_age + ent_spk).item(),
+            "loss_recon": loss_recon.item(), "loss_ortho": loss_ortho.item(),
+            "loss_swap": loss_swap.item() if isinstance(loss_swap, torch.Tensor) else 0
         }

@@ -172,7 +172,6 @@ model = JFENetwork(
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-
 # Loss Functions
 criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_ortho=0.0)
 
