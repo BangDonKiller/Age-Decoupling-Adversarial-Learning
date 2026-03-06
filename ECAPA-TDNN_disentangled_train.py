@@ -11,13 +11,12 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 import csv
 from pathlib import Path
-import pandas as pd
 
-SEED = 42
+# SEED = 42
 
-torch.manual_seed(SEED)
-torch.cuda.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+# torch.manual_seed(SEED)
+# torch.cuda.manual_seed(SEED)
+# torch.cuda.manual_seed_all(SEED)
 
 # ==========================================
 # 1. 資料準備與前處理
@@ -25,33 +24,40 @@ torch.cuda.manual_seed_all(SEED)
 dataset = 'VoxCeleb2'
 val_dataset = 'Vox-CA20'
 
-g = torch.Generator()
-g.manual_seed(SEED)
+# g = torch.Generator()
+# g.manual_seed(SEED)
 
-def build_eval_dataset(audio_dirs, audio_datalist, audio_meta_dir, max_pairs=20000):
+def build_eval_dataset(audio_dirs, audio_meta_dir, max_pairs=20000):
     def find_audio_path(relative_path):
         for audio_dir in audio_dirs:
             audio_path = Path(audio_dir) / relative_path
-            if audio_path.exists(): return str(audio_path)
-        raise FileNotFoundError(f"{relative_path} not found")
-    
-    meta_data = pd.read_csv(audio_meta_dir, sep=',')
-    meta_data = meta_data[['SpeakerID', 'Gender']]
-    gender_map = {"f": 0, "m": 1}
+            if audio_path.exists():
+                return str(audio_path)
+        raise FileNotFoundError(f"{relative_path} not found in audio_dirs")
 
     datalist = []
-    with open(audio_datalist, "r") as f:
+    with open(audio_meta_dir, "r") as f:
         lines = f.readlines()[:max_pairs]
 
     for line in lines:
         line = line.strip().split(" ")
-        is_same = int(line[0]); spk1_id = line[1].split("/")[0]; spk2_id = line[2].split("/")[0]
-        # 獲取性別標籤
-        g1 = gender_map[meta_data[meta_data['SpeakerID'] == spk1_id]['Gender'].iloc[0].lower()]
-        g2 = gender_map[meta_data[meta_data['SpeakerID'] == spk2_id]['Gender'].iloc[0].lower()]
-        datalist.append((is_same, spk1_id, spk2_id, find_audio_path(line[1]), find_audio_path(line[2]), g1, g2))
-            
-    print(f"總共找到 {len(datalist)} 對評估語音對 (包含所有性別)")
+        is_same = int(line[0])
+
+        spk1_rel = line[1]
+        spk2_rel = line[2]
+
+        spk1_path = find_audio_path(spk1_rel)
+        spk2_path = find_audio_path(spk2_rel)
+
+        spk1_id = spk1_rel.split("/")[0]
+        spk2_id = spk2_rel.split("/")[0]
+
+        datalist.append((is_same, spk1_id, spk2_id, spk1_path, spk2_path))
+
+    pos = sum(1 for x in datalist if x[0] == 1)
+    neg = sum(1 for x in datalist if x[0] == 0)
+    print(f"[Eval] Positive pairs: {pos}, Negative pairs: {neg}")
+
     return datalist
 
 train_dataset = Vox2Dataset(
@@ -63,8 +69,7 @@ train_dataset = Vox2Dataset(
 
 eval_dataset = build_eval_dataset(
     audio_dirs=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DIR'],
-    audio_datalist=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DATALIST'],
-    audio_meta_dir=DATASET_INFO['VoxCeleb1']['AUDIO_META_DIR'],
+    audio_meta_dir=DATASET_INFO['VoxCeleb1'][val_dataset]['AUDIO_DATALIST'],
     max_pairs=20000
 )
 
@@ -97,7 +102,7 @@ def eval_network(model, datalist):
     # Forward (pairwise)
     # =========================
     with torch.no_grad():
-        for is_same, id1, id2, path1, path2, g1, g2 in tqdm(datalist, desc="Evaluating"):
+        for is_same, id1, id2, path1, path2 in tqdm(datalist, desc="Evaluating"):
 
             emb1, sr1 = torchaudio.load(path1)
             emb2, sr2 = torchaudio.load(path2)
@@ -105,8 +110,8 @@ def eval_network(model, datalist):
             emb1 = emb1.to(device)
             emb2 = emb2.to(device)
 
-            out1 = model(emb1, gender=torch.tensor([g1], device=device), mode="test")
-            out2 = model(emb2, gender=torch.tensor([g2], device=device), mode="test")
+            out1 = model(emb1, mode="test")
+            out2 = model(emb2, mode="test")
 
             # -------- Before disentangle (h_spk) --------
             h1 = F.normalize(out1["spkr_emb"], p=2, dim=1)
@@ -154,7 +159,8 @@ def eval_network(model, datalist):
 
 # 封裝成 DataLoader
 BATCH_SIZE = BATCH_SIZE
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
+
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # ==========================================
 # 2. 模型初始化
@@ -172,11 +178,12 @@ model = JFENetwork(
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
 # Loss Functions
-criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0, lambda_ortho=0.0)
+criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0)
 
 # 訓練參數
-EPOCHS = 10
+EPOCHS = 30
 best_val_loss = float('inf')
 best_score_balanced = -float('inf')
 best_spk_acc = 0.0
@@ -206,7 +213,6 @@ csv_writer.writerow([
     "train_entropy_spkr",
     "train_mapc",
     "train_recon_loss",
-    "train_ortho_loss",
     "train_spk_acc",
     "train_age_acc",
     "train_age_leak",
@@ -224,7 +230,7 @@ print(f"Start training on {device}...")
 
 for epoch in range(EPOCHS):
     model.train()
-    
+
     total_train_loss = 0.0
     train_loss_spkr = 0.0
     train_loss_age = 0.0
@@ -232,27 +238,26 @@ for epoch in range(EPOCHS):
     train_entropy_spkr = 0.0
     train_mapc = 0.0
     train_recon_loss = 0.0
-    train_ortho_loss = 0.0
+
     correct_spk = 0
     correct_age = 0
     correct_age_sub = 0
     correct_id_sub = 0
     total_samples = 0
-    
-    for emb, label_spk, gender, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
-        emb, label_spk, gender, label_age = emb.to(device), label_spk.to(device), gender.to(device), label_age.to(device)
-        
+
+    for emb, label_spk, _, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
+        emb, label_spk, _, label_age = emb.to(device), label_spk.to(device), _.to(device), label_age.to(device)
+
         # Forward
-        outputs = model(emb, gender=gender, mode = "train")
+        outputs = model(emb, mode = "train")
 
         # 計算 Loss
         loss, loss_dict = criterion(outputs, label_spk, label_age)
-        
-        # 反向傳播與優化
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        
+
         total_train_loss += loss.item()
         train_loss_spkr += loss_dict['loss_spkr']
         train_loss_age += loss_dict['loss_age']
@@ -260,8 +265,7 @@ for epoch in range(EPOCHS):
         train_entropy_spkr += loss_dict['entropy_spkr']
         train_mapc += loss_dict['mapc']
         train_recon_loss += loss_dict['loss_recon']
-        train_ortho_loss += loss_dict['loss_ortho']
-        
+
         # 計算準確率 (監控用)
         _, pred_s_main = torch.max(outputs['logits_spkr_main'], 1) # 從 h_spk 預測說話者
         _, pred_a_main = torch.max(outputs['logits_age_main'], 1) # 從 h_age 預測年齡
@@ -272,7 +276,7 @@ for epoch in range(EPOCHS):
         correct_id_sub += (pred_s_sub == label_spk).sum().item()
         correct_age_sub += (pred_a_sub == label_age).sum().item()
         total_samples += emb.size(0)
-        
+
     avg_loss = total_train_loss / len(train_loader)
     avg_loss_spkr = train_loss_spkr / len(train_loader)
     avg_loss_age = train_loss_age / len(train_loader)
@@ -280,12 +284,13 @@ for epoch in range(EPOCHS):
     avg_entropy_spkr = train_entropy_spkr / len(train_loader)
     avg_mapc = train_mapc / len(train_loader)
     avg_recon_loss = train_recon_loss / len(train_loader)
-    avg_ortho_loss = train_ortho_loss / len(train_loader)
+
+
     acc_spk = 100 * correct_spk / total_samples
     acc_age = 100 * correct_age / total_samples
     acc_age_leak = 100 * correct_age_sub / total_samples
     acc_id_leak = 100 * correct_id_sub / total_samples
-    
+
     # ==========================================
     # 4. 驗證迴圈
     # ==========================================
@@ -294,7 +299,7 @@ for epoch in range(EPOCHS):
         eval_dataset
     )
 
-    
+
     if best_EER > eer_after:
         best_EER = eer_after
         torch.save(model.state_dict(), f'./checkpoints/{val_dataset}_best_model.pth')
@@ -304,7 +309,7 @@ for epoch in range(EPOCHS):
             'ids': final_ids,
         }, os.path.join(checkpoint_dir, f'{val_dataset}_best_disentangled_embeddings.pt'))
         print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
-        
+
     if epoch == EPOCHS - 1:
         torch.save(model.state_dict(), f'./checkpoints/{val_dataset}_last_model.pth')
         torch.save({   
@@ -313,11 +318,11 @@ for epoch in range(EPOCHS):
             'ids': final_ids,
         }, os.path.join(checkpoint_dir, f'{val_dataset}_last_disentangled_embeddings.pt'))
         print("儲存最終模型。")
-    
-    
+
+
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
-          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} | Recon Loss: {avg_recon_loss:.4f} | Ortho Loss: {avg_ortho_loss:.4f}"
-          f"\n|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
+          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} | Recon Loss: {avg_recon_loss:.4f} | "
+          f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
     # TensorBoard logging
@@ -329,11 +334,12 @@ for epoch in range(EPOCHS):
     writer.add_scalar("Entropy/Train_Spk", avg_entropy_spkr, epoch)
     writer.add_scalar("MAPC/Train", avg_mapc, epoch)
     writer.add_scalar("Loss/Train_Recon", avg_recon_loss, epoch)
-    writer.add_scalar("Loss/Train_Ortho", avg_ortho_loss, epoch)
+
     writer.add_scalar("Accuracy/Train_Spk", acc_spk, epoch)
     writer.add_scalar("Accuracy/Train_Age", acc_age, epoch)
     writer.add_scalar("Leak/Train_Age", acc_age_leak, epoch)
     writer.add_scalar("Leak/Train_ID", acc_id_leak, epoch)
+    
     writer.add_scalar("EER/Val_Before_Disentangle", eer_before, epoch)
     writer.add_scalar("EER/Val_After_Disentangle", eer_after, epoch)
 
@@ -349,7 +355,6 @@ for epoch in range(EPOCHS):
         avg_entropy_spkr,
         avg_mapc,
         avg_recon_loss,
-        avg_ortho_loss,
         acc_spk,
         acc_age,
         acc_age_leak,
@@ -361,5 +366,3 @@ for epoch in range(EPOCHS):
 
 writer.close()
 csv_file.close()
-
-print("Training Finished!")
