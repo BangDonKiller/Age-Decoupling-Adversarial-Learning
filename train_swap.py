@@ -108,7 +108,7 @@ eval_data = build_eval_dataset(
 # ==========================================
 model = JFENetworkSwap(MODEL_ID, input_dim=192, spk_dim=256, age_dim=256).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-criterion = JFELossSwap(lambda_entropy=0.1, lambda_recon=1.0, lambda_ortho=0.0, lambda_swap=1.0)
+criterion = JFELossSwap(lambda_entropy=0.1, lambda_recon=1.0, lambda_ortho=0.0, lambda_swap=1.0, lambda_emb_recon=1.0)
 
 log_dir = "logs/jfe_swap"
 os.makedirs(log_dir, exist_ok=True)
@@ -126,6 +126,8 @@ csv_writer.writerow([
     "Loss_Age",
     "Loss_Entropy",
     "Loss_Recon",
+    "Loss_Recon_Emb_Spk",
+    "Loss_Recon_Emb_Age",
     "Loss_Swap",
     "Loss_Ortho",
     "EER_Before",
@@ -135,7 +137,7 @@ csv_writer.writerow([
 # ==========================================
 # 5. 訓練迴圈 (核心：交換重構)
 # ==========================================
-EPOCHS = 10
+EPOCHS = 30
 best_eer = float('inf')
 
 for epoch in range(EPOCHS):
@@ -159,6 +161,9 @@ for epoch in range(EPOCHS):
         
         # --- Step 3: 合成新特徵並重新驗證 ---
         # 這裡是創新點：將 A 的身分 + B 的年齡丟進 Decoder 生成合成特徵
+        h_spk = outputs['w_spkr']  # 原始的 spk embedding
+        h_age = outputs['w_age']   # 原始的 age embedding
+        
         x_swap_recon = model.decoder(torch.cat((h_spk, h_age_swapped), dim=1))
         
         # 檢查合成特徵是否真的具備 A 的身分與 B 的年齡
@@ -168,12 +173,15 @@ for epoch in range(EPOCHS):
             'logits_spkr': model.classifier_spkr(h_spk_reswap),
             'logits_age': model.classifier_age(h_age_reswap)
         }
-        # swap_results = None
 
         # --- Step 4: 計算 Loss 並更新 ---
         loss, loss_dict = criterion(outputs, label_spk, label_age, 
                                     swap_results=swap_results, 
-                                    target_age_swapped=target_age_swapped)
+                                    target_age_swapped=target_age_swapped,
+                                    h_spk_reswap=h_spk_reswap,
+                                    h_age_reswap=h_age_reswap,
+                                    h_spk_orig=h_spk,
+                                    h_age_orig=h_age)
         
         optimizer.zero_grad()
         loss.backward()
@@ -202,6 +210,8 @@ for epoch in range(EPOCHS):
     avg_loss_age = total_metrics["loss_age"] / num_batches
     avg_loss_entropy = total_metrics["loss_entropy"] / num_batches
     avg_loss_recon = total_metrics["loss_recon"] / num_batches
+    avg_loss_emb_spk = total_metrics.get("loss_emb_spk", 0) / num_batches
+    avg_loss_emb_age = total_metrics.get("loss_emb_age", 0) / num_batches
     avg_loss_swap = total_metrics["loss_swap"] / num_batches
     avg_loss_ortho = total_metrics["loss_ortho"] / num_batches
 
@@ -226,6 +236,8 @@ for epoch in range(EPOCHS):
         f"{avg_loss_age:.4f}",
         f"{avg_loss_entropy:.4f}",
         f"{avg_loss_recon:.4f}",
+        f"{avg_loss_emb_spk:.4f}",
+        f"{avg_loss_emb_age:.4f}",
         f"{avg_loss_swap:.4f}",
         f"{avg_loss_ortho:.4f}",
         f"{eer_before*100:.2f}",

@@ -81,12 +81,13 @@ class JFENetworkSwap(nn.Module):
         }
 
 class JFELossSwap(nn.Module):
-    def __init__(self, lambda_entropy=0.1, lambda_recon=1.0, lambda_ortho=0.1, lambda_swap=0.5):
+    def __init__(self, lambda_entropy=0.1, lambda_recon=1.0, lambda_ortho=0.1, lambda_swap=0.5, lambda_emb_recon=0.5):
         super(JFELossSwap, self).__init__()
         self.lambda_entropy = lambda_entropy
         self.lambda_recon = lambda_recon
         self.lambda_ortho = lambda_ortho
         self.lambda_swap = lambda_swap
+        self.lambda_emb_recon = lambda_emb_recon
         self.ce_loss = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss()
 
@@ -100,7 +101,8 @@ class JFELossSwap(nn.Module):
         z_age_n = F.normalize(z_age, p=2, dim=1)
         return torch.pow(torch.sum(z_id_n * z_age_n, dim=1), 2).mean()
 
-    def forward(self, outputs, target_spkr, target_age, swap_results=None, target_age_swapped=None):
+    def forward(self, outputs, target_spkr, target_age, swap_results=None, target_age_swapped=None, 
+                h_spk_reswap=None, h_age_reswap=None, h_spk_orig=None, h_age_orig=None):
         # 1. 基礎任務 Loss
         loss_spkr = self.ce_loss(outputs['logits_spkr_main'], target_spkr)
         loss_age = self.ce_loss(outputs['logits_age_main'], target_age)
@@ -110,10 +112,24 @@ class JFELossSwap(nn.Module):
         ent_spk = self.compute_entropy(outputs['logits_spkr_sub'])
         
         # 3. 幾何約束
-        loss_ortho = self.compute_orthogonal_loss(outputs['w_spkr'], outputs['w_age'])
+        # loss_ortho = self.compute_orthogonal_loss(outputs['w_spkr'], outputs['w_age'])
+        loss_ortho = 0.0
         loss_recon = self.mse_loss(outputs['x_recon'], outputs['spkr_emb'])
         
-        # 4. 核心創新：Swap 循環一致性 Loss
+        # 4. Embedding 重建損失 (特徵交換後的循環一致性)
+        loss_emb_spk = 0
+        loss_emb_age = 0
+        if h_spk_reswap is not None and h_spk_orig is not None:
+            # h_spk 經過交換和重建後應保持相似 (spk 維度不變)
+            loss_emb_spk = self.mse_loss(h_spk_reswap, h_spk_orig)
+        
+        if h_age_reswap is not None and h_age_orig is not None:
+            # h_age 經過交換和重建後可能有偏差，但應該相对接近
+            loss_emb_age = self.mse_loss(h_age_reswap, h_age_orig)
+        
+        loss_emb_recon = loss_emb_spk + loss_emb_age
+        
+        # 5. 核心創新：Swap 循環一致性 Loss
         loss_swap = 0
         if swap_results is not None:
             # 重構出的特徵必須保持原來的身份
@@ -126,10 +142,17 @@ class JFELossSwap(nn.Module):
                      - (self.lambda_entropy * (ent_age + ent_spk)) \
                      + (self.lambda_recon * loss_recon) \
                      + (self.lambda_ortho * loss_ortho) \
-                     + (self.lambda_swap * loss_swap)
+                     + (self.lambda_swap * loss_swap) \
+                     + (self.lambda_emb_recon * loss_emb_recon)
                      
         return total_loss, {
-            "loss_spkr": loss_spkr.item(), "loss_age": loss_age.item(), "loss_entropy": (ent_age + ent_spk).item(),
-            "loss_recon": loss_recon.item(), "loss_ortho": loss_ortho.item(),
-            "loss_swap": loss_swap.item() if isinstance(loss_swap, torch.Tensor) else 0
+            "loss_spkr": loss_spkr.item(), 
+            "loss_age": loss_age.item(), 
+            "loss_entropy": (ent_age + ent_spk).item(),
+            "loss_recon": loss_recon.item(), 
+            "loss_ortho": loss_ortho.item(),
+            "loss_swap": loss_swap.item() if isinstance(loss_swap, torch.Tensor) else 0,
+            "loss_emb_spk": loss_emb_spk.item() if isinstance(loss_emb_spk, torch.Tensor) else 0,
+            "loss_emb_age": loss_emb_age.item() if isinstance(loss_emb_age, torch.Tensor) else 0,
+            "loss_emb_recon": loss_emb_recon.item() if isinstance(loss_emb_recon, torch.Tensor) else 0
         }
