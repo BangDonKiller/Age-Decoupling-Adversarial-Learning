@@ -183,7 +183,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0)
 
 # 訓練參數
-EPOCHS = 30
+EPOCHS = 20
 best_val_loss = float('inf')
 best_score_balanced = -float('inf')
 best_spk_acc = 0.0

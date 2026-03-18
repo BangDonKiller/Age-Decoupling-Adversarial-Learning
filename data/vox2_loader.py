@@ -1,21 +1,43 @@
-# Vox2 在解耦處理時只用於訓練，不做評估
 import pandas as pd
 from pathlib import Path
 import torch
 import torchaudio
-import torchaudio.transforms as T
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import random
-from collections import Counter
+import glob
+import os
 
 class Vox2Dataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
 
-    def __init__(self, audio_dir: str, audio_meta_dir: str, target_sample_rate: int = 16000, suffix: str = ".wav"):
+    def __init__(self, audio_dir: str, audio_meta_dir: str, musan_path, rir_path, augment=False, num_frames=200, suffix: str = ".wav"):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
-        self.target_sr = target_sample_rate
+        self.augment = augment
+        self.num_frames = num_frames
         
+        # 定義噪音類型與對應 SNR 範圍與數量
+        self.noisetypes = ['noise','speech','music']
+        self.noisesnr = {'noise':[0,15],'speech':[13,20],'music':[5,15]}
+        self.numnoise = {'noise':[1,1], 'speech':[3,8], 'music':[1,1]}
+
+        # 建立噪音資料清單
+        self.noiselist = {}
+        augment_files = glob.glob(os.path.join(musan_path,'*/*/*.wav'))
+        for file in augment_files:
+            if file.split('\\')[-3] not in self.noiselist:
+                self.noiselist[file.split('\\')[-3]] = []
+            self.noiselist[file.split('\\')[-3]].append(file)
+            
+        # for noisetype, files in self.noiselist.items():
+        #     print(f"  {noisetype}: {len(files)} 個檔案")
+
+        # 讀取混響 RIR 檔案
+        self.rir_files = glob.glob(os.path.join(rir_path,'*/*/*.wav'))
+        
+        # print(f"  RIR 檔案數量: {len(self.rir_files)}")
+
         self.conv_age = {
             range(0, 21): 0,
             range(21, 31): 1,
@@ -40,35 +62,9 @@ class Vox2Dataset(Dataset):
         }
         
         self.num_age_classes = len(self.conv_age)
-        # self.age_class_weights = self._calculate_age_weights()
 
     def __len__(self):
         return len(self.datalist)
-    
-    def _calculate_age_weights(self):
-        """[新增] 計算解決 Long Tail 問題的類別權重"""
-        print("正在計算年齡類別權重 (Class Balancing)...")
-        
-        # 1. 從 datalist 中提取所有的年齡標籤 (index 3 是 age)
-        all_ages = [item[3] for item in self.datalist]
-        
-        # 2. 統計每個類別的數量
-        counts = Counter(all_ages)
-        total_samples = len(all_ages)
-        weights = []
-        
-        # 3. 計算逆類別頻率權重
-        for i in range(self.num_age_classes):
-            count = counts.get(i, 0)
-            if count > 0:
-                # 公式: N_total / (N_classes * N_samples_of_class)
-                w = total_samples / (self.num_age_classes * count)
-            else:
-                w = 1.0 # 理論上不該發生，防呆
-            weights.append(w)
-            # print(f"  Age Group {i}: {count} samples -> Weight: {w:.4f}")
-            
-        return torch.FloatTensor(weights)
     
     def read_meta_file(self, meta_path: str):
         """
@@ -180,23 +176,119 @@ class Vox2Dataset(Dataset):
     def _load_and_preprocess_audio(self, file_path: str) -> torch.Tensor:
         """load + resample + mono"""
         signal, fs = torchaudio.load(file_path)
-        
-        # 切成三秒長的音訊
-        if signal.shape[1] > fs * 3:
-            signal = signal[:, : fs * 3]
-        else:
-            padding = fs * 3 - signal.shape[1]
-            signal = torch.nn.functional.pad(signal, (0, padding))
 
-        # Resample
-        if fs != self.target_sr:
-            signal = T.Resample(orig_freq=fs, new_freq=self.target_sr)(signal)
+        if fs != 16000:
+            signal = torchaudio.functional.resample(signal, fs, 16000)
 
         # Mono
         if signal.shape[0] > 1:
             signal = torch.mean(signal, dim=0, keepdim=True)
 
-        return signal
+        audio = self._match_waveform_length(signal, self._target_num_samples())
+        
+        if self.augment:
+            augtype = random.randint(0, 5)
+            if augtype == 0:   # 原始資料
+                audio = signal
+            elif augtype == 1: # 混響
+                audio = self.add_rev(signal)
+            elif augtype == 2: # 語音型噪音（多人講話）
+                audio = self.add_noise(signal, 'speech')
+            elif augtype == 3: # 音樂噪音
+                audio = self.add_noise(signal, 'music')
+            elif augtype == 4: # 背景噪音
+                audio = self.add_noise(signal, 'noise')
+            elif augtype == 5: # 混合噪音（電視情境）
+                audio = self.add_noise(signal, 'speech')
+                audio = self.add_noise(audio, 'music')
+            
+        audio = audio.squeeze(0)  # [1, T] -> [T]
+                
+        return audio
+
+    def _target_num_samples(self) -> int:
+        return self.num_frames * 160 + 240
+
+    def _match_waveform_length(self, waveform: torch.Tensor, target_length: int) -> torch.Tensor:
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+
+        current_length = waveform.shape[1]
+        if current_length == 0:
+            return torch.zeros((1, target_length), dtype=waveform.dtype, device=waveform.device)
+
+        if current_length < target_length:
+            shortage = target_length - current_length
+            wrap_indices = torch.arange(shortage, device=waveform.device) % current_length
+            waveform = torch.cat((waveform, waveform[:, wrap_indices]), dim=1)
+            current_length = waveform.shape[1]
+
+        start_frame = random.randint(0, current_length - target_length)
+        waveform = waveform[:, start_frame:start_frame + target_length]
+
+        return waveform
+
+    def _load_augmentation_audio(self, file_path: str, target_length: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        waveform, sample_rate = torchaudio.load(file_path)
+        if sample_rate != 16000:
+            waveform = torchaudio.functional.resample(waveform, sample_rate, 16000)
+
+        waveform = self._match_waveform_length(waveform, target_length)
+        return waveform.to(device=device, dtype=dtype)
+    
+    def add_rev(self, audio):
+        """
+        加入混響效果：
+        - 從 RIR 檔案中選擇一個
+        - 與原始語音做卷積模擬混響
+        """
+        target_length = self._target_num_samples()
+        audio = self._match_waveform_length(audio, target_length)
+        rir_file = random.choice(self.rir_files)
+        rir = self._load_augmentation_audio(rir_file, target_length, audio.device, audio.dtype)
+        rir = rir / torch.linalg.vector_norm(rir, ord=2).clamp_min(1e-6)
+        reverberated = F.conv1d(
+            audio.unsqueeze(0),
+            rir.flip(-1).unsqueeze(0),
+            padding=rir.shape[-1] - 1,
+        ).squeeze(0)
+        return reverberated[:, :target_length]
+
+    def add_noise(self, audio, noisecat):
+        """
+        加入背景噪音：
+        - 根據類型選擇 SNR、數量
+        - 從噪音資料集中隨機取出
+        - 根據 SNR 調整音量後加入語音
+        """
+        target_length = self._target_num_samples()
+        audio = self._match_waveform_length(audio, target_length)
+        
+        # 計算乾淨語音的平均功率 (DB)
+        clean_db = 10 * torch.log10(audio.pow(2).mean().clamp_min(1e-4))
+        
+        # 決定加入的噪音數量和選擇噪音檔案
+        numnoise = self.numnoise[noisecat]
+        noiselist = random.sample(self.noiselist[noisecat], random.randint(numnoise[0], numnoise[1]))
+        
+        
+        noises = []
+        for noise in noiselist:
+            noiseaudio = self._load_augmentation_audio(noise, target_length, audio.device, audio.dtype)
+            noise_db = 10 * torch.log10(noiseaudio.pow(2).mean().clamp_min(1e-4))
+            
+            # 確定目標的信噪比 (SNR)
+            noisesnr = random.uniform(self.noisesnr[noisecat][0], self.noisesnr[noisecat][1])
+            scale = torch.pow(
+                torch.tensor(10.0, dtype=audio.dtype, device=audio.device),
+                (clean_db - noise_db - noisesnr) / 20.0,
+            )
+            noises.append(scale * noiseaudio)
+        noise = torch.cat(noises, dim=0).sum(dim=0, keepdim=True)
+        return noise + audio
 
     def __getitem__(self, idx):
         path, speaker_id, gender, age = self.datalist[idx]
@@ -210,7 +302,13 @@ if __name__ == "__main__":
     audio_dir = "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac"
     audio_meta_dir = "D:\\Dataset\\VoxCeleb2\\vox2_meta.csv"
     
-    dataset = Vox2Dataset(audio_dir, audio_meta_dir, suffix=".m4a")
+    dataset = Vox2Dataset(
+        audio_dir, 
+        audio_meta_dir,
+        musan_path="D:\\Dataset\\musan\\musan",
+        rir_path="D:\\Dataset\\sim_rir_16k\\simulated_rirs_16k",    
+        suffix=".m4a"
+    )
     print(f"Dataset size: {len(dataset)}")
     
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True)

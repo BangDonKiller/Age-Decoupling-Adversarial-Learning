@@ -22,8 +22,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 64
 
 MODEL_list = {
-    # "ECAPA-TDNN": "speechbrain/spkrec-ecapa-voxceleb",
-    "ECAPA-TDNN": "yangwang825/ecapa-tdnn-vox2",
+    "ECAPA-TDNN": "speechbrain/spkrec-ecapa-voxceleb",
+    # "ECAPA-TDNN": "yangwang825/ecapa-tdnn-vox2",
     "ResNet34": "speechbrain/spkrec-resnet-voxceleb",
     "x-vector": "",
 }
@@ -71,6 +71,7 @@ DATASET_INFO = {
     "VoxCeleb2": {
         "AUDIO_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_dev_wav\\dev\\aac",
         "AUDIO_META_DIR": "D:\\Dataset\\VoxCeleb2\\vox2_meta.csv",
+        "TRAIN_LIST": "D:\\Dataset\\VoxCeleb2\\train_list.txt",
         "audio_suffix": ".m4a",
     },
     "LibriSpeech": {
@@ -86,5 +87,11 @@ DATASET_INFO = {
         "AUDIO_DIR": "D:\\Dataset\\TIMIT\\data\\TRAIN",
         "AUDIO_META_DIR": "D:\\Dataset\\TIMIT\\train_meta_data.csv",
         "audio_suffix": ".wav",
+    },
+    "MUSAN": {
+        "AUDIO_DIR": "D:\\Dataset\\musan\\musan",
+    },
+    "RIR": {
+        "AUDIO_DIR": "D:\\Dataset\\sim_rir_16k\\simulated_rirs_16k",
     },
 }
