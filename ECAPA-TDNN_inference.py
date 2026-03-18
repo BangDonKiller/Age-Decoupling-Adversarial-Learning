@@ -1,5 +1,5 @@
 import torch
-from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+from model.feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 # from data.vox1_loader import InferenceDataset
 from data.vox2_loader import InferenceDataset
 # from data.librispeech_loader import InferenceDataset

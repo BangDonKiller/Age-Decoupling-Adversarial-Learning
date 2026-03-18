@@ -18,7 +18,7 @@ import opensmile
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+from model.feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 from params.param import DATASET_INFO, MODEL_ID, DEVICE, BATCH_SIZE
 # from data.librispeech_loader import InferenceDataset
 # from data.vox2_loader import InferenceDataset

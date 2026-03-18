@@ -4,7 +4,7 @@ import numpy as np
 from collections import Counter
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+from model.feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 from data.vox2_loader_ver2 import Vox2Dataset
 from params.param import BATCH_SIZE, MODEL_ID, DATASET_INFO, DEVICE
 

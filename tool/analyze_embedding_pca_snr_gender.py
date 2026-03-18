@@ -13,7 +13,7 @@ from tqdm import tqdm
 # from data.vox1_loader import InferenceDataset
 from data.GLOBE_loader import InferenceDataset
 # from data.librispeech_loader import InferenceDataset
-from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+from model.feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 from params.param import DEVICE, BATCH_SIZE, DATASET_INFO, MODEL_ID
 
 

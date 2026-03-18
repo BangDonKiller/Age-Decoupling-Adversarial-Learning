@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+from ..feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 
 class JFENetwork(nn.Module):
     def __init__(self, MODEL_ID, input_dim=192, spk_dim=128, age_dim=64, num_speakers=1000, num_age_groups=7):

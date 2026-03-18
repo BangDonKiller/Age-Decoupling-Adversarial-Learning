@@ -18,7 +18,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 # 請確保這些模組路徑正確
-from model.feature_extractor.speechbrain_model import SpeakerEmbeddingExtractor
+from model.feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 from params.param import DATASET_INFO, MODEL_ID, DEVICE, BATCH_SIZE
 
 # 根據你的資料集選擇 Loader
