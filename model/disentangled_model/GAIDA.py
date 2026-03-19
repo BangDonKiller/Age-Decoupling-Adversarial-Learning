@@ -11,6 +11,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 from feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 
+
+class GradientReversalFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, lambd):
+        ctx.lambd = lambd
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambd * grad_output, None
+
+
+class GradientReversal(nn.Module):
+    def __init__(self, lambd=1.0):
+        super().__init__()
+        self.lambd = lambd
+
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambd)
+
 class ChannelShuffle(nn.Module):
     def __init__(self, groups):
         super(ChannelShuffle, self).__init__()
@@ -141,6 +161,21 @@ class G_AIDA(nn.Module):
             nn.Linear(128, num_age_groups)
         )
 
+        self.grl_id_to_age = GradientReversal(lambd=1.0)
+        self.grl_age_to_id = GradientReversal(lambd=1.0)
+
+        self.adv_classifier_age_from_id = nn.Sequential(
+            nn.Linear(zid_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_age_groups)
+        )
+
+        self.adv_classifier_id_from_age = nn.Sequential(
+            nn.Linear(zbio_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_speakers)
+        )
+
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
@@ -175,6 +210,9 @@ class G_AIDA(nn.Module):
 
         logits_id = self.classifier_id(z_id)
         logits_age = self.classifier_age(z_bio)
+
+        logits_adv_age_from_id = self.adv_classifier_age_from_id(self.grl_id_to_age(z_id))
+        logits_adv_id_from_age = self.adv_classifier_id_from_age(self.grl_age_to_id(z_bio))
         
         return {
             "recon_x": recon_x,
@@ -185,11 +223,24 @@ class G_AIDA(nn.Module):
             "z_id": z_id,
             "z_bio": z_bio,
             "logits_id": logits_id,
-            "logits_age": logits_age
+            "logits_age": logits_age,
+            "logits_adv_age_from_id": logits_adv_age_from_id,
+            "logits_adv_id_from_age": logits_adv_id_from_age
         }
 
 class G_AIDA_Loss(nn.Module):
-    def __init__(self, lambda_recon=1.0, lambda_kl_id=1.0, lambda_kl_bio=1.0, lambda_mi=0.1, lambda_gender=0.1, lambda_spk=1.0, lambda_age=1.0):
+    def __init__(
+        self,
+        lambda_recon=1.0,
+        lambda_kl_id=1.0,
+        lambda_kl_bio=1.0,
+        lambda_mi=0.0,
+        lambda_gender=0.1,
+        lambda_spk=1.0,
+        lambda_age=1.0,
+        lambda_adv_age=0.5,
+        lambda_adv_spk=0.5,
+    ):
         super().__init__()
         self.lambda_recon = lambda_recon
         self.base_lambda_kl_id = lambda_kl_id
@@ -201,16 +252,18 @@ class G_AIDA_Loss(nn.Module):
         self.lambda_gender = lambda_gender
         self.lambda_spk = lambda_spk
         self.lambda_age = lambda_age
+        self.lambda_adv_age = lambda_adv_age
+        self.lambda_adv_spk = lambda_adv_spk
 
         self.mse_loss = nn.MSELoss()
         self.nll_loss = nn.NLLLoss()
         self.ce_loss = nn.CrossEntropyLoss()
 
-    def set_kl_mi_warmup_factor(self, warmup_factor):
-        warmup_factor = float(max(0.0, min(1.0, warmup_factor)))
-        self.lambda_kl_id = self.base_lambda_kl_id * warmup_factor
-        self.lambda_kl_bio = self.base_lambda_kl_bio * warmup_factor
-        self.lambda_mi = self.base_lambda_mi * warmup_factor
+    # def set_kl_mi_warmup_factor(self, warmup_factor):
+    #     warmup_factor = float(max(0.0, min(1.0, warmup_factor)))
+    #     self.lambda_kl_id = self.base_lambda_kl_id * warmup_factor
+    #     self.lambda_kl_bio = self.base_lambda_kl_bio * warmup_factor
+    #     self.lambda_mi = self.base_lambda_mi * warmup_factor
 
     def compute_kl(self, mu, logvar, prior_mu=None):
         """
@@ -276,14 +329,12 @@ class G_AIDA_Loss(nn.Module):
             target_gender_cls = target_gender.long().view(-1)
 
         target_age_cls = None
-        prior_mu_bio = None
         if target_age is not None:
             target_age_cls = target_age.long().view(-1)
-            target_age_prior = target_age_cls.float().view(-1, 1)
-            prior_mu_bio = target_age_prior.expand_as(outputs["mu_bio"])
-        loss_kl_bio = self.compute_kl(outputs["mu_bio"], outputs["logvar_bio"], prior_mu=prior_mu_bio)
+        loss_kl_bio = self.compute_kl(outputs["mu_bio"], outputs["logvar_bio"])
 
-        loss_mi = self.compute_mutual_information_gaussian(outputs["z_id"], outputs["z_bio"])
+        loss_mi = 0.0
+        # loss_mi = self.compute_mutual_information_gaussian(outputs["z_id"], outputs["z_bio"])
 
         loss_gender = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
         if target_gender_cls is not None:
@@ -298,22 +349,35 @@ class G_AIDA_Loss(nn.Module):
         if target_age_cls is not None:
             loss_age = self.ce_loss(outputs["logits_age"], target_age_cls)
 
+        loss_adv_age = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
+        if target_age_cls is not None:
+            loss_adv_age = self.ce_loss(outputs["logits_adv_age_from_id"], target_age_cls)
+
+        loss_adv_spk = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
+        if target_spk_cls is not None:
+            loss_adv_spk = self.ce_loss(outputs["logits_adv_id_from_age"], target_spk_cls)
+
         total_loss = (self.lambda_recon * loss_recon) \
                      + (self.lambda_kl_id * loss_kl_id) \
                      + (self.lambda_kl_bio * loss_kl_bio) \
                      + (self.lambda_mi * loss_mi) \
                      + (self.lambda_gender * loss_gender) \
                      + (self.lambda_spk * loss_spk) \
-                     + (self.lambda_age * loss_age)
+                     + (self.lambda_age * loss_age) \
+                     + (self.lambda_adv_age * loss_adv_age) \
+                     + (self.lambda_adv_spk * loss_adv_spk)
 
         return total_loss, {
             "loss_recon": loss_recon.item(),
             "loss_kl_id": loss_kl_id.item(),
             "loss_kl_bio": loss_kl_bio.item(),
-            "loss_mi": loss_mi.item(),
+            "loss_mi": loss_mi,
+            # "loss_mi": loss_mi.item(),
             "loss_gender": loss_gender.item() if isinstance(loss_gender, torch.Tensor) else 0.0,
             "loss_spk": loss_spk.item() if isinstance(loss_spk, torch.Tensor) else 0.0,
-            "loss_age": loss_age.item() if isinstance(loss_age, torch.Tensor) else 0.0
+            "loss_age": loss_age.item() if isinstance(loss_age, torch.Tensor) else 0.0,
+            "loss_adv_age": loss_adv_age.item() if isinstance(loss_adv_age, torch.Tensor) else 0.0,
+            "loss_adv_spk": loss_adv_spk.item() if isinstance(loss_adv_spk, torch.Tensor) else 0.0,
         }
 
 # --- 測試模型 ---
@@ -329,7 +393,12 @@ if __name__ == "__main__":
     
     # implement loss
     criterion = G_AIDA_Loss(lambda_recon=1.0, lambda_kl_id=1.0, lambda_kl_bio=0.1, lambda_mi=0.1, lambda_gender=0.0).to(device)
-    total_loss, loss_dict = criterion(outputs, target_age=torch.tensor([25, 30, 22, 28, 35, 40, 20, 27], device=device), target_gender=torch.tensor([0, 1, 0, 1, 0, 1, 0, 1], device=device)) # 假設前4個是女性(0)，後4個是男性(1)
+    total_loss, loss_dict = criterion(
+        outputs,
+        target_spk=torch.randint(0, 5990, (8,), device=device),
+        target_age=torch.randint(0, 7, (8,), device=device),
+        target_gender=torch.tensor([0, 1, 0, 1, 0, 1, 0, 1], device=device)
+    )
     
     print(f"輸入尺寸: {mock_input.shape}")
     print(f"還原尺寸: {outputs['recon_x'].shape}")

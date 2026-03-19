@@ -11,11 +11,12 @@ import os
 class Vox2Dataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
 
-    def __init__(self, audio_dir: str, audio_meta_dir: str, musan_path, rir_path, augment=False, num_frames=200, suffix: str = ".wav"):
+    def __init__(self, audio_dir: str, audio_meta_dir: str, musan_path, rir_path, augment=False, num_frames=200, suffix: str = ".wav", age_target_mode: str = "raw"):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
         self.augment = augment
         self.num_frames = num_frames
+        self.age_target_mode = age_target_mode
         
         # 定義噪音類型與對應 SNR 範圍與數量
         self.noisetypes = ['noise','speech','music']
@@ -101,14 +102,20 @@ class Vox2Dataset(Dataset):
         for _, row in df.iterrows():
             speaker = row["speaker_id"] if "speaker_id" in df.columns else row.iloc[0]
             utt = row["utterance"] if "utterance" in df.columns else row.iloc[1]
-            # turn age into age group
+            # turn age into age group / raw age
             age_str = row["age"] if "age" in df.columns else row.iloc[2]
-            
-            # 年齡分群
             age = int(age_str)
+
             converted_age = self.conv_age.get(next((r for r in self.conv_age if age in r), None), -1)
             if converted_age == -1:
                 print(f"Unknown age group: {age} for speaker {speaker}")
+
+            if self.age_target_mode == "group":
+                age_target = converted_age
+            elif self.age_target_mode == "raw":
+                age_target = age
+            else:
+                raise ValueError(f"Unsupported age_target_mode: {self.age_target_mode}")
             
             gender = row["gender"] if "gender" in df.columns else row.iloc[3]
 
@@ -121,7 +128,7 @@ class Vox2Dataset(Dataset):
 
             # 同一 speaker 底下加入不同 utterance
             meta_dict[speaker]["utts"][utt] = {
-                "age": converted_age
+                "age": age_target
             }
             
         # print the speaker count

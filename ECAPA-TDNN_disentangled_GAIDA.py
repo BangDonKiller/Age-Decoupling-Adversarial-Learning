@@ -56,7 +56,8 @@ train_dataset = Vox2Dataset(
     audio_meta_dir=DATASET_INFO[dataset]['AUDIO_META_DIR'],
     musan_path=DATASET_INFO["MUSAN"]['AUDIO_DIR'],
     rir_path=DATASET_INFO["RIR"]['AUDIO_DIR'],
-    suffix=DATASET_INFO[dataset]['audio_suffix']
+    suffix=DATASET_INFO[dataset]['audio_suffix'],
+    age_target_mode="group"
 )
 
 eval_dataset = build_eval_dataset(
@@ -165,8 +166,7 @@ model = G_AIDA(
     input_dim=192, 
     zid_dim=256, 
     zbio_dim=256, 
-    num_speakers=5990,
-    num_age_groups=7
+    num_speakers=5990
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -174,7 +174,9 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 # Loss Functions
 criterion = G_AIDA_Loss(
     lambda_kl_id=0.2,
-    lambda_kl_bio=0.2
+    lambda_kl_bio=0.2,
+    lambda_adv_age=0.1,
+    lambda_adv_spk=0.1,
 )
 
 # 訓練參數
@@ -185,6 +187,16 @@ best_score_balanced = -float('inf')
 best_spk_acc = 0.0
 best_leak_privacy = float('inf')
 best_EER = float('inf')
+
+# LR Scheduler (Cosine Annealing)
+MIN_LR = 1e-5
+COSINE_STEP_EPOCHS = 1  # 依目前 CSV 的 epoch 粒度，建議每 1 個 epoch 更新一次
+cosine_updates = max(1, EPOCHS // COSINE_STEP_EPOCHS)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer,
+    T_max=cosine_updates,
+    eta_min=MIN_LR
+)
 
 # ==========================================
 # TensorBoard & CSV Logger
@@ -202,6 +214,7 @@ csv_writer = csv.writer(csv_file)
 
 csv_writer.writerow([
     "epoch",
+    "lr",
     "warmup_factor",
     "train_loss",
     "train_loss_kl_id",
@@ -210,9 +223,14 @@ csv_writer.writerow([
     "train_loss_gender",
     "train_loss_spk",
     "train_loss_age",
+    "train_loss_adv_age",
+    "train_loss_adv_spk",
     "train_recon_loss",
     "train_spk_acc",
     "train_age_acc",
+    "train_gender_acc",
+    "train_adv_age_acc",
+    "train_adv_spk_acc",
     "val_eer_before",
     "val_eer_after"
 ])
@@ -226,9 +244,10 @@ print(f"Start training on {device}...")
 
 for epoch in range(EPOCHS):
     model.train()
+    current_lr = optimizer.param_groups[0]["lr"]
 
     warmup_factor = min(1.0, (epoch + 1) / WARMUP_EPOCHS)
-    criterion.set_kl_mi_warmup_factor(warmup_factor)
+    # criterion.set_kl_mi_warmup_factor(warmup_factor)
 
     total_train_loss = 0.0
     train_loss_kl_id = 0.0
@@ -237,17 +256,22 @@ for epoch in range(EPOCHS):
     train_loss_gender = 0.0
     train_loss_spk = 0.0
     train_loss_age = 0.0
+    train_loss_adv_age = 0.0
+    train_loss_adv_spk = 0.0
     train_recon_loss = 0.0
 
     correct_spk = 0
     correct_age = 0
+    correct_gender = 0
+    correct_adv_age = 0
+    correct_adv_spk = 0
     total_samples = 0
 
     for emb, label_spk, label_gender, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
         emb = emb.to(device)
         label_spk = label_spk.to(device)
         label_gender = label_gender.to(device)
-        label_age = label_age.to(device)
+        label_age = label_age.to(device).long()
 
         # Forward
         outputs = model(emb)
@@ -271,13 +295,21 @@ for epoch in range(EPOCHS):
         train_loss_gender += loss_dict['loss_gender']
         train_loss_spk += loss_dict['loss_spk']
         train_loss_age += loss_dict['loss_age']
+        train_loss_adv_age += loss_dict['loss_adv_age']
+        train_loss_adv_spk += loss_dict['loss_adv_spk']
         train_recon_loss += loss_dict['loss_recon']
 
         # 計算準確率 (監控用)
         _, pred_s_main = torch.max(outputs['logits_id'], 1)  # 從 z_id 預測說話者
-        _, pred_a_main = torch.max(outputs['logits_age'], 1)  # 從 z_bio 預測年齡
+        _, pred_a_main = torch.max(outputs['logits_age'], 1)  # 從 z_bio 分類年齡群
+        _, pred_gender = torch.max(outputs['gender_prob'], 1)  # 性別自感知分類
+        _, pred_adv_age = torch.max(outputs['logits_adv_age_from_id'], 1)  # 從 z_id 對抗預測年齡
+        _, pred_adv_spk = torch.max(outputs['logits_adv_id_from_age'], 1)  # 從 z_bio 對抗預測說話者
         correct_spk += (pred_s_main == label_spk).sum().item()
-        correct_age += (pred_a_main == label_age).sum().item()
+        correct_age += (pred_a_main == label_age.long()).sum().item()
+        correct_gender += (pred_gender == label_gender.long()).sum().item()
+        correct_adv_age += (pred_adv_age == label_age.long()).sum().item()
+        correct_adv_spk += (pred_adv_spk == label_spk).sum().item()
         total_samples += emb.size(0)
 
     avg_loss = total_train_loss / len(train_loader)
@@ -287,11 +319,16 @@ for epoch in range(EPOCHS):
     avg_loss_gender = train_loss_gender / len(train_loader)
     avg_loss_spk = train_loss_spk / len(train_loader)
     avg_loss_age = train_loss_age / len(train_loader)
+    avg_loss_adv_age = train_loss_adv_age / len(train_loader)
+    avg_loss_adv_spk = train_loss_adv_spk / len(train_loader)
     avg_recon_loss = train_recon_loss / len(train_loader)
 
 
     acc_spk = 100 * correct_spk / total_samples
     acc_age = 100 * correct_age / total_samples
+    acc_gender = 100 * correct_gender / total_samples
+    acc_adv_age = 100 * correct_adv_age / total_samples
+    acc_adv_spk = 100 * correct_adv_spk / total_samples
 
     # ==========================================
     # 4. 驗證迴圈
@@ -323,7 +360,7 @@ for epoch in range(EPOCHS):
 
 
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
-            f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | KL_id: {avg_loss_kl_id:.4f} | KL_bio: {avg_loss_kl_bio:.4f} | MI: {avg_loss_mi:.4f} | Gender: {avg_loss_gender:.4f} | Spk CE: {avg_loss_spk:.4f} | Age CE: {avg_loss_age:.4f} | Recon Loss: {avg_recon_loss:.4f} | Warmup: {warmup_factor:.2f} | "
+            f"LR: {current_lr:.6f} | Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Gender Acc: {acc_gender:.2f}% | Adv Age Acc: {acc_adv_age:.2f}% | Adv Spk Acc: {acc_adv_spk:.2f}% | KL_id: {avg_loss_kl_id:.4f} | KL_bio: {avg_loss_kl_bio:.4f} | MI: {avg_loss_mi:.4f} | Gender: {avg_loss_gender:.4f} | Spk CE: {avg_loss_spk:.4f} | Age CE: {avg_loss_age:.4f} | Adv Age: {avg_loss_adv_age:.4f} | Adv Spk: {avg_loss_adv_spk:.4f} | Recon Loss: {avg_recon_loss:.4f} | Warmup: {warmup_factor:.2f} | "
           f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
@@ -336,11 +373,17 @@ for epoch in range(EPOCHS):
     writer.add_scalar("Loss/Gender", avg_loss_gender, epoch)
     writer.add_scalar("Loss/Spk_CE", avg_loss_spk, epoch)
     writer.add_scalar("Loss/Age_CE", avg_loss_age, epoch)
+    writer.add_scalar("Loss/Adv_Age_From_ID", avg_loss_adv_age, epoch)
+    writer.add_scalar("Loss/Adv_Spk_From_Age", avg_loss_adv_spk, epoch)
     writer.add_scalar("Loss/Train_Recon", avg_recon_loss, epoch)
     writer.add_scalar("Warmup/KL_MI_Factor", warmup_factor, epoch)
 
     writer.add_scalar("Accuracy/Train_Spk", acc_spk, epoch)
     writer.add_scalar("Accuracy/Train_Age", acc_age, epoch)
+    writer.add_scalar("Accuracy/Train_Gender", acc_gender, epoch)
+    writer.add_scalar("Accuracy/Train_Adv_Age_From_ID", acc_adv_age, epoch)
+    writer.add_scalar("Accuracy/Train_Adv_Spk_From_Age", acc_adv_spk, epoch)
+    writer.add_scalar("LR", current_lr, epoch)
     
     writer.add_scalar("EER/Val_Before_Disentangle", eer_before, epoch)
     writer.add_scalar("EER/Val_After_Disentangle", eer_after, epoch)
@@ -350,6 +393,7 @@ for epoch in range(EPOCHS):
     # ==========================================
     csv_writer.writerow([
         epoch + 1,
+        current_lr,
         warmup_factor,
         avg_loss,
         avg_loss_kl_id,
@@ -358,13 +402,21 @@ for epoch in range(EPOCHS):
         avg_loss_gender,
         avg_loss_spk,
         avg_loss_age,
+        avg_loss_adv_age,
+        avg_loss_adv_spk,
         avg_recon_loss,
         acc_spk,
         acc_age,
+        acc_gender,
+        acc_adv_age,
+        acc_adv_spk,
         eer_before,
         eer_after
     ])
     csv_file.flush() 
+
+    if (epoch + 1) % COSINE_STEP_EPOCHS == 0:
+        scheduler.step()
 
 writer.close()
 csv_file.close()
