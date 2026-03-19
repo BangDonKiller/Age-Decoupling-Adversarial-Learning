@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from model.disentangled_model.JFE import JFENetwork, JFELoss
+from model.disentangled_model.GAIDA import G_AIDA, G_AIDA_Loss
 from tool.EER import compute_eer
 from data.vox2_loader import Vox2Dataset
 from params.param import DATASET_INFO, BATCH_SIZE, MODEL_ID
@@ -12,20 +12,11 @@ import os
 import csv
 from pathlib import Path
 
-# SEED = 42
-
-# torch.manual_seed(SEED)
-# torch.cuda.manual_seed(SEED)
-# torch.cuda.manual_seed_all(SEED)
-
 # ==========================================
 # 1. 資料準備與前處理
 # ==========================================
 dataset = 'VoxCeleb2'
 val_dataset = 'Vox-CA20'
-
-# g = torch.Generator()
-# g.manual_seed(SEED)
 
 def build_eval_dataset(audio_dirs, audio_meta_dir, max_pairs=20000):
     def find_audio_path(relative_path):
@@ -111,8 +102,8 @@ def eval_network(model, datalist):
             emb1 = emb1.to(device)
             emb2 = emb2.to(device)
 
-            out1 = model(emb1, mode="test")
-            out2 = model(emb2, mode="test")
+            out1 = model(emb1)
+            out2 = model(emb2)
 
             # -------- Before disentangle (h_spk) --------
             h1 = F.normalize(out1["spkr_emb"], p=2, dim=1)
@@ -124,15 +115,15 @@ def eval_network(model, datalist):
             before_embs.append(out1["spkr_emb"].cpu())
             before_embs.append(out2["spkr_emb"].cpu())
 
-            # -------- After disentangle (w_spkr) --------
-            w1 = F.normalize(out1["w_spkr"], p=2, dim=1)
-            w2 = F.normalize(out2["w_spkr"], p=2, dim=1)
+            # -------- After disentangle (z_id) --------
+            w1 = F.normalize(out1["mu_id"], p=2, dim=1)
+            w2 = F.normalize(out2["mu_id"], p=2, dim=1)
 
             score_after = F.cosine_similarity(w1, w2).cpu()
             after_scores.append(score_after)
 
-            after_embs.append(out1["w_spkr"].cpu())
-            after_embs.append(out2["w_spkr"].cpu())
+            after_embs.append(out1["mu_id"].cpu())
+            after_embs.append(out2["mu_id"].cpu())
 
             labels.append(is_same)
             final_ids.extend([id1, id2])
@@ -169,11 +160,11 @@ train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 根據你的資料自動設定參數
-model = JFENetwork(
+model = G_AIDA(
     MODEL_ID,
     input_dim=192, 
-    spk_dim=256, 
-    age_dim=256, 
+    zid_dim=256, 
+    zbio_dim=256, 
     num_speakers=5990,
     num_age_groups=7
 ).to(device)
@@ -181,10 +172,14 @@ model = JFENetwork(
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # Loss Functions
-criterion = JFELoss(lambda_entropy=0.1, lambda_mapc=0.0, lambda_recon=1.0)
+criterion = G_AIDA_Loss(
+    lambda_kl_id=0.2,
+    lambda_kl_bio=0.2
+)
 
 # 訓練參數
 EPOCHS = 20
+WARMUP_EPOCHS = 12
 best_val_loss = float('inf')
 best_score_balanced = -float('inf')
 best_spk_acc = 0.0
@@ -194,7 +189,7 @@ best_EER = float('inf')
 # ==========================================
 # TensorBoard & CSV Logger
 # ==========================================
-log_dir = "logs/jfe"
+log_dir = "logs/GAIDA"
 checkpoint_dir = "checkpoints"
 os.makedirs(log_dir, exist_ok=True)
 os.makedirs(checkpoint_dir, exist_ok=True)
@@ -207,17 +202,17 @@ csv_writer = csv.writer(csv_file)
 
 csv_writer.writerow([
     "epoch",
+    "warmup_factor",
     "train_loss",
-    "train_loss_spkr",
+    "train_loss_kl_id",
+    "train_loss_kl_bio",
+    "train_loss_mi",
+    "train_loss_gender",
+    "train_loss_spk",
     "train_loss_age",
-    "train_entropy_age",
-    "train_entropy_spkr",
-    "train_mapc",
     "train_recon_loss",
     "train_spk_acc",
     "train_age_acc",
-    "train_age_leak",
-    "train_id_leak",
     "val_eer_before",
     "val_eer_after"
 ])
@@ -232,65 +227,71 @@ print(f"Start training on {device}...")
 for epoch in range(EPOCHS):
     model.train()
 
+    warmup_factor = min(1.0, (epoch + 1) / WARMUP_EPOCHS)
+    criterion.set_kl_mi_warmup_factor(warmup_factor)
+
     total_train_loss = 0.0
-    train_loss_spkr = 0.0
+    train_loss_kl_id = 0.0
+    train_loss_kl_bio = 0.0
+    train_loss_mi = 0.0
+    train_loss_gender = 0.0
+    train_loss_spk = 0.0
     train_loss_age = 0.0
-    train_entropy_age = 0.0
-    train_entropy_spkr = 0.0
-    train_mapc = 0.0
     train_recon_loss = 0.0
 
     correct_spk = 0
     correct_age = 0
-    correct_age_sub = 0
-    correct_id_sub = 0
     total_samples = 0
 
-    for emb, label_spk, _, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
-        emb, label_spk, _, label_age = emb.to(device), label_spk.to(device), _.to(device), label_age.to(device)
+    for emb, label_spk, label_gender, label_age in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
+        emb = emb.to(device)
+        label_spk = label_spk.to(device)
+        label_gender = label_gender.to(device)
+        label_age = label_age.to(device)
 
         # Forward
-        outputs = model(emb, mode = "train")
+        outputs = model(emb)
 
         # 計算 Loss
-        loss, loss_dict = criterion(outputs, label_spk, label_age)
+        loss, loss_dict = criterion(
+            outputs,
+            target_spk=label_spk,
+            target_age=label_age,
+            target_gender=label_gender
+        )
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         total_train_loss += loss.item()
-        train_loss_spkr += loss_dict['loss_spkr']
+        train_loss_kl_id += loss_dict['loss_kl_id']
+        train_loss_kl_bio += loss_dict['loss_kl_bio']
+        train_loss_mi += loss_dict['loss_mi']
+        train_loss_gender += loss_dict['loss_gender']
+        train_loss_spk += loss_dict['loss_spk']
         train_loss_age += loss_dict['loss_age']
-        train_entropy_age += loss_dict['entropy_age']
-        train_entropy_spkr += loss_dict['entropy_spkr']
-        train_mapc += loss_dict['mapc']
         train_recon_loss += loss_dict['loss_recon']
 
         # 計算準確率 (監控用)
-        _, pred_s_main = torch.max(outputs['logits_spkr_main'], 1) # 從 h_spk 預測說話者
-        _, pred_a_main = torch.max(outputs['logits_age_main'], 1) # 從 h_age 預測年齡
-        _, pred_s_sub = torch.max(outputs['logits_spkr_sub'], 1) # 從 h_age 預測說話者 (洩漏)
-        _, pred_a_sub = torch.max(outputs['logits_age_sub'], 1) # 從 h_spk 預測年齡 (洩漏)
+        _, pred_s_main = torch.max(outputs['logits_id'], 1)  # 從 z_id 預測說話者
+        _, pred_a_main = torch.max(outputs['logits_age'], 1)  # 從 z_bio 預測年齡
         correct_spk += (pred_s_main == label_spk).sum().item()
         correct_age += (pred_a_main == label_age).sum().item()
-        correct_id_sub += (pred_s_sub == label_spk).sum().item()
-        correct_age_sub += (pred_a_sub == label_age).sum().item()
         total_samples += emb.size(0)
 
     avg_loss = total_train_loss / len(train_loader)
-    avg_loss_spkr = train_loss_spkr / len(train_loader)
+    avg_loss_kl_id = train_loss_kl_id / len(train_loader)
+    avg_loss_kl_bio = train_loss_kl_bio / len(train_loader)
+    avg_loss_mi = train_loss_mi / len(train_loader)
+    avg_loss_gender = train_loss_gender / len(train_loader)
+    avg_loss_spk = train_loss_spk / len(train_loader)
     avg_loss_age = train_loss_age / len(train_loader)
-    avg_entropy_age = train_entropy_age / len(train_loader)
-    avg_entropy_spkr = train_entropy_spkr / len(train_loader)
-    avg_mapc = train_mapc / len(train_loader)
     avg_recon_loss = train_recon_loss / len(train_loader)
 
 
     acc_spk = 100 * correct_spk / total_samples
     acc_age = 100 * correct_age / total_samples
-    acc_age_leak = 100 * correct_age_sub / total_samples
-    acc_id_leak = 100 * correct_id_sub / total_samples
 
     # ==========================================
     # 4. 驗證迴圈
@@ -322,24 +323,24 @@ for epoch in range(EPOCHS):
 
 
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
-          f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Age Leak: {acc_age_leak:.2f}% | ID Leak: {acc_id_leak:.2f}% | Correlation: {avg_mapc:.4f} | Recon Loss: {avg_recon_loss:.4f} | "
+            f"Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | KL_id: {avg_loss_kl_id:.4f} | KL_bio: {avg_loss_kl_bio:.4f} | MI: {avg_loss_mi:.4f} | Gender: {avg_loss_gender:.4f} | Spk CE: {avg_loss_spk:.4f} | Age CE: {avg_loss_age:.4f} | Recon Loss: {avg_recon_loss:.4f} | Warmup: {warmup_factor:.2f} | "
           f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
     # TensorBoard logging
     # ==========================================
     writer.add_scalar("Loss/Train", avg_loss, epoch)
-    writer.add_scalar("Loss/Train_Spk", avg_loss_spkr, epoch)
-    writer.add_scalar("Loss/Train_Age", avg_loss_age, epoch)
-    writer.add_scalar("Entropy/Train_Age", avg_entropy_age, epoch)
-    writer.add_scalar("Entropy/Train_Spk", avg_entropy_spkr, epoch)
-    writer.add_scalar("MAPC/Train", avg_mapc, epoch)
+    writer.add_scalar("Loss/KL_ID", avg_loss_kl_id, epoch)
+    writer.add_scalar("Loss/KL_BIO", avg_loss_kl_bio, epoch)
+    writer.add_scalar("Loss/MI", avg_loss_mi, epoch)
+    writer.add_scalar("Loss/Gender", avg_loss_gender, epoch)
+    writer.add_scalar("Loss/Spk_CE", avg_loss_spk, epoch)
+    writer.add_scalar("Loss/Age_CE", avg_loss_age, epoch)
     writer.add_scalar("Loss/Train_Recon", avg_recon_loss, epoch)
+    writer.add_scalar("Warmup/KL_MI_Factor", warmup_factor, epoch)
 
     writer.add_scalar("Accuracy/Train_Spk", acc_spk, epoch)
     writer.add_scalar("Accuracy/Train_Age", acc_age, epoch)
-    writer.add_scalar("Leak/Train_Age", acc_age_leak, epoch)
-    writer.add_scalar("Leak/Train_ID", acc_id_leak, epoch)
     
     writer.add_scalar("EER/Val_Before_Disentangle", eer_before, epoch)
     writer.add_scalar("EER/Val_After_Disentangle", eer_after, epoch)
@@ -349,17 +350,17 @@ for epoch in range(EPOCHS):
     # ==========================================
     csv_writer.writerow([
         epoch + 1,
+        warmup_factor,
         avg_loss,
-        avg_loss_spkr,
+        avg_loss_kl_id,
+        avg_loss_kl_bio,
+        avg_loss_mi,
+        avg_loss_gender,
+        avg_loss_spk,
         avg_loss_age,
-        avg_entropy_age,
-        avg_entropy_spkr,
-        avg_mapc,
         avg_recon_loss,
         acc_spk,
         acc_age,
-        acc_age_leak,
-        acc_id_leak,
         eer_before,
         eer_after
     ])

@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model.feature_extractor.ECAPA_TDNN import SpeakerEmbeddingExtractor
+from feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 
 class ChannelShuffle(nn.Module):
     def __init__(self, groups):
@@ -92,30 +92,35 @@ class HyperGating(nn.Module):
         return x * gamma + beta
 
 class G_AIDA(nn.Module):
-    def __init__(self, input_dim=192, zid_dim=128, zbio_dim=64, num_speakers=5990, num_age_groups=7):
+    def __init__(self, model_id, input_dim=192, zid_dim=128, zbio_dim=64, num_speakers=5990, num_age_groups=7):
         super().__init__()
         
         self.speaker_model = SpeakerEmbeddingExtractor(
+            model_id=model_id,
             device="cuda" if torch.cuda.is_available() else "cpu",
         )
+        self.speaker_model.eval()  # 固定 ECAPA-TDNN 的權重，不參與訓練
+        self.speaker_model.requires_grad_(False)
         
         # 1. Shared Encoder (RFRB)
         self.shared_encoder = RFRBEncoder(input_dim=input_dim, hidden_dim=256)
+        self.shared_dim = 256
+        self.half_shared_dim = self.shared_dim // 2
         
         # 2. Gender Self-Sensing
         self.gender_predictor = GenderPredictor(input_dim=input_dim)
         
         # 3. Hyper-Gating
-        self.hyper_gating = HyperGating(gender_dim=2, feature_dim=256)
+        self.hyper_gating = HyperGating(gender_dim=2, feature_dim=self.half_shared_dim)
         
         # 4. VAE Heads (輸出兩組均值與標準差)
         # Z_id: 身分特徵 (不受性別調製)
-        self.fc_mu_id = nn.Linear(256, zid_dim)
-        self.fc_logvar_id = nn.Linear(256, zid_dim)
+        self.fc_mu_id = nn.Linear(self.half_shared_dim, zid_dim)
+        self.fc_logvar_id = nn.Linear(self.half_shared_dim, zid_dim)
         
         # Z_bio: 生物特徵 (受性別調製)
-        self.fc_mu_bio = nn.Linear(256, zbio_dim)
-        self.fc_logvar_bio = nn.Linear(256, zbio_dim)
+        self.fc_mu_bio = nn.Linear(self.half_shared_dim, zbio_dim)
+        self.fc_logvar_bio = nn.Linear(self.half_shared_dim, zbio_dim)
         
         # 5. Placeholder Decoder (暫時替代)
         self.decoder = nn.Sequential(
@@ -149,13 +154,14 @@ class G_AIDA(nn.Module):
         
         # B. Shared Encoding
         h_shared = self.shared_encoder(x)
+        h_id, h_age = torch.chunk(h_shared, 2, dim=-1)
         
         # C. 門控調製 (只針對 Z_bio 的路徑)
-        h_bio = self.hyper_gating(gender_prob, h_shared)
+        h_bio = self.hyper_gating(gender_prob, h_age)
         
         # D. 生成 Z_id 分佈
-        mu_id = self.fc_mu_id(h_shared)
-        logvar_id = self.fc_logvar_id(h_shared)
+        mu_id = self.fc_mu_id(h_id)
+        logvar_id = self.fc_logvar_id(h_id)
         z_id = self.reparameterize(mu_id, logvar_id)
         
         # E. 生成 Z_bio 分佈
@@ -176,23 +182,35 @@ class G_AIDA(nn.Module):
             "mu_id": mu_id, "logvar_id": logvar_id,
             "mu_bio": mu_bio, "logvar_bio": logvar_bio,
             "gender_prob": gender_prob,
-            "z_id": z_id, # 推論時主要拿這個做語者驗證
+            "z_id": z_id,
             "z_bio": z_bio,
             "logits_id": logits_id,
             "logits_age": logits_age
         }
 
 class G_AIDA_Loss(nn.Module):
-    def __init__(self, lambda_recon=1.0, lambda_kl_id=1.0, lambda_kl_bio=1.0, lambda_mi=0.1, lambda_gender=0.0):
+    def __init__(self, lambda_recon=1.0, lambda_kl_id=1.0, lambda_kl_bio=1.0, lambda_mi=0.1, lambda_gender=0.1, lambda_spk=1.0, lambda_age=1.0):
         super().__init__()
         self.lambda_recon = lambda_recon
+        self.base_lambda_kl_id = lambda_kl_id
+        self.base_lambda_kl_bio = lambda_kl_bio
+        self.base_lambda_mi = lambda_mi
         self.lambda_kl_id = lambda_kl_id
         self.lambda_kl_bio = lambda_kl_bio
         self.lambda_mi = lambda_mi
         self.lambda_gender = lambda_gender
+        self.lambda_spk = lambda_spk
+        self.lambda_age = lambda_age
 
         self.mse_loss = nn.MSELoss()
         self.nll_loss = nn.NLLLoss()
+        self.ce_loss = nn.CrossEntropyLoss()
+
+    def set_kl_mi_warmup_factor(self, warmup_factor):
+        warmup_factor = float(max(0.0, min(1.0, warmup_factor)))
+        self.lambda_kl_id = self.base_lambda_kl_id * warmup_factor
+        self.lambda_kl_bio = self.base_lambda_kl_bio * warmup_factor
+        self.lambda_mi = self.base_lambda_mi * warmup_factor
 
     def compute_kl(self, mu, logvar, prior_mu=None):
         """
@@ -244,36 +262,58 @@ class G_AIDA_Loss(nn.Module):
         mi = 0.5 * (logdet11 + logdet22 - logdet_joint)
         return torch.clamp(mi, min=0.0)
 
-    def forward(self, outputs, target_age=None, target_gender=None):
+    def forward(self, outputs, target_spk=None, target_age=None, target_gender=None):
         loss_recon = self.mse_loss(outputs["recon_x"], outputs["spkr_emb"])
 
         loss_kl_id = self.compute_kl(outputs["mu_id"], outputs["logvar_id"])
 
+        target_spk_cls = None
+        if target_spk is not None:
+            target_spk_cls = target_spk.long().view(-1)
+
+        target_gender_cls = None
+        if target_gender is not None:
+            target_gender_cls = target_gender.long().view(-1)
+
+        target_age_cls = None
         prior_mu_bio = None
         if target_age is not None:
-            target_age = target_age.float().view(-1, 1)
-            prior_mu_bio = target_age.expand_as(outputs["mu_bio"])
+            target_age_cls = target_age.long().view(-1)
+            target_age_prior = target_age_cls.float().view(-1, 1)
+            prior_mu_bio = target_age_prior.expand_as(outputs["mu_bio"])
         loss_kl_bio = self.compute_kl(outputs["mu_bio"], outputs["logvar_bio"], prior_mu=prior_mu_bio)
 
         loss_mi = self.compute_mutual_information_gaussian(outputs["z_id"], outputs["z_bio"])
 
         loss_gender = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
-        if target_gender is not None:
+        if target_gender_cls is not None:
             gender_prob = torch.clamp(outputs["gender_prob"], min=1e-8)
-            loss_gender = self.nll_loss(torch.log(gender_prob), target_gender)
+            loss_gender = self.nll_loss(torch.log(gender_prob), target_gender_cls)
+
+        loss_spk = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
+        if target_spk_cls is not None:
+            loss_spk = self.ce_loss(outputs["logits_id"], target_spk_cls)
+
+        loss_age = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
+        if target_age_cls is not None:
+            loss_age = self.ce_loss(outputs["logits_age"], target_age_cls)
 
         total_loss = (self.lambda_recon * loss_recon) \
                      + (self.lambda_kl_id * loss_kl_id) \
                      + (self.lambda_kl_bio * loss_kl_bio) \
                      + (self.lambda_mi * loss_mi) \
-                     + (self.lambda_gender * loss_gender)
+                     + (self.lambda_gender * loss_gender) \
+                     + (self.lambda_spk * loss_spk) \
+                     + (self.lambda_age * loss_age)
 
         return total_loss, {
             "loss_recon": loss_recon.item(),
             "loss_kl_id": loss_kl_id.item(),
             "loss_kl_bio": loss_kl_bio.item(),
             "loss_mi": loss_mi.item(),
-            "loss_gender": loss_gender.item() if isinstance(loss_gender, torch.Tensor) else 0.0
+            "loss_gender": loss_gender.item() if isinstance(loss_gender, torch.Tensor) else 0.0,
+            "loss_spk": loss_spk.item() if isinstance(loss_spk, torch.Tensor) else 0.0,
+            "loss_age": loss_age.item() if isinstance(loss_age, torch.Tensor) else 0.0
         }
 
 # --- 測試模型 ---
@@ -283,7 +323,7 @@ if __name__ == "__main__":
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    model = G_AIDA(MODEL_ID="speechbrain/spkrec-ecapa-voxceleb").to(device)
+    model = G_AIDA(model_id="speechbrain/spkrec-ecapa-voxceleb").to(device)
     mock_input = mock_input.to(device)
     outputs = model(mock_input)
     
