@@ -11,6 +11,18 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 import csv
 from pathlib import Path
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*torchaudio\.load_with_torchcodec.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*StreamingMediaDecoder has been deprecated.*",
+    category=UserWarning,
+)
 
 # ==========================================
 # 1. 資料準備與前處理
