@@ -187,8 +187,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = G_AIDA_Loss(
     lambda_kl_id=0.2,
     lambda_kl_bio=0.2,
-    lambda_adv_age=0.1,
-    lambda_adv_spk=0.1,
+    lambda_adv_entropy=0.1,
 )
 
 # 訓練參數

@@ -11,26 +11,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 
-
-class GradientReversalFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, lambd):
-        ctx.lambd = lambd
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        return -ctx.lambd * grad_output, None
-
-
-class GradientReversal(nn.Module):
-    def __init__(self, lambd=1.0):
-        super().__init__()
-        self.lambd = lambd
-
-    def forward(self, x):
-        return GradientReversalFunction.apply(x, self.lambd)
-
 class ChannelShuffle(nn.Module):
     def __init__(self, groups):
         super(ChannelShuffle, self).__init__()
@@ -161,21 +141,6 @@ class G_AIDA(nn.Module):
             nn.Linear(128, num_age_groups)
         )
 
-        self.grl_id_to_age = GradientReversal(lambd=1.0)
-        self.grl_age_to_id = GradientReversal(lambd=1.0)
-
-        self.adv_classifier_age_from_id = nn.Sequential(
-            nn.Linear(zid_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, num_age_groups)
-        )
-
-        self.adv_classifier_id_from_age = nn.Sequential(
-            nn.Linear(zbio_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, num_speakers)
-        )
-
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
@@ -211,8 +176,8 @@ class G_AIDA(nn.Module):
         logits_id = self.classifier_id(z_id)
         logits_age = self.classifier_age(z_bio)
 
-        logits_adv_age_from_id = self.adv_classifier_age_from_id(self.grl_id_to_age(z_id))
-        logits_adv_id_from_age = self.adv_classifier_id_from_age(self.grl_age_to_id(z_bio))
+        logits_adv_age_from_id = self.classifier_age(z_id)
+        logits_adv_id_from_age = self.classifier_id(z_bio)
         
         return {
             "recon_x": recon_x,
@@ -238,8 +203,7 @@ class G_AIDA_Loss(nn.Module):
         lambda_gender=0.1,
         lambda_spk=1.0,
         lambda_age=1.0,
-        lambda_adv_age=0.5,
-        lambda_adv_spk=0.5,
+        lambda_adv_entropy=0.1,
     ):
         super().__init__()
         self.lambda_recon = lambda_recon
@@ -252,18 +216,23 @@ class G_AIDA_Loss(nn.Module):
         self.lambda_gender = lambda_gender
         self.lambda_spk = lambda_spk
         self.lambda_age = lambda_age
-        self.lambda_adv_age = lambda_adv_age
-        self.lambda_adv_spk = lambda_adv_spk
+        self.lambda_adv_entropy = lambda_adv_entropy
 
         self.mse_loss = nn.MSELoss()
         self.nll_loss = nn.NLLLoss()
         self.ce_loss = nn.CrossEntropyLoss()
-
-    # def set_kl_mi_warmup_factor(self, warmup_factor):
-    #     warmup_factor = float(max(0.0, min(1.0, warmup_factor)))
-    #     self.lambda_kl_id = self.base_lambda_kl_id * warmup_factor
-    #     self.lambda_kl_bio = self.base_lambda_kl_bio * warmup_factor
-    #     self.lambda_mi = self.base_lambda_mi * warmup_factor
+        
+    def compute_entropy(self, logits):
+        """
+        計算 Entropy。
+        公式: H(p) = - sum(p * log(p))
+        我們希望最大化 Entropy，也就是最小化 -Entropy。
+        但在論文公式 (19) 中是減去 Entropy Loss，所以我們這裡返回 H(p)。
+        """
+        probs = F.softmax(logits, dim=1)
+        log_probs = F.log_softmax(logits, dim=1)
+        entropy = -torch.sum(probs * log_probs, dim=1).mean()
+        return entropy
 
     def compute_kl(self, mu, logvar, prior_mu=None):
         """
@@ -316,46 +285,29 @@ class G_AIDA_Loss(nn.Module):
         return torch.clamp(mi, min=0.0)
 
     def forward(self, outputs, target_spk=None, target_age=None, target_gender=None):
-        loss_recon = self.mse_loss(outputs["recon_x"], outputs["spkr_emb"])
-
-        loss_kl_id = self.compute_kl(outputs["mu_id"], outputs["logvar_id"])
-
-        target_spk_cls = None
-        if target_spk is not None:
-            target_spk_cls = target_spk.long().view(-1)
-
-        target_gender_cls = None
+        # 1. 主要任務損失 (說話者分類 + 年齡分類)
+        loss_spk = self.ce_loss(outputs["logits_id"], target_spk)
+        loss_age = self.ce_loss(outputs["logits_age"], target_age)
+        
+        # 2. 次要任務損失 (對抗分類)
+        loss_adv_age = self.compute_entropy(outputs["logits_adv_age_from_id"])
+        loss_adv_spk = self.compute_entropy(outputs["logits_adv_id_from_age"])
+        
+        # 3. 性別預測損失 (可選)
         if target_gender is not None:
-            target_gender_cls = target_gender.long().view(-1)
-
-        target_age_cls = None
-        if target_age is not None:
-            target_age_cls = target_age.long().view(-1)
+            gender_prob = torch.clamp(outputs["gender_prob"], min=1e-8)
+            loss_gender = self.nll_loss(torch.log(gender_prob), target_gender)
+        
+        # 4. KL 散度損失
+        loss_kl_id = self.compute_kl(outputs["mu_id"], outputs["logvar_id"])
         loss_kl_bio = self.compute_kl(outputs["mu_bio"], outputs["logvar_bio"])
-
+        
+        # 5. 還原損失
+        loss_recon = self.mse_loss(outputs["recon_x"], outputs["spkr_emb"])
+        
+        # 6. 互信息損失 (可選)
         loss_mi = 0.0
         # loss_mi = self.compute_mutual_information_gaussian(outputs["z_id"], outputs["z_bio"])
-
-        loss_gender = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
-        if target_gender_cls is not None:
-            gender_prob = torch.clamp(outputs["gender_prob"], min=1e-8)
-            loss_gender = self.nll_loss(torch.log(gender_prob), target_gender_cls)
-
-        loss_spk = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
-        if target_spk_cls is not None:
-            loss_spk = self.ce_loss(outputs["logits_id"], target_spk_cls)
-
-        loss_age = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
-        if target_age_cls is not None:
-            loss_age = self.ce_loss(outputs["logits_age"], target_age_cls)
-
-        loss_adv_age = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
-        if target_age_cls is not None:
-            loss_adv_age = self.ce_loss(outputs["logits_adv_age_from_id"], target_age_cls)
-
-        loss_adv_spk = torch.tensor(0.0, device=loss_recon.device, dtype=loss_recon.dtype)
-        if target_spk_cls is not None:
-            loss_adv_spk = self.ce_loss(outputs["logits_adv_id_from_age"], target_spk_cls)
 
         total_loss = (self.lambda_recon * loss_recon) \
                      + (self.lambda_kl_id * loss_kl_id) \
@@ -364,8 +316,7 @@ class G_AIDA_Loss(nn.Module):
                      + (self.lambda_gender * loss_gender) \
                      + (self.lambda_spk * loss_spk) \
                      + (self.lambda_age * loss_age) \
-                     + (self.lambda_adv_age * loss_adv_age) \
-                     + (self.lambda_adv_spk * loss_adv_spk)
+                     - (self.lambda_adv_entropy * (loss_adv_age + loss_adv_spk))
 
         return total_loss, {
             "loss_recon": loss_recon.item(),
