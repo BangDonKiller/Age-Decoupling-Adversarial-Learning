@@ -11,6 +11,37 @@ import torch.nn as nn
 import torch.nn.functional as F
 from feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
 
+
+class GradientReversalFunction(torch.autograd.Function):
+    """
+    梯度反轉層（GRL）核心：
+    - 前向傳遞：輸出與輸入相同
+    - 反向傳遞：梯度乘上 -lambda
+    """
+    @staticmethod
+    def forward(ctx, x, lambda_grl):
+        ctx.lambda_grl = lambda_grl
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambda_grl * grad_output, None
+
+
+class GradientReversalLayer(nn.Module):
+    """
+    可調整強度的 GRL 包裝層。
+    """
+    def __init__(self, lambda_grl=1.0):
+        super().__init__()
+        self.lambda_grl = lambda_grl
+
+    def set_lambda(self, lambda_grl):
+        self.lambda_grl = lambda_grl
+
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambda_grl)
+
 class ChannelShuffle(nn.Module):
     def __init__(self, groups):
         super(ChannelShuffle, self).__init__()
@@ -25,34 +56,80 @@ class ChannelShuffle(nn.Module):
         x = x.view(batch_size, -1, length)
         return x
 
+# class RFRBEncoder(nn.Module):
+#     """
+#     殘差特徵細化塊 (Shared Encoder)
+#     """
+#     def __init__(self, input_dim=192, hidden_dim=256, groups=8):
+#         super().__init__()
+#         self.ln1 = nn.LayerNorm(input_dim)
+#         self.proj = nn.Linear(input_dim, hidden_dim)
+#         self.silu = nn.SiLU()
+        
+#         # 使用 Conv1d 來實作 Grouped Linear 以節省參數並優化硬體效率
+#         self.grouped_linear = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=1, groups=groups)
+#         self.shuffle = ChannelShuffle(groups)
+#         self.ln2 = nn.LayerNorm(hidden_dim)
+
+#     def forward(self, x):
+#         # 1. 標準化與投影
+#         res = self.proj(self.ln1(x)) # (B, 256)
+#         x = self.silu(res)
+        
+#         # 2. 轉換為 1D 卷積格式進行分組處理 (B, C, L=1)
+#         x = x.unsqueeze(-1)
+#         x = self.grouped_linear(x)
+#         x = self.shuffle(x)
+#         x = x.squeeze(-1)
+        
+#         # 3. 殘差連接與最終標準化
+#         x = self.ln2(x + res)
+#         return x
+
 class RFRBEncoder(nn.Module):
     """
-    殘差特徵細化塊 (Shared Encoder)
+    殘差特徵細化塊 (Shared Encoder) - 重構為純線性架構
+    
+    針對 ECAPA-TDNN 輸出的 1D 全局 Embedding 進行深度特徵轉換。
+    移除不必要的 Conv1d 與 ChannelShuffle，改用標準的 MLP 殘差塊 (ResBlock)。
     """
-    def __init__(self, input_dim=192, hidden_dim=256, groups=8):
+    def __init__(self, input_dim=192, hidden_dim=256, num_blocks=2):
         super().__init__()
-        self.ln1 = nn.LayerNorm(input_dim)
-        self.proj = nn.Linear(input_dim, hidden_dim)
-        self.silu = nn.SiLU()
         
-        # 使用 Conv1d 來實作 Grouped Linear 以節省參數並優化硬體效率
-        self.grouped_linear = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=1, groups=groups)
-        self.shuffle = ChannelShuffle(groups)
-        self.ln2 = nn.LayerNorm(hidden_dim)
+        # 1. 初始投影層 (Input Projection)
+        # 必須先將 input_dim (192) 投影到 hidden_dim (256)，後續才能順利進行殘差相加
+        self.input_proj = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU()
+        )
+        
+        # 2. 堆疊純線性殘差塊 (Linear Residual Blocks)
+        # 這裡使用 ModuleList 讓你可以彈性決定要堆疊幾層 (num_blocks)
+        self.blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.SiLU(),
+                # 第二層通常不加激勵函數，直接做 LayerNorm 後與殘差相加 (Pre-activation / Post-LN 結構)
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim) 
+            ) for _ in range(num_blocks)
+        ])
 
     def forward(self, x):
-        # 1. 標準化與投影
-        res = self.proj(self.ln1(x)) # (B, 256)
-        x = self.silu(res)
+        """
+        x shape: (Batch, input_dim) -> e.g., (B, 192)
+        return shape: (Batch, hidden_dim) -> e.g., (B, 256)
+        """
+        # 1. 投影到特徵空間
+        x = self.input_proj(x)  # (B, 256)
         
-        # 2. 轉換為 1D 卷積格式進行分組處理 (B, C, L=1)
-        x = x.unsqueeze(-1)
-        x = self.grouped_linear(x)
-        x = self.shuffle(x)
-        x = x.squeeze(-1)
-        
-        # 3. 殘差連接與最終標準化
-        x = self.ln2(x + res)
+        # 2. 依序通過殘差塊
+        for block in self.blocks:
+            residual = x
+            x = block(x)        # 特徵轉換
+            x = x + residual    # 殘差連接 (Residual Connection)
+            
         return x
 
 class GenderPredictor(nn.Module):
@@ -92,7 +169,7 @@ class HyperGating(nn.Module):
         return x * gamma + beta
 
 class G_AIDA(nn.Module):
-    def __init__(self, model_id, input_dim=192, zid_dim=128, zbio_dim=64, num_speakers=5990, num_age_groups=7):
+    def __init__(self, model_id, input_dim=192, zid_dim=128, zbio_dim=64, num_speakers=5990, num_age_groups=7, grl_lambda=1.0):
         super().__init__()
         
         self.speaker_model = SpeakerEmbeddingExtractor(
@@ -129,6 +206,10 @@ class G_AIDA(nn.Module):
             nn.Linear(256, input_dim)
         )
 
+        # 6. 梯度反轉層：只用在對抗分支前
+        self.grl = GradientReversalLayer(lambda_grl=grl_lambda)
+
+        # 7. 主任務分類器（兩個）
         self.classifier_id = nn.Sequential(
             nn.Linear(zid_dim, 256),
             nn.ReLU(),
@@ -139,6 +220,21 @@ class G_AIDA(nn.Module):
             nn.Linear(zbio_dim, 128),
             nn.ReLU(),
             nn.Linear(128, num_age_groups)
+        )
+
+        # 8. 對抗任務分類器（兩個）
+        # 從 z_id 預測年齡（希望在 GRL 作用下，encoder 讓此任務變難）
+        self.classifier_adv_age_from_id = nn.Sequential(
+            nn.Linear(zid_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_age_groups)
+        )
+
+        # 從 z_bio 預測身分（希望在 GRL 作用下，encoder 讓此任務變難）
+        self.classifier_adv_id_from_age = nn.Sequential(
+            nn.Linear(zbio_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_speakers)
         )
 
     def reparameterize(self, mu, logvar):
@@ -173,11 +269,15 @@ class G_AIDA(nn.Module):
         z_combined = torch.cat([z_id, z_bio], dim=-1)
         recon_x = self.decoder(z_combined)
 
+        # G. 主任務分類
         logits_id = self.classifier_id(z_id)
         logits_age = self.classifier_age(z_bio)
 
-        logits_adv_age_from_id = self.classifier_age(z_id)
-        logits_adv_id_from_age = self.classifier_id(z_bio)
+        # H. 對抗分支：先經過 GRL，再交給各自獨立的對抗分類器
+        z_id_rev = self.grl(z_id)
+        z_bio_rev = self.grl(z_bio)
+        logits_adv_age_from_id = self.classifier_adv_age_from_id(z_id_rev)
+        logits_adv_id_from_age = self.classifier_adv_id_from_age(z_bio_rev)
         
         return {
             "recon_x": recon_x,
@@ -204,6 +304,8 @@ class G_AIDA_Loss(nn.Module):
         lambda_spk=1.0,
         lambda_age=1.0,
         lambda_adv_entropy=0.1,
+        lambda_adv_age=None,
+        lambda_adv_spk=None,
     ):
         super().__init__()
         self.lambda_recon = lambda_recon
@@ -216,24 +318,14 @@ class G_AIDA_Loss(nn.Module):
         self.lambda_gender = lambda_gender
         self.lambda_spk = lambda_spk
         self.lambda_age = lambda_age
-        self.lambda_adv_entropy = lambda_adv_entropy
+        # 相容舊參數：若未指定分支權重，沿用 lambda_adv_entropy
+        self.lambda_adv_age = lambda_adv_entropy if lambda_adv_age is None else lambda_adv_age
+        self.lambda_adv_spk = lambda_adv_entropy if lambda_adv_spk is None else lambda_adv_spk
 
         self.mse_loss = nn.MSELoss()
         self.nll_loss = nn.NLLLoss()
         self.ce_loss = nn.CrossEntropyLoss()
         
-    def compute_entropy(self, logits):
-        """
-        計算 Entropy。
-        公式: H(p) = - sum(p * log(p))
-        我們希望最大化 Entropy，也就是最小化 -Entropy。
-        但在論文公式 (19) 中是減去 Entropy Loss，所以我們這裡返回 H(p)。
-        """
-        probs = F.softmax(logits, dim=1)
-        log_probs = F.log_softmax(logits, dim=1)
-        entropy = -torch.sum(probs * log_probs, dim=1).mean()
-        return entropy
-
     def compute_kl(self, mu, logvar, prior_mu=None):
         """
         KL(q(z|x)||p(z))，其中 p(z)=N(prior_mu, I)
@@ -289,11 +381,14 @@ class G_AIDA_Loss(nn.Module):
         loss_spk = self.ce_loss(outputs["logits_id"], target_spk)
         loss_age = self.ce_loss(outputs["logits_age"], target_age)
         
-        # 2. 次要任務損失 (對抗分類)
-        loss_adv_age = self.compute_entropy(outputs["logits_adv_age_from_id"])
-        loss_adv_spk = self.compute_entropy(outputs["logits_adv_id_from_age"])
+        # 2. 對抗任務損失（GRL + CE）
+        # 注意：這裡使用「正號加總」即可。
+        # 分類器會最小化 CE；GRL 會自動把回傳到 encoder 的梯度反向，達到對抗效果。
+        loss_adv_age = self.ce_loss(outputs["logits_adv_age_from_id"], target_age)
+        loss_adv_spk = self.ce_loss(outputs["logits_adv_id_from_age"], target_spk)
         
         # 3. 性別預測損失 (可選)
+        loss_gender = torch.tensor(0.0, device=outputs["logits_id"].device)
         if target_gender is not None:
             gender_prob = torch.clamp(outputs["gender_prob"], min=1e-8)
             loss_gender = self.nll_loss(torch.log(gender_prob), target_gender)
@@ -316,7 +411,8 @@ class G_AIDA_Loss(nn.Module):
                      + (self.lambda_gender * loss_gender) \
                      + (self.lambda_spk * loss_spk) \
                      + (self.lambda_age * loss_age) \
-                     - (self.lambda_adv_entropy * (loss_adv_age + loss_adv_spk))
+                     + (self.lambda_adv_age * loss_adv_age) \
+                     + (self.lambda_adv_spk * loss_adv_spk)
 
         return total_loss, {
             "loss_recon": loss_recon.item(),

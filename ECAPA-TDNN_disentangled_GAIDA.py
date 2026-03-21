@@ -187,17 +187,33 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = G_AIDA_Loss(
     lambda_kl_id=0.2,
     lambda_kl_bio=0.2,
-    lambda_adv_entropy=0.1,
+    lambda_adv_entropy=1.0,
 )
 
 # 訓練參數
 EPOCHS = 20
 WARMUP_EPOCHS = 12
+ADV_RAMP_START_EPOCH = 4  # 前 4 個 epoch 不做對抗學習
+ADV_RAMP_EPOCHS = 8       # 之後 8 個 epoch 線性拉升到目標強度
 best_val_loss = float('inf')
 best_score_balanced = -float('inf')
 best_spk_acc = 0.0
 best_leak_privacy = float('inf')
 best_EER = float('inf')
+
+ADV_LAMBDA_MAX_AGE = criterion.lambda_adv_age
+ADV_LAMBDA_MAX_SPK = criterion.lambda_adv_spk
+
+
+def get_adv_lambda(epoch_idx, start_epoch, ramp_epochs, max_lambda):
+    if epoch_idx < start_epoch:
+        return 0.0
+    if ramp_epochs <= 0:
+        return max_lambda
+
+    progress = (epoch_idx - start_epoch + 1) / ramp_epochs
+    progress = max(0.0, min(1.0, progress))
+    return max_lambda * progress
 
 # LR Scheduler (Cosine Annealing)
 MIN_LR = 1e-5
@@ -227,6 +243,8 @@ csv_writer.writerow([
     "epoch",
     "lr",
     "warmup_factor",
+    "adv_lambda_age",
+    "adv_lambda_spk",
     "train_loss",
     "train_loss_kl_id",
     "train_loss_kl_bio",
@@ -258,7 +276,21 @@ for epoch in range(EPOCHS):
     current_lr = optimizer.param_groups[0]["lr"]
 
     warmup_factor = min(1.0, (epoch + 1) / WARMUP_EPOCHS)
-    # criterion.set_kl_mi_warmup_factor(warmup_factor)
+    adv_lambda_age = get_adv_lambda(
+        epoch,
+        ADV_RAMP_START_EPOCH,
+        ADV_RAMP_EPOCHS,
+        ADV_LAMBDA_MAX_AGE,
+    )
+    adv_lambda_spk = get_adv_lambda(
+        epoch,
+        ADV_RAMP_START_EPOCH,
+        ADV_RAMP_EPOCHS,
+        ADV_LAMBDA_MAX_SPK,
+    )
+    model.grl.set_lambda(max(adv_lambda_age, adv_lambda_spk))
+    criterion.lambda_adv_age = adv_lambda_age
+    criterion.lambda_adv_spk = adv_lambda_spk
 
     total_train_loss = 0.0
     train_loss_kl_id = 0.0
@@ -371,13 +403,15 @@ for epoch in range(EPOCHS):
 
 
     print(f"Epoch [{epoch+1}/{EPOCHS}] "
-            f"LR: {current_lr:.6f} | Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Gender Acc: {acc_gender:.2f}% | Adv Age Acc: {acc_adv_age:.2f}% | Adv Spk Acc: {acc_adv_spk:.2f}% | KL_id: {avg_loss_kl_id:.4f} | KL_bio: {avg_loss_kl_bio:.4f} | MI: {avg_loss_mi:.4f} | Gender: {avg_loss_gender:.4f} | Spk CE: {avg_loss_spk:.4f} | Age CE: {avg_loss_age:.4f} | Adv Age: {avg_loss_adv_age:.4f} | Adv Spk: {avg_loss_adv_spk:.4f} | Recon Loss: {avg_recon_loss:.4f} | Warmup: {warmup_factor:.2f} | "
+            f"LR: {current_lr:.6f} | Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Gender Acc: {acc_gender:.2f}% | Adv Age Acc: {acc_adv_age:.2f}% | Adv Spk Acc: {acc_adv_spk:.2f}% | KL_id: {avg_loss_kl_id:.4f} | KL_bio: {avg_loss_kl_bio:.4f} | MI: {avg_loss_mi:.4f} | Gender: {avg_loss_gender:.4f} | Spk CE: {avg_loss_spk:.4f} | Age CE: {avg_loss_age:.4f} | Adv Age: {avg_loss_adv_age:.4f} | Adv Spk: {avg_loss_adv_spk:.4f} | Recon Loss: {avg_recon_loss:.4f} | Warmup: {warmup_factor:.2f} | AdvLambda(Age/Spk): {adv_lambda_age:.4f}/{adv_lambda_spk:.4f} | "
           f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
 
     # ==========================================
     # TensorBoard logging
     # ==========================================
     writer.add_scalar("Loss/Train", avg_loss, epoch)
+    writer.add_scalar("Lambda/AdvAge", adv_lambda_age, epoch)
+    writer.add_scalar("Lambda/AdvSpk", adv_lambda_spk, epoch)
     writer.add_scalar("Loss/KL_ID", avg_loss_kl_id, epoch)
     writer.add_scalar("Loss/KL_BIO", avg_loss_kl_bio, epoch)
     writer.add_scalar("Loss/MI", avg_loss_mi, epoch)
@@ -406,6 +440,8 @@ for epoch in range(EPOCHS):
         epoch + 1,
         current_lr,
         warmup_factor,
+        adv_lambda_age,
+        adv_lambda_spk,
         avg_loss,
         avg_loss_kl_id,
         avg_loss_kl_bio,
