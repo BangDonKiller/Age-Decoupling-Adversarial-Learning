@@ -183,18 +183,25 @@ model = G_AIDA(
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
+# 對抗分類器獨立優化器（第一階段：detach 預訓練）
+optimizer_adv = torch.optim.Adam([
+    *model.classifier_adv_age_from_id.parameters(),
+    *model.classifier_adv_id_from_age.parameters(),
+], lr=0.001)
+
 # Loss Functions
 criterion = G_AIDA_Loss(
-    lambda_kl_id=0.2,
-    lambda_kl_bio=0.2,
+    lambda_kl_id=0.01,
+    lambda_kl_bio=0.01,
     lambda_adv_entropy=1.0,
 )
 
 # 訓練參數
-EPOCHS = 20
+EPOCHS = 50
 WARMUP_EPOCHS = 12
-ADV_RAMP_START_EPOCH = 4  # 前 4 個 epoch 不做對抗學習
-ADV_RAMP_EPOCHS = 8       # 之後 8 個 epoch 線性拉升到目標強度
+ADV_PRETRAIN_EPOCHS = 10   # 第一階段：只訓練對抗分類器（detach）
+ADV_RAMP_START_EPOCH = ADV_PRETRAIN_EPOCHS  # 第二階段起點：啟用 GRL 對抗
+ADV_RAMP_EPOCHS = 30       # 之後 30 個 epoch 線性拉升到目標強度
 best_val_loss = float('inf')
 best_score_balanced = -float('inf')
 best_spk_acc = 0.0
@@ -274,23 +281,33 @@ print(f"Start training on {device}...")
 for epoch in range(EPOCHS):
     model.train()
     current_lr = optimizer.param_groups[0]["lr"]
+    is_adv_pretrain_phase = epoch < ADV_PRETRAIN_EPOCHS
 
     warmup_factor = min(1.0, (epoch + 1) / WARMUP_EPOCHS)
-    adv_lambda_age = get_adv_lambda(
-        epoch,
-        ADV_RAMP_START_EPOCH,
-        ADV_RAMP_EPOCHS,
-        ADV_LAMBDA_MAX_AGE,
-    )
-    adv_lambda_spk = get_adv_lambda(
-        epoch,
-        ADV_RAMP_START_EPOCH,
-        ADV_RAMP_EPOCHS,
-        ADV_LAMBDA_MAX_SPK,
-    )
-    model.grl.set_lambda(max(adv_lambda_age, adv_lambda_spk))
-    criterion.lambda_adv_age = adv_lambda_age
-    criterion.lambda_adv_spk = adv_lambda_spk
+    if is_adv_pretrain_phase:
+        # 第一階段：不啟用 GRL，主損失不含對抗項
+        adv_lambda_age = 0.0
+        adv_lambda_spk = 0.0
+        model.grl.set_lambda(0.0)
+        criterion.lambda_adv_age = 0.0
+        criterion.lambda_adv_spk = 0.0
+    else:
+        # 第二階段：啟用 GRL 並逐步拉升對抗強度
+        adv_lambda_age = get_adv_lambda(
+            epoch,
+            ADV_RAMP_START_EPOCH,
+            ADV_RAMP_EPOCHS,
+            ADV_LAMBDA_MAX_AGE,
+        )
+        adv_lambda_spk = get_adv_lambda(
+            epoch,
+            ADV_RAMP_START_EPOCH,
+            ADV_RAMP_EPOCHS,
+            ADV_LAMBDA_MAX_SPK,
+        )
+        model.grl.set_lambda(max(adv_lambda_age, adv_lambda_spk))
+        criterion.lambda_adv_age = adv_lambda_age
+        criterion.lambda_adv_spk = adv_lambda_spk
 
     total_train_loss = 0.0
     train_loss_kl_id = 0.0
@@ -331,6 +348,22 @@ for epoch in range(EPOCHS):
         loss.backward()
         optimizer.step()
 
+        # 第一階段：使用 detach 特徵單獨預訓練對抗分類器
+        if is_adv_pretrain_phase:
+            z_id_det = outputs['z_id'].detach()
+            z_bio_det = outputs['z_bio'].detach()
+
+            logits_adv_age_pt = model.classifier_adv_age_from_id(z_id_det)
+            logits_adv_spk_pt = model.classifier_adv_id_from_age(z_bio_det)
+
+            loss_adv_age_pt = F.cross_entropy(logits_adv_age_pt, label_age)
+            loss_adv_spk_pt = F.cross_entropy(logits_adv_spk_pt, label_spk)
+            loss_adv_pretrain = loss_adv_age_pt + loss_adv_spk_pt
+
+            optimizer_adv.zero_grad()
+            loss_adv_pretrain.backward()
+            optimizer_adv.step()
+
         total_train_loss += loss.item()
         train_loss_kl_id += loss_dict['loss_kl_id']
         train_loss_kl_bio += loss_dict['loss_kl_bio']
@@ -338,16 +371,24 @@ for epoch in range(EPOCHS):
         train_loss_gender += loss_dict['loss_gender']
         train_loss_spk += loss_dict['loss_spk']
         train_loss_age += loss_dict['loss_age']
-        train_loss_adv_age += loss_dict['loss_adv_age']
-        train_loss_adv_spk += loss_dict['loss_adv_spk']
+        if is_adv_pretrain_phase:
+            train_loss_adv_age += loss_adv_age_pt.item()
+            train_loss_adv_spk += loss_adv_spk_pt.item()
+        else:
+            train_loss_adv_age += loss_dict['loss_adv_age']
+            train_loss_adv_spk += loss_dict['loss_adv_spk']
         train_recon_loss += loss_dict['loss_recon']
 
         # 計算準確率 (監控用)
         _, pred_s_main = torch.max(outputs['logits_id'], 1)  # 從 z_id 預測說話者
         _, pred_a_main = torch.max(outputs['logits_age'], 1)  # 從 z_bio 分類年齡群
         _, pred_gender = torch.max(outputs['gender_prob'], 1)  # 性別自感知分類
-        _, pred_adv_age = torch.max(outputs['logits_adv_age_from_id'], 1)  # 從 z_id 對抗預測年齡
-        _, pred_adv_spk = torch.max(outputs['logits_adv_id_from_age'], 1)  # 從 z_bio 對抗預測說話者
+        if is_adv_pretrain_phase:
+            _, pred_adv_age = torch.max(logits_adv_age_pt, 1)  # detach 預訓練結果
+            _, pred_adv_spk = torch.max(logits_adv_spk_pt, 1)  # detach 預訓練結果
+        else:
+            _, pred_adv_age = torch.max(outputs['logits_adv_age_from_id'], 1)  # 從 z_id 對抗預測年齡
+            _, pred_adv_spk = torch.max(outputs['logits_adv_id_from_age'], 1)  # 從 z_bio 對抗預測說話者
         correct_spk += (pred_s_main == label_spk).sum().item()
         correct_age += (pred_a_main == label_age.long()).sum().item()
         correct_gender += (pred_gender == label_gender.long()).sum().item()
@@ -390,7 +431,7 @@ for epoch in range(EPOCHS):
             'before_embeddings': before_embs,
             'ids': final_ids,
         }, os.path.join(checkpoint_dir, f'{val_dataset}_best_disentangled_embeddings.pt'))
-        print(f"儲存最佳模型 EER: {best_EER * 100:.2f}%")
+        print(f"✓ 儲存最佳模型 EER: {best_EER * 100:.2f}%")
 
     if epoch == EPOCHS - 1:
         torch.save(model.state_dict(), f'./checkpoints/{val_dataset}_last_model.pth')
@@ -399,12 +440,38 @@ for epoch in range(EPOCHS):
             'before_embeddings': before_embs,
             'ids': final_ids,
         }, os.path.join(checkpoint_dir, f'{val_dataset}_last_disentangled_embeddings.pt'))
-        print("儲存最終模型。")
+        print("✓ 儲存最終模型。")
 
-
-    print(f"Epoch [{epoch+1}/{EPOCHS}] "
-            f"LR: {current_lr:.6f} | Train Loss: {avg_loss:.4f} | Spk Acc: {acc_spk:.2f}% | Age Acc: {acc_age:.2f}% | Gender Acc: {acc_gender:.2f}% | Adv Age Acc: {acc_adv_age:.2f}% | Adv Spk Acc: {acc_adv_spk:.2f}% | KL_id: {avg_loss_kl_id:.4f} | KL_bio: {avg_loss_kl_bio:.4f} | MI: {avg_loss_mi:.4f} | Gender: {avg_loss_gender:.4f} | Spk CE: {avg_loss_spk:.4f} | Age CE: {avg_loss_age:.4f} | Adv Age: {avg_loss_adv_age:.4f} | Adv Spk: {avg_loss_adv_spk:.4f} | Recon Loss: {avg_recon_loss:.4f} | Warmup: {warmup_factor:.2f} | AdvLambda(Age/Spk): {adv_lambda_age:.4f}/{adv_lambda_spk:.4f} | "
-          f"|| Val EER Before: {eer_before * 100:.2f}% | After: {eer_after * 100:.2f}%")
+    # ==========================================
+    # 每個 Epoch 結束後打印完整資訊
+    # ==========================================
+    phase_name = "ADV-PRETRAIN(detach)" if is_adv_pretrain_phase else "JOINT-GRL"
+    print("\n" + "="*120)
+    print(f"EPOCH [{epoch+1:3d}/{EPOCHS}] [{phase_name}]")
+    print("="*120)
+    
+    # 1. 超參數
+    print(f"【超參數】LR: {current_lr:.6f} | Warmup Factor: {warmup_factor:.4f} | AdvLambda(Age/Spk): {adv_lambda_age:.4f}/{adv_lambda_spk:.4f}")
+    
+    # 2. 訓練損失 - 主任務
+    print(f"【主任務損失】Total: {avg_loss:.4f} | Spk CE: {avg_loss_spk:.4f} | Age CE: {avg_loss_age:.4f} | Gender NLL: {avg_loss_gender:.4f}")
+    
+    # 3. 訓練損失 - 正則化
+    print(f"【正則化損失】KL_ID: {avg_loss_kl_id:.4f} | KL_BIO: {avg_loss_kl_bio:.4f} | MI: {avg_loss_mi:.4f} | Recon: {avg_recon_loss:.4f}")
+    
+    # 4. 訓練損失 - 對抗任務
+    print(f"【對抗任務損失】Adv_Age: {avg_loss_adv_age:.4f} | Adv_Spk: {avg_loss_adv_spk:.4f}")
+    
+    # 5. 訓練準確率 - 主任務
+    print(f"【主任務準確率】Spk: {acc_spk:6.2f}% | Age: {acc_age:6.2f}% | Gender: {acc_gender:6.2f}%")
+    
+    # 6. 訓練準確率 - 對抗任務
+    print(f"【對抗任務準確率】Adv_Age: {acc_adv_age:6.2f}% | Adv_Spk: {acc_adv_spk:6.2f}%")
+    
+    # 7. 驗證指標
+    print(f"【驗證 EER】Before Disentangle: {eer_before*100:6.2f}% | After Disentangle: {eer_after*100:6.2f}%")
+    
+    print("="*120 + "\n")
 
     # ==========================================
     # TensorBoard logging
