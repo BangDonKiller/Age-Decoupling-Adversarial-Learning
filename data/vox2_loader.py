@@ -7,16 +7,34 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import glob
 import os
+import numpy as np
+from tqdm import tqdm
 
 class Vox2Dataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
 
-    def __init__(self, audio_dir: str, audio_meta_dir: str, musan_path, rir_path, augment=False, num_frames=200, suffix: str = ".wav", age_target_mode: str = "raw"):
+    def __init__(
+        self,
+        audio_dir: str,
+        audio_meta_dir: str,
+        musan_path,
+        rir_path,
+        augment=False,
+        num_frames=200,
+        suffix: str = ".wav",
+        age_target_mode: str = "raw",
+        use_acoustic_features: bool = False,
+        acoustic_feature_type: str = "egemaps8",
+        acoustic_sample_rate: int = 16000,
+    ):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
         self.augment = augment
         self.num_frames = num_frames
         self.age_target_mode = age_target_mode
+        self.use_acoustic_features = use_acoustic_features
+        self.acoustic_feature_type = acoustic_feature_type
+        self.acoustic_sample_rate = acoustic_sample_rate
         
         # 定義噪音類型與對應 SNR 範圍與數量
         self.noisetypes = ['noise','speech','music']
@@ -63,6 +81,140 @@ class Vox2Dataset(Dataset):
         }
         
         self.num_age_classes = len(self.conv_age)
+
+        # 可選：在 dataset 初始化時先做一次聲學特徵提取並快取，
+        # 避免每個 epoch / 每次 __getitem__ 重複計算。
+        self.acoustic_features = None
+        if self.use_acoustic_features:
+            self._init_acoustic_feature_extractor()
+            self._precompute_acoustic_features_with_progress()
+
+    def _init_acoustic_feature_extractor(self):
+        """初始化 OpenSMILE 抽取器（僅在 use_acoustic_features=True 時建立）。"""
+        try:
+            import opensmile
+        except Exception as exc:
+            raise ImportError(
+                "use_acoustic_features=True 需要安裝 opensmile，請先執行: pip install opensmile"
+            ) from exc
+
+        self._opensmile = opensmile
+        self._smile = opensmile.Smile(
+            feature_set=opensmile.FeatureSet.eGeMAPSv02,
+            feature_level=opensmile.FeatureLevel.Functionals,
+        )
+
+    def _extract_acoustic_feature_from_path(self, file_path: str) -> torch.Tensor:
+        """
+        從音檔路徑抽取聲學特徵。
+        目前支援:
+            - egemaps8: 回傳你指定的 8 維 vocal aging 特徵
+            - all:      回傳完整 eGeMAPS functionals（flatten）
+        """
+        waveform, sample_rate = torchaudio.load(file_path)
+
+        if sample_rate != self.acoustic_sample_rate:
+            waveform = torchaudio.functional.resample(waveform, sample_rate, self.acoustic_sample_rate)
+
+        if waveform.size(0) > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+
+        wav_np = waveform.squeeze(0).detach().cpu().float().numpy().astype(np.float32, copy=False)
+        feat_df = self._smile.process_signal(wav_np, self.acoustic_sample_rate)
+
+        if feat_df is None or feat_df.empty:
+            raise ValueError(f"OpenSMILE 回傳空特徵，檔案: {file_path}")
+
+        if self.acoustic_feature_type == "all":
+            vec = feat_df.to_numpy(dtype=np.float32).reshape(-1)
+            return torch.tensor(vec, dtype=torch.float32)
+
+        if self.acoustic_feature_type != "egemaps8":
+            raise ValueError(
+                f"Unsupported acoustic_feature_type: {self.acoustic_feature_type}，"
+                "目前僅支援 'egemaps8' 或 'all'。"
+            )
+
+        # egemaps8
+        target_map = {
+            "voicedSegmentsPerSecond": ["voicedSegmentsPerSecond", "VoicedSegmentsPerSec"],
+            "meanunVoicedSegmentLength": ["meanunVoicedSegmentLength", "MeanUnvoicedSegmentLength"],
+            "F0semitoneFrom27.5Hz_sma3nz_amean": ["F0semitoneFrom27.5Hz_sma3nz_amean"],
+            "F0semitoneFrom27.5Hz_sma3nz_stddevNorm": ["F0semitoneFrom27.5Hz_sma3nz_stddevNorm"],
+            "jitterLocal_sma3nz_amean": ["jitterLocal_sma3nz_amean"],
+            "shimmerLocaldB_sma3nz_amean": ["shimmerLocaldB_sma3nz_amean"],
+            # 不同 opensmile/eGeMAPS 版本在 HNR 的命名可能不同
+            "HNRdB1-10kHz_sma3nz_amean": [
+                "HNRdB1-10kHz_sma3nz_amean",
+                "HNRdBACF_sma3nz_amean",
+                "HNRdBACF_sma3_amean",
+                "logHNR_sma3nz_amean",
+            ],
+            # 不同版本可能是 alphaRatio 或 alphaRatioV
+            "alphaRatioV_sma3nz_amean": [
+                "alphaRatioV_sma3nz_amean",
+                "alphaRatio_sma3nz_amean",
+                "alphaRatioV_sma3_amean",
+                "alphaRatio_sma3_amean",
+            ],
+        }
+
+        columns = list(feat_df.columns)
+        lower_to_raw = {c.lower(): c for c in columns}
+        resolved = {}
+
+        for key, candidates in target_map.items():
+            picked = None
+            for cand in candidates:
+                if cand.lower() in lower_to_raw:
+                    picked = lower_to_raw[cand.lower()]
+                    break
+            if picked is None:
+                for cand in candidates:
+                    cand_lower = cand.lower()
+                    contains = [c for c in columns if cand_lower in c.lower()]
+                    if len(contains) > 0:
+                        picked = contains[0]
+                        break
+            if picked is None:
+                hnr_related = [c for c in columns if "hnr" in c.lower()]
+                alpha_related = [c for c in columns if "alpharatio" in c.lower()]
+                raise KeyError(
+                    f"找不到目標欄位 '{key}'，請檢查 opensmile 版本與特徵欄位命名。"
+                    f"\n可用 HNR 相關欄位: {hnr_related[:10]}"
+                    f"\n可用 alphaRatio 相關欄位: {alpha_related[:10]}"
+                )
+            resolved[key] = picked
+
+        feature_order = [
+            "voicedSegmentsPerSecond",
+            "meanunVoicedSegmentLength",
+            "F0semitoneFrom27.5Hz_sma3nz_amean",
+            "F0semitoneFrom27.5Hz_sma3nz_stddevNorm",
+            "jitterLocal_sma3nz_amean",
+            "shimmerLocaldB_sma3nz_amean",
+            "HNRdB1-10kHz_sma3nz_amean",
+            "alphaRatioV_sma3nz_amean",
+        ]
+
+        vec8 = np.array([feat_df.iloc[0][resolved[name]] for name in feature_order], dtype=np.float32)
+        if vec8.shape[0] != 8:
+            raise ValueError(f"輸出特徵維度錯誤，預期 8，實際 {vec8.shape[0]}")
+
+        return torch.tensor(vec8, dtype=torch.float32)
+
+    def _precompute_acoustic_features_with_progress(self):
+        """
+        預先計算整個 datalist 的聲學特徵，並用 tqdm 顯示進度。
+        """
+        self.acoustic_features = []
+        for file_path, _, _, _ in tqdm(
+            self.datalist,
+            desc="Precomputing acoustic features",
+            total=len(self.datalist),
+        ):
+            feat = self._extract_acoustic_feature_from_path(file_path)
+            self.acoustic_features.append(feat)
 
     def __len__(self):
         return len(self.datalist)
@@ -302,6 +454,11 @@ class Vox2Dataset(Dataset):
         speaker_idx = self.speaker2idx[speaker_id]
         gender_idx = 1 if gender.lower() == 'm' else 0
         waveform = self._load_and_preprocess_audio(str(path))
+
+        if self.use_acoustic_features:
+            acoustic_feat = self.acoustic_features[idx]
+            return waveform, speaker_idx, gender_idx, age, acoustic_feat
+
         return waveform, speaker_idx, gender_idx, age
     
 if __name__ == "__main__":

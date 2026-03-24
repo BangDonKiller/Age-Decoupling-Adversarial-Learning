@@ -253,7 +253,8 @@ class G_AIDA(nn.Module):
         h_id, h_age = torch.chunk(h_shared, 2, dim=-1)
         
         # C. 門控調製 (只針對 Z_bio 的路徑)
-        h_bio = self.hyper_gating(gender_prob, h_age)
+        # h_bio = self.hyper_gating(gender_prob, h_age)
+        h_bio = h_age
         
         # D. 生成 Z_id 分佈
         mu_id = self.fc_mu_id(h_id)
@@ -300,7 +301,7 @@ class G_AIDA_Loss(nn.Module):
         lambda_kl_id=1.0,
         lambda_kl_bio=1.0,
         lambda_mi=0.0,
-        lambda_gender=0.1,
+        lambda_gender=0.0,
         lambda_spk=1.0,
         lambda_age=1.0,
         lambda_adv_entropy=0.1,
