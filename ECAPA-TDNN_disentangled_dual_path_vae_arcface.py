@@ -14,7 +14,8 @@ from tqdm import tqdm
 from tool.EER import compute_eer
 from data.vox2_loader import Vox2Dataset
 from model.feature_extractor.ecapa_tdnn import SpeakerEmbeddingExtractor
-from model.disentangled_model.dual_path_vae import DualPathVAE, DualPathVAELoss
+from model.disentangled_model.dual_path_vae import DualPathVAE
+from model.disentangled_model.dual_path_vae_arcface_loss import DualPathVAELossArcFace
 from params.param import DATASET_INFO, BATCH_SIZE, MODEL_ID
 
 warnings.filterwarnings(
@@ -60,6 +61,12 @@ ADV_GRL_LAMBDA = 1.0
 KL_WARMUP_EPOCHS = 12
 KL_WARMUP_START_SCALE = 0.05
 EARLY_STOPPING_PATIENCE = 10
+
+# ArcFace 超參數
+ARCFACE_S = 30.0
+ARCFACE_M = 0.35
+ARCFACE_EASY_MARGIN = False
+ARCFACE_LABEL_SMOOTHING = 0.0
 
 
 def build_opensmile_extractor():
@@ -156,11 +163,6 @@ def _normalize_audio_dirs(audio_dirs):
         return [str(audio_dirs)]
     return [str(d) for d in audio_dirs]
 
-# ==========================================
-# 2) 準備資料集（train + eval pair）
-# ==========================================
-print("Preparing datasets...")
-
 
 def build_eval_dataset(audio_dirs, audio_meta_dir, smile, max_pairs=20000):
     audio_dirs = _normalize_audio_dirs(audio_dirs)
@@ -218,17 +220,6 @@ def build_eval_dataset(audio_dirs, audio_meta_dir, smile, max_pairs=20000):
 
 
 def eval_network(model, speaker_extractor, datalist, device):
-    """
-    Speaker verification evaluation on pairwise trials.
-
-    Returns:
-        eer_before (float)
-        eer_after  (float)
-        final_before_embs (Tensor)
-        final_after_embs  (Tensor)
-        final_ids (List[str])
-    """
-
     model.eval()
     speaker_extractor.eval()
 
@@ -242,9 +233,9 @@ def eval_network(model, speaker_extractor, datalist, device):
 
     with torch.no_grad():
         for is_same, id1, id2, path1, path2, feat1, feat2 in tqdm(datalist, desc="Evaluating"):
-            emb1, sr1 = torchaudio.load(path1)
-            emb2, sr2 = torchaudio.load(path2)
-            
+            emb1, _ = torchaudio.load(path1)
+            emb2, _ = torchaudio.load(path2)
+
             spk_emb1 = speaker_extractor(emb1)
             spk_emb2 = speaker_extractor(emb2)
 
@@ -285,6 +276,7 @@ def eval_network(model, speaker_extractor, datalist, device):
     return eer_before, eer_after, final_before_embs, final_after_embs, final_ids
 
 
+print("Preparing datasets...")
 full_dataset = Vox2Dataset(
     audio_dir=DATASET_INFO[TRAIN_DATASET_NAME]["AUDIO_DIR"],
     audio_meta_dir=DATASET_INFO[TRAIN_DATASET_NAME]["AUDIO_META_DIR"],
@@ -306,7 +298,6 @@ train_loader = DataLoader(
 )
 
 smile_extractor = build_opensmile_extractor()
-
 eval_dataset = build_eval_dataset(
     audio_dirs=DATASET_INFO["VoxCeleb1"][VAL_DATASET_NAME]["AUDIO_DIR"],
     audio_meta_dir=DATASET_INFO["VoxCeleb1"][VAL_DATASET_NAME]["AUDIO_DATALIST"],
@@ -314,21 +305,10 @@ eval_dataset = build_eval_dataset(
     max_pairs=MAX_EVAL_PAIRS,
 )
 
-print(
-    f"Train size: {len(full_dataset)} | "
-    f"Eval pairs: {len(eval_dataset)}"
-)
-
-
-# ==========================================
-# 3) 建立模型與優化器
-# ==========================================
+print(f"Train size: {len(full_dataset)} | Eval pairs: {len(eval_dataset)}")
 print(f"Building models on {DEVICE}...")
 
-speaker_extractor = SpeakerEmbeddingExtractor(
-    model_id=MODEL_ID,
-    device=str(DEVICE),
-)
+speaker_extractor = SpeakerEmbeddingExtractor(model_id=MODEL_ID, device=str(DEVICE))
 speaker_extractor.eval()
 speaker_extractor.requires_grad_(False)
 
@@ -342,33 +322,32 @@ model = DualPathVAE(
     adv_grl_lambda=ADV_GRL_LAMBDA,
 ).to(DEVICE)
 
-criterion = DualPathVAELoss(
+criterion = DualPathVAELossArcFace(
+    latent_id_dim=LATENT_ID_DIM,
+    num_speakers=len(full_dataset.speaker2idx),
     lambda_recon=LAMBDA_RECON,
     lambda_kl_age=LAMBDA_KL_AGE,
     lambda_kl_id=LAMBDA_KL_ID,
     lambda_cls_spk=LAMBDA_CLS_SPK,
     lambda_cls_age=LAMBDA_CLS_AGE,
     lambda_adv_age_id=LAMBDA_ADV_AGE_ID,
-)
+    arcface_s=ARCFACE_S,
+    arcface_m=ARCFACE_M,
+    arcface_easy_margin=ARCFACE_EASY_MARGIN,
+    speaker_label_smoothing=ARCFACE_LABEL_SMOOTHING,
+).to(DEVICE)
 
+# 關鍵差異：optimizer 要同時更新 model 與 criterion(ArcFace head) 的參數。
 optimizer = torch.optim.Adam(
-    model.parameters(),
+    list(model.parameters()) + list(criterion.parameters()),
     lr=LEARNING_RATE,
     weight_decay=WEIGHT_DECAY,
 )
 
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer,
-    T_max=EPOCHS,
-    eta_min=1e-5,
-)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
 
-
-# ==========================================
-# 4) Logger 與 checkpoint
-# ==========================================
-log_dir = "logs/dual_path_vae"
-checkpoint_dir = "checkpoints/dual_path_vae"
+log_dir = "logs/dual_path_vae_arcface"
+checkpoint_dir = "checkpoints/dual_path_vae_arcface"
 os.makedirs(log_dir, exist_ok=True)
 os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -384,7 +363,7 @@ csv_writer.writerow([
     "train_recon_loss",
     "train_kl_age",
     "train_kl_id",
-    "train_cls_spk",
+    "train_cls_spk_arcface",
     "train_cls_age",
     "train_adv_age_id",
     "train_spk_acc",
@@ -399,16 +378,11 @@ best_EER = float("inf")
 best_epoch = -1
 no_improve_epochs = 0
 
-
-# ==========================================
-# 5) 訓練與測試主迴圈
-# ==========================================
-print("Start training...")
-
+print("Start training (ArcFace)...")
 for epoch in range(EPOCHS):
     model.train()
+    criterion.train()
 
-    # KL warmup: 前 KL_WARMUP_EPOCHS 由 KL_WARMUP_START_SCALE 線性增加到 1.0
     if KL_WARMUP_EPOCHS <= 1:
         kl_warmup_scale = 1.0
     else:
@@ -439,10 +413,7 @@ for epoch in range(EPOCHS):
         with torch.no_grad():
             speaker_emb = speaker_extractor(waveform)
 
-        outputs = model(
-            speaker_emb=speaker_emb,
-            acoustic_vec=acoustic_feat,
-        )
+        outputs = model(speaker_emb=speaker_emb, acoustic_vec=acoustic_feat)
 
         loss, loss_dict = criterion(
             outputs=outputs,
@@ -463,7 +434,8 @@ for epoch in range(EPOCHS):
         train_cls_age += float(loss_dict["cls_age"].item())
         train_adv_age_id += float(loss_dict["adv_age_id"].item())
 
-        pred_spk = outputs["logits_spk"].argmax(dim=1)
+        # ArcFace 路徑的 speaker acc 應以 arcface_logits 為準。
+        pred_spk = loss_dict["arcface_logits"].argmax(dim=1)
         pred_age = outputs["logits_age"].argmax(dim=1)
         pred_adv_age = outputs["logits_age_adv"].argmax(dim=1)
         train_correct_spk += (pred_spk == label_spk).sum().item()
@@ -482,9 +454,6 @@ for epoch in range(EPOCHS):
     train_age_acc = 100.0 * train_correct_age / max(1, train_total_samples)
     train_adv_age_acc = 100.0 * train_correct_adv_age / max(1, train_total_samples)
 
-    # ------------------
-    # EER 評估（含 eval acoustic feature）
-    # ------------------
     eer_before, eer_after, before_embs, after_embs, final_ids = eval_network(
         model=model,
         speaker_extractor=speaker_extractor,
@@ -492,9 +461,6 @@ for epoch in range(EPOCHS):
         device=DEVICE,
     )
 
-    # ------------------
-    # log print（epoch 結束後完整資訊）
-    # ------------------
     current_lr = optimizer.param_groups[0]["lr"]
     print("\n" + "=" * 130)
     print(f"Epoch [{epoch + 1:3d}/{EPOCHS}] | LR: {current_lr:.6f}")
@@ -506,7 +472,8 @@ for epoch in range(EPOCHS):
     print(
         f"Train Loss => Total: {train_total_loss:.4f}, Recon: {train_recon_loss:.4f}, "
         f"KL_Age: {train_kl_age:.4f}, KL_ID: {train_kl_id:.4f}, "
-        f"CLS_SPK: {train_cls_spk:.4f}, CLS_AGE: {train_cls_age:.4f}, ADV_AGE(z_id): {train_adv_age_id:.4f}"
+        f"CLS_SPK(ArcFace): {train_cls_spk:.4f}, CLS_AGE: {train_cls_age:.4f}, "
+        f"ADV_AGE(z_id): {train_adv_age_id:.4f}"
     )
     print(
         f"Acc   => Train SPK/Age: {train_spk_acc:.2f}%/{train_age_acc:.2f}% | "
@@ -518,14 +485,17 @@ for epoch in range(EPOCHS):
     )
     print("=" * 130 + "\n")
 
-    # ------------------
-    # checkpoint: best EER + last epoch
-    # ------------------
     if best_EER > eer_after:
         best_EER = eer_after
         best_epoch = epoch + 1
         no_improve_epochs = 0
-        torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_model.pth"))
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "criterion": criterion.state_dict(),
+            },
+            os.path.join(checkpoint_dir, "best_model.pth"),
+        )
         torch.save(
             {
                 "embeddings": after_embs,
@@ -539,7 +509,13 @@ for epoch in range(EPOCHS):
         no_improve_epochs += 1
 
     if epoch == EPOCHS - 1:
-        torch.save(model.state_dict(), os.path.join(checkpoint_dir, "last_model.pth"))
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "criterion": criterion.state_dict(),
+            },
+            os.path.join(checkpoint_dir, "last_model.pth"),
+        )
         torch.save(
             {
                 "embeddings": after_embs,
@@ -549,15 +525,12 @@ for epoch in range(EPOCHS):
             os.path.join(checkpoint_dir, "last_disentangled_embeddings.pt"),
         )
         print("✓ 儲存最終模型。")
-        
-    # ------------------
-    # tensorboard
-    # ------------------
+
     writer.add_scalar("Train/Total_Loss", train_total_loss, epoch)
     writer.add_scalar("Train/Recon_Loss", train_recon_loss, epoch)
     writer.add_scalar("Train/KL_Age", train_kl_age, epoch)
     writer.add_scalar("Train/KL_ID", train_kl_id, epoch)
-    writer.add_scalar("Train/CLS_SPK", train_cls_spk, epoch)
+    writer.add_scalar("Train/CLS_SPK_ArcFace", train_cls_spk, epoch)
     writer.add_scalar("Train/CLS_AGE", train_cls_age, epoch)
     writer.add_scalar("Train/ADV_AGE_ID", train_adv_age_id, epoch)
     writer.add_scalar("Train/Acc_SPK", train_spk_acc, epoch)
@@ -569,9 +542,6 @@ for epoch in range(EPOCHS):
     writer.add_scalar("Eval/Best_EER_After", best_EER, epoch)
     writer.add_scalar("LR", current_lr, epoch)
 
-    # ------------------
-    # csv log
-    # ------------------
     csv_writer.writerow([
         epoch + 1,
         current_lr,
@@ -598,7 +568,13 @@ for epoch in range(EPOCHS):
             f"Early stopping 觸發：連續 {EARLY_STOPPING_PATIENCE} 個 epoch 無改善。"
             f"最佳 EER(after)={best_EER:.4f}（Epoch {best_epoch}）。"
         )
-        torch.save(model.state_dict(), os.path.join(checkpoint_dir, "last_model.pth"))
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "criterion": criterion.state_dict(),
+            },
+            os.path.join(checkpoint_dir, "last_model.pth"),
+        )
         torch.save(
             {
                 "embeddings": after_embs,
@@ -610,10 +586,6 @@ for epoch in range(EPOCHS):
         print("✓ 儲存 early-stopped 最終模型。")
         break
 
-
-# ==========================================
-# 6) 收尾
-# ==========================================
 writer.close()
 csv_file.close()
-print("Training finished.")
+print("Training finished (ArcFace).")

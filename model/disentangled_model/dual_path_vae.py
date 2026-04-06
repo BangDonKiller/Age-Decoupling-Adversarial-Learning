@@ -3,6 +3,29 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class GradientReversalFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, lambd: float):
+        ctx.lambd = lambd
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return -ctx.lambd * grad_output, None
+
+
+class GradientReversalLayer(nn.Module):
+    def __init__(self, lambd: float = 1.0):
+        super().__init__()
+        self.lambd = lambd
+
+    def set_lambda(self, lambd: float):
+        self.lambd = float(lambd)
+
+    def forward(self, x: torch.Tensor):
+        return GradientReversalFunction.apply(x, self.lambd)
+
+
 class AgePriorNet(nn.Module):
     """
     AgePriorNet
@@ -91,6 +114,7 @@ class DualPathVAE(nn.Module):
         encoder_hidden_dim: int = 256,
         decoder_hidden_dim: int = 256,
         prior_hidden_dim: int = 64,
+        adv_grl_lambda: float = 1.0,
     ):
         super().__init__()
 
@@ -150,6 +174,17 @@ class DualPathVAE(nn.Module):
             nn.Linear(hidden_age, max(4, hidden_age // 2)),
             nn.ReLU(),
             nn.Linear(max(4, hidden_age // 2), num_age_groups),
+        )
+
+        # - adversarial age classifier on z_id: 使用 GRL 對抗移除 z_id 內的年齡資訊
+        hidden_adv = max(16, latent_id_dim // 2)
+        self.id_age_grl = GradientReversalLayer(lambd=adv_grl_lambda)
+        self.id_age_adv_classifier = nn.Sequential(
+            nn.Linear(latent_id_dim, hidden_adv),
+            nn.ReLU(),
+            nn.Linear(hidden_adv, max(8, hidden_adv // 2)),
+            nn.ReLU(),
+            nn.Linear(max(8, hidden_adv // 2), num_age_groups),
         )
 
     @staticmethod
@@ -251,6 +286,9 @@ class DualPathVAE(nn.Module):
         logits_spk = self.speaker_classifier(mu_id)
         logits_age = self.age_classifier(mu_age)
 
+        # F) 對抗分類（以 z_id 為輸入）
+        logits_age_adv = self.id_age_adv_classifier(self.id_age_grl(z_id))
+
         return {
             "recon_speaker_emb": recon_speaker_emb,
             "z_age": z_age,
@@ -263,6 +301,7 @@ class DualPathVAE(nn.Module):
             "logvar_p": logvar_p,
             "logits_spk": logits_spk,
             "logits_age": logits_age,
+            "logits_age_adv": logits_age_adv,
         }
 
 
@@ -289,7 +328,8 @@ class DualPathVAELoss(nn.Module):
         lambda_kl_id: float = 1.0,
         lambda_cls_spk: float = 1.0,
         lambda_cls_age: float = 1.0,
-        lambda_cosine_disentangle: float = 0.1,
+        lambda_adv_age_id: float = 0.0,
+        lambda_cosine_disentangle: float = 0.0,
     ):
         super().__init__()
         self.lambda_recon = lambda_recon
@@ -297,7 +337,8 @@ class DualPathVAELoss(nn.Module):
         self.lambda_kl_id = lambda_kl_id
         self.lambda_cls_spk = lambda_cls_spk
         self.lambda_cls_age = lambda_cls_age
-        self.lambda_cosine_disentangle = lambda_cosine_disentangle
+        self.lambda_adv_age_id = lambda_adv_age_id
+        self.lambda_cosine_disentangle = lambda_cosine_disentangle  # backward compatibility
         self.ce_loss = nn.CrossEntropyLoss()
 
     @staticmethod
@@ -364,6 +405,7 @@ class DualPathVAELoss(nn.Module):
         logvar_p = outputs["logvar_p"]
         logits_spk = outputs["logits_spk"]
         logits_age = outputs["logits_age"]
+        logits_age_adv = outputs.get("logits_age_adv", None)
 
         # 1) Reconstruction Loss：確保 z_age + z_id 能重建原始 S
         recon_loss = F.mse_loss(recon_speaker_emb, speaker_emb_target, reduction="mean")
@@ -378,12 +420,11 @@ class DualPathVAELoss(nn.Module):
         cls_spk = self.ce_loss(logits_spk, target_spk.long())
         cls_age = self.ce_loss(logits_age, target_age.long())
 
-        # 5) 餘弦相似度損失：鼓勵 mu_id 與 mu_age 在共同子空間上更不相似
-        # 由於 latent 維度可能不同，使用前 min_dim 維做 cosine。
-        min_dim = min(mu_id.size(1), mu_age.size(1))
-        mu_id_align = F.normalize(mu_id[:, :min_dim], p=2, dim=1)
-        mu_age_align = F.normalize(mu_age[:, :min_dim], p=2, dim=1)
-        cosine_disentangle = torch.abs((mu_id_align * mu_age_align).sum(dim=1)).mean()
+        # 5) z_id 年齡對抗損失（GRL 已在模型內處理反向梯度）
+        if logits_age_adv is None:
+            adv_age_id = torch.zeros((), device=mu_id.device, dtype=mu_id.dtype)
+        else:
+            adv_age_id = self.ce_loss(logits_age_adv, target_age.long())
 
         # 6) 總損失加權組合
         total_loss = (
@@ -392,7 +433,7 @@ class DualPathVAELoss(nn.Module):
             + self.lambda_kl_id * kl_id
             + self.lambda_cls_spk * cls_spk
             + self.lambda_cls_age * cls_age
-            + self.lambda_cosine_disentangle * cosine_disentangle
+            + self.lambda_adv_age_id * adv_age_id
         )
 
         loss_dict = {
@@ -402,7 +443,7 @@ class DualPathVAELoss(nn.Module):
             "kl_id": kl_id.detach(),
             "cls_spk": cls_spk.detach(),
             "cls_age": cls_age.detach(),
-            "cosine_disentangle": cosine_disentangle.detach(),
+            "adv_age_id": adv_age_id.detach(),
         }
 
         return total_loss, loss_dict
