@@ -8,7 +8,7 @@ from model.disentangled_model.arcface import ArcMarginProduct
 class LinearDecorrMLP(nn.Module):
     """
     ECAPA speaker embedding 後接 MLP，最後輸出線性空間向量 z。
-    z 的第 0 維給年齡分類，其餘維度給說話者分類。
+    z 的前 age_dim 維給年齡分類，其餘維度給說話者分類。
     """
 
     def __init__(
@@ -19,11 +19,16 @@ class LinearDecorrMLP(nn.Module):
         num_speakers: int,
         num_age_groups: int,
         dropout: float = 0.1,
+        age_dim: int = 2,
     ):
         super().__init__()
 
-        if output_dim < 2:
-            raise ValueError("output_dim 必須 >= 2，至少要有 1 維年齡 + 1 維說話者")
+        if age_dim < 1:
+            raise ValueError("age_dim 必須 >= 1")
+        if output_dim <= age_dim:
+            raise ValueError("output_dim 必須 > age_dim，至少要有年齡維度 + 1 維說話者")
+
+        self.age_dim = age_dim
 
         if isinstance(hidden_dims, int):
             hidden_dims = [hidden_dims]
@@ -46,16 +51,33 @@ class LinearDecorrMLP(nn.Module):
         layers.append(nn.Linear(prev_dim, output_dim))
         self.projector = nn.Sequential(*layers)
 
-        self.age_head = nn.Linear(1, num_age_groups)
-        self.spk_head = nn.Linear(output_dim - 1, num_speakers)
+        self.age_head = nn.Linear(age_dim, num_age_groups)
+        self.spk_head = nn.Linear(output_dim - age_dim, num_speakers)
+        
+        # 非線性分類頭 (暫時不使用)
+        age_hidden_dim = max(age_dim * 4, 16)
+        self.age_head_nonlinear = nn.Sequential(
+            nn.Linear(age_dim, age_hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(age_hidden_dim, num_age_groups),
+        )
+        
+        spk_hidden_dim = max((output_dim - age_dim) * 2, 128)
+        self.spk_head_nonlinear = nn.Sequential(
+            nn.Linear(output_dim - age_dim, spk_hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(spk_hidden_dim, num_speakers),
+        )
 
     def forward(self, speaker_emb: torch.Tensor):
         z = self.projector(speaker_emb)
-        z_age = z[:, :1]
-        z_id = z[:, 1:]
+        z_age = z[:, : self.age_dim]
+        z_id = z[:, self.age_dim :]
 
-        logits_age = self.age_head(z_age)
-        logits_spk = self.spk_head(z_id)
+        # logits_age = self.age_head(z_age)
+        # logits_spk = self.spk_head(z_id)
+        logits_age = self.age_head_nonlinear(z_age)
+        logits_spk = self.spk_head_nonlinear(z_id)
 
         return {
             "z": z,
@@ -65,28 +87,49 @@ class LinearDecorrMLP(nn.Module):
             "logits_spk": logits_spk,
         }
 
-
-def linear_correlation_loss(z: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+def linear_correlation_loss(z_age: torch.Tensor, z_id: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """
-    對 z 的每個維度計算線性相關性懲罰：
-    1) 先做零均值 + 標準差正規化
-    2) 估計相關係數矩陣
-    3) 最小化非對角線元素平方平均
+    只最小化 z_age 與 z_id 之間的線性相關性，不干涉 z_id 內部的相關性。
+    """
+    batch_size = z_age.shape[0]
+    
+    # 標準化 z_age
+    z_age_centered = z_age - z_age.mean(dim=0, keepdim=True)
+    z_age_norm = z_age_centered / z_age_centered.std(dim=0, unbiased=False, keepdim=True).clamp_min(eps)
+    
+    # 標準化 z_id
+    z_id_centered = z_id - z_id.mean(dim=0, keepdim=True)
+    z_id_norm = z_id_centered / z_id_centered.std(dim=0, unbiased=False, keepdim=True).clamp_min(eps)
+    
+    # 計算 z_age 與 z_id 之間的交叉相關矩陣 (shape: [dim_age, dim_id])
+    cross_corr = (z_age_norm.transpose(0, 1) @ z_id_norm) / float(batch_size)
+    
+    # 最小化交叉相關矩陣的平方和
+    return cross_corr.pow(2).mean()
+
+
+def compute_age_neuron_correlations(z: torch.Tensor, age_dim: int = 2, eps: float = 1e-6):
+    """
+    計算前 age_dim 個年齡神經元與其他神經元的相關係數。
+    返回相關係數矩陣，其中前 age_dim 個欄位對應年齡神經元自身。
     """
     if z.dim() != 2:
         raise ValueError(f"z 需為 [batch, dim]，目前 shape={tuple(z.shape)}")
 
     batch_size, dim = z.shape
-    if batch_size < 2 or dim < 2:
-        return z.new_zeros(())
+    if batch_size < 2 or dim < age_dim:
+        return None
 
     z_centered = z - z.mean(dim=0, keepdim=True)
     z_std = z_centered.std(dim=0, unbiased=False, keepdim=True).clamp_min(eps)
     z_norm = z_centered / z_std
 
+    # 計算相關係數矩陣
     corr = (z_norm.transpose(0, 1) @ z_norm) / float(batch_size)
-    off_diag = corr - torch.diag(torch.diag(corr))
-    return off_diag.pow(2).mean()
+    # 提取年齡神經元與所有神經元的相關係數
+    # 先 detach，避免在 requires_grad=True 的圖中直接轉 numpy 造成錯誤
+    age_corr = corr[:age_dim, :].detach().cpu().numpy()
+    return age_corr
 
 
 class LinearDecorrLoss(nn.Module):
@@ -117,14 +160,14 @@ class LinearDecorrLoss(nn.Module):
         arcface_logits = self.arcface(outputs["z_id"], target_spk)
         loss_spk = F.cross_entropy(arcface_logits, target_spk)
         loss_age = F.cross_entropy(outputs["logits_age"], target_age)
-        loss_decorr = linear_correlation_loss(outputs["z"])
+        loss_decorr = linear_correlation_loss(outputs["z_age"], outputs["z_id"])
 
         total_loss = (
             self.lambda_spk * loss_spk
             + self.lambda_age * loss_age
             + self.lambda_decorr * loss_decorr
         )
-
+        
         loss_dict = {
             "loss_spk": loss_spk.detach(),
             "loss_age": loss_age.detach(),

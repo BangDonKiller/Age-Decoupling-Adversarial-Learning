@@ -21,6 +21,7 @@ class Vox2Dataset(Dataset):
         rir_path,
         augment=False,
         num_frames=200,
+        min_utts_per_speaker: int = 10,
         suffix: str = ".wav",
         age_target_mode: str = "raw",
         use_acoustic_features: bool = False,
@@ -31,6 +32,7 @@ class Vox2Dataset(Dataset):
         self.audio_meta_dir = Path(audio_meta_dir)
         self.augment = augment
         self.num_frames = num_frames
+        self.min_utts_per_speaker = min_utts_per_speaker
         self.age_target_mode = age_target_mode
         self.use_acoustic_features = use_acoustic_features
         self.acoustic_feature_type = acoustic_feature_type
@@ -68,11 +70,17 @@ class Vox2Dataset(Dataset):
         }
         
         self.meta = self.read_meta_file(self.audio_meta_dir)
-        self.datalist = self.get_audio_paths()
+        self.datalist = self.get_audio_paths(
+            num_utts_per_speaker=self.min_utts_per_speaker,
+            min_utts_per_speaker=self.min_utts_per_speaker,
+        )
+        self._print_age_label_distribution()
+
+        filtered_speakers = sorted({speaker_id for _, speaker_id, _, _ in self.datalist})
         
         self.speaker2idx = {
             speaker_id: idx
-            for idx, speaker_id in enumerate(sorted(self.meta.keys()))
+            for idx, speaker_id in enumerate(filtered_speakers)
         }
         
         self.idx2speaker = {
@@ -218,6 +226,23 @@ class Vox2Dataset(Dataset):
 
     def __len__(self):
         return len(self.datalist)
+
+    def _print_age_label_distribution(self):
+        """輸出每個年齡組（或年齡標籤）佔所有標籤的比例。"""
+        if len(self.datalist) == 0:
+            print("年齡標籤統計: datalist 為空")
+            return
+
+        age_counts = {}
+        for _, _, _, age in self.datalist:
+            age_counts[age] = age_counts.get(age, 0) + 1
+
+        total = len(self.datalist)
+        print("年齡標籤比例統計:")
+        for age_label in sorted(age_counts.keys()):
+            count = age_counts[age_label]
+            ratio = count / total
+            print(f"  年齡標籤 {age_label}: {count}/{total} ({ratio:.2%})")
     
     def read_meta_file(self, meta_path: str):
         """
@@ -288,18 +313,25 @@ class Vox2Dataset(Dataset):
 
         return meta_dict
     
-    def get_audio_paths(self, num_utts_per_speaker=10):
+    def get_audio_paths(self, num_utts_per_speaker=10, min_utts_per_speaker=None):
         data_list = []
+        if min_utts_per_speaker is None:
+            min_utts_per_speaker = num_utts_per_speaker
+
+        total_speakers = len(self.meta)
+        filtered_out = 0
 
         for speaker_id, info in self.meta.items():
             gender = info["gender"]
             utts = list(info["utts"].keys())
 
-            # 該 speaker 的 utterance 不足 10 個 → 全拿
-            sampled_utts = random.sample(
-                utts,
-                k=min(num_utts_per_speaker, len(utts))
-            )
+            # 先篩掉 utterance 不足門檻的 speaker
+            if len(utts) < min_utts_per_speaker:
+                filtered_out += 1
+                continue
+
+            # 每位 speaker 固定抽取 num_utts_per_speaker 筆
+            sampled_utts = random.sample(utts, k=num_utts_per_speaker)
 
             for utt in sampled_utts:
                 audio_folder = Path(self.audio_dir) / speaker_id / f"{utt}"
@@ -309,6 +341,12 @@ class Vox2Dataset(Dataset):
                 utt_info = info["utts"][utt]
 
                 data_list.append((str(random_select),speaker_id,gender,utt_info["age"]))
+
+        kept_speakers = total_speakers - filtered_out
+        print(
+            f"Vox2 speaker filter: kept {kept_speakers}/{total_speakers} speakers "
+            f"(min_utts_per_speaker={min_utts_per_speaker})"
+        )
                 
         # count the speaker, gender, age group amount in datalist, and print the min and max utterance amount among speakers
         # speaker_count = len(set([item[1] for item in data_list]))
