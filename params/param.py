@@ -33,8 +33,8 @@ DATASET_INFO = {
     "VoxCeleb1": {
         "AUDIO_META_DIR": "/app/dataset/VoxCeleb1/vox1_meta.csv",
         "Vox-O": {
-            "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-O.txt",
+            "AUDIO_DIR": ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"],
+            "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/Vox-O.txt",
             "audio_suffix": ".wav",
         },
         "Vox-E": {
@@ -48,8 +48,8 @@ DATASET_INFO = {
             "audio_suffix": ".wav",
         },
         "Vox-CA5": {
-            "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-CA5.txt",
+            "AUDIO_DIR": ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"],
+            "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/Vox-CA5.txt",
             "audio_suffix": ".wav",
         },
         "Vox-CA10": {
@@ -70,8 +70,7 @@ DATASET_INFO = {
     },
     "VoxCeleb2": {
         "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
-        "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_meta.csv",
-        "TRAIN_LIST": "/app/dataset/VoxCeleb2/train_list.txt",
+        "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5.csv",
         "audio_suffix": ".m4a",
     },
     "LibriSpeech": {
@@ -89,7 +88,7 @@ DATASET_INFO = {
         "audio_suffix": ".wav",
     },
     "MUSAN": {
-        "AUDIO_DIR": "\\app\\dataset\\musan\\musan",
+        "AUDIO_DIR": "/app/dataset/musan/musan",
     },
     "RIR": {
         "AUDIO_DIR": "/app/dataset/sim_rir_16k/simulated_rirs_16k",
