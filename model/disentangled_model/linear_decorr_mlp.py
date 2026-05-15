@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.disentangled_model.arcface import ArcMarginProduct
+from loss.arcface import ArcMarginProduct
 
 
 class LinearDecorrMLP(nn.Module):
@@ -55,29 +55,29 @@ class LinearDecorrMLP(nn.Module):
         self.spk_head = nn.Linear(output_dim - age_dim, num_speakers)
         
         # 非線性分類頭 (暫時不使用)
-        age_hidden_dim = max(age_dim * 4, 16)
-        self.age_head_nonlinear = nn.Sequential(
-            nn.Linear(age_dim, age_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(age_hidden_dim, num_age_groups),
-        )
+        # age_hidden_dim = max(age_dim * 4, 16)
+        # self.age_head_nonlinear = nn.Sequential(
+        #     nn.Linear(age_dim, age_hidden_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(age_hidden_dim, num_age_groups),
+        # )
         
-        spk_hidden_dim = max((output_dim - age_dim) * 2, 128)
-        self.spk_head_nonlinear = nn.Sequential(
-            nn.Linear(output_dim - age_dim, spk_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(spk_hidden_dim, num_speakers),
-        )
+        # spk_hidden_dim = max((output_dim - age_dim) * 2, 128)
+        # self.spk_head_nonlinear = nn.Sequential(
+        #     nn.Linear(output_dim - age_dim, spk_hidden_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(spk_hidden_dim, num_speakers),
+        # )
 
     def forward(self, speaker_emb: torch.Tensor):
         z = self.projector(speaker_emb)
         z_age = z[:, : self.age_dim]
         z_id = z[:, self.age_dim :]
 
-        # logits_age = self.age_head(z_age)
-        # logits_spk = self.spk_head(z_id)
-        logits_age = self.age_head_nonlinear(z_age)
-        logits_spk = self.spk_head_nonlinear(z_id)
+        logits_age = self.age_head(z_age)
+        logits_spk = self.spk_head(z_id)
+        # logits_age = self.age_head_nonlinear(z_age)
+        # logits_spk = self.spk_head_nonlinear(z_id)
 
         return {
             "z": z,
