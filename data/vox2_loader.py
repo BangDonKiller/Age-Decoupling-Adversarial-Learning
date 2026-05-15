@@ -7,8 +7,6 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import glob
 import os
-import numpy as np
-from tqdm import tqdm
 
 class Vox2Dataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
@@ -19,14 +17,11 @@ class Vox2Dataset(Dataset):
         audio_meta_dir: str,
         musan_path,
         rir_path,
-        augment=False,
+        augment=True,
         num_frames=200,
         min_utts_per_speaker: int = 10,
         suffix: str = ".wav",
         age_target_mode: str = "raw",
-        use_acoustic_features: bool = False,
-        acoustic_feature_type: str = "egemaps8",
-        acoustic_sample_rate: int = 16000,
     ):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
@@ -34,9 +29,6 @@ class Vox2Dataset(Dataset):
         self.num_frames = num_frames
         self.min_utts_per_speaker = min_utts_per_speaker
         self.age_target_mode = age_target_mode
-        self.use_acoustic_features = use_acoustic_features
-        self.acoustic_feature_type = acoustic_feature_type
-        self.acoustic_sample_rate = acoustic_sample_rate
         
         # 定義噪音類型與對應 SNR 範圍與數量
         self.noisetypes = ['noise','speech','music']
@@ -47,12 +39,17 @@ class Vox2Dataset(Dataset):
         self.noiselist = {}
         augment_files = glob.glob(os.path.join(musan_path,'*/*/*.wav'))
         for file in augment_files:
-            if file.split('\\')[-3] not in self.noiselist:
-                self.noiselist[file.split('\\')[-3]] = []
-            self.noiselist[file.split('\\')[-3]].append(file)
+            noisetype = Path(file).parts[-3]
+            if noisetype not in self.noiselist:
+                self.noiselist[noisetype] = []
+            self.noiselist[noisetype].append(file)
             
-        # for noisetype, files in self.noiselist.items():
-        #     print(f"  {noisetype}: {len(files)} 個檔案")
+        print("噪音類型與對應的檔案數量:")
+        for noisetype, files in self.noiselist.items():
+            print(f"  {noisetype}: {len(files)} 個檔案")
+        # if empty
+        if not self.noiselist:
+            print("警告: 沒有找到任何噪音檔案，請確認 musan_path 是否正確，且資料夾內有 wav 檔案。")
 
         # 讀取混響 RIR 檔案
         self.rir_files = glob.glob(os.path.join(rir_path,'*/*/*.wav'))
@@ -70,11 +67,8 @@ class Vox2Dataset(Dataset):
         }
         
         self.meta = self.read_meta_file(self.audio_meta_dir)
-        self.datalist = self.get_audio_paths(
-            num_utts_per_speaker=self.min_utts_per_speaker,
-            min_utts_per_speaker=self.min_utts_per_speaker,
-        )
-        self._print_age_label_distribution()
+        self.datalist = self.get_audio_paths()
+        # self._print_age_label_distribution()
 
         filtered_speakers = sorted({speaker_id for _, speaker_id, _, _ in self.datalist})
         
@@ -89,140 +83,6 @@ class Vox2Dataset(Dataset):
         }
         
         self.num_age_classes = len(self.conv_age)
-
-        # 可選：在 dataset 初始化時先做一次聲學特徵提取並快取，
-        # 避免每個 epoch / 每次 __getitem__ 重複計算。
-        self.acoustic_features = None
-        if self.use_acoustic_features:
-            self._init_acoustic_feature_extractor()
-            self._precompute_acoustic_features_with_progress()
-
-    def _init_acoustic_feature_extractor(self):
-        """初始化 OpenSMILE 抽取器（僅在 use_acoustic_features=True 時建立）。"""
-        try:
-            import opensmile
-        except Exception as exc:
-            raise ImportError(
-                "use_acoustic_features=True 需要安裝 opensmile，請先執行: pip install opensmile"
-            ) from exc
-
-        self._opensmile = opensmile
-        self._smile = opensmile.Smile(
-            feature_set=opensmile.FeatureSet.eGeMAPSv02,
-            feature_level=opensmile.FeatureLevel.Functionals,
-        )
-
-    def _extract_acoustic_feature_from_path(self, file_path: str) -> torch.Tensor:
-        """
-        從音檔路徑抽取聲學特徵。
-        目前支援:
-            - egemaps8: 回傳你指定的 8 維 vocal aging 特徵
-            - all:      回傳完整 eGeMAPS functionals（flatten）
-        """
-        waveform, sample_rate = torchaudio.load(file_path)
-
-        if sample_rate != self.acoustic_sample_rate:
-            waveform = torchaudio.functional.resample(waveform, sample_rate, self.acoustic_sample_rate)
-
-        if waveform.size(0) > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-
-        wav_np = waveform.squeeze(0).detach().cpu().float().numpy().astype(np.float32, copy=False)
-        feat_df = self._smile.process_signal(wav_np, self.acoustic_sample_rate)
-
-        if feat_df is None or feat_df.empty:
-            raise ValueError(f"OpenSMILE 回傳空特徵，檔案: {file_path}")
-
-        if self.acoustic_feature_type == "all":
-            vec = feat_df.to_numpy(dtype=np.float32).reshape(-1)
-            return torch.tensor(vec, dtype=torch.float32)
-
-        if self.acoustic_feature_type != "egemaps8":
-            raise ValueError(
-                f"Unsupported acoustic_feature_type: {self.acoustic_feature_type}，"
-                "目前僅支援 'egemaps8' 或 'all'。"
-            )
-
-        # egemaps8
-        target_map = {
-            "voicedSegmentsPerSecond": ["voicedSegmentsPerSecond", "VoicedSegmentsPerSec"],
-            "meanunVoicedSegmentLength": ["meanunVoicedSegmentLength", "MeanUnvoicedSegmentLength"],
-            "F0semitoneFrom27.5Hz_sma3nz_amean": ["F0semitoneFrom27.5Hz_sma3nz_amean"],
-            "F0semitoneFrom27.5Hz_sma3nz_stddevNorm": ["F0semitoneFrom27.5Hz_sma3nz_stddevNorm"],
-            "jitterLocal_sma3nz_amean": ["jitterLocal_sma3nz_amean"],
-            "shimmerLocaldB_sma3nz_amean": ["shimmerLocaldB_sma3nz_amean"],
-            # 不同 opensmile/eGeMAPS 版本在 HNR 的命名可能不同
-            "HNRdB1-10kHz_sma3nz_amean": [
-                "HNRdB1-10kHz_sma3nz_amean",
-                "HNRdBACF_sma3nz_amean",
-                "HNRdBACF_sma3_amean",
-                "logHNR_sma3nz_amean",
-            ],
-            # 不同版本可能是 alphaRatio 或 alphaRatioV
-            "alphaRatioV_sma3nz_amean": [
-                "alphaRatioV_sma3nz_amean",
-                "alphaRatio_sma3nz_amean",
-                "alphaRatioV_sma3_amean",
-                "alphaRatio_sma3_amean",
-            ],
-        }
-
-        columns = list(feat_df.columns)
-        lower_to_raw = {c.lower(): c for c in columns}
-        resolved = {}
-
-        for key, candidates in target_map.items():
-            picked = None
-            for cand in candidates:
-                if cand.lower() in lower_to_raw:
-                    picked = lower_to_raw[cand.lower()]
-                    break
-            if picked is None:
-                for cand in candidates:
-                    cand_lower = cand.lower()
-                    contains = [c for c in columns if cand_lower in c.lower()]
-                    if len(contains) > 0:
-                        picked = contains[0]
-                        break
-            if picked is None:
-                hnr_related = [c for c in columns if "hnr" in c.lower()]
-                alpha_related = [c for c in columns if "alpharatio" in c.lower()]
-                raise KeyError(
-                    f"找不到目標欄位 '{key}'，請檢查 opensmile 版本與特徵欄位命名。"
-                    f"\n可用 HNR 相關欄位: {hnr_related[:10]}"
-                    f"\n可用 alphaRatio 相關欄位: {alpha_related[:10]}"
-                )
-            resolved[key] = picked
-
-        feature_order = [
-            "voicedSegmentsPerSecond",
-            "meanunVoicedSegmentLength",
-            "F0semitoneFrom27.5Hz_sma3nz_amean",
-            "F0semitoneFrom27.5Hz_sma3nz_stddevNorm",
-            "jitterLocal_sma3nz_amean",
-            "shimmerLocaldB_sma3nz_amean",
-            "HNRdB1-10kHz_sma3nz_amean",
-            "alphaRatioV_sma3nz_amean",
-        ]
-
-        vec8 = np.array([feat_df.iloc[0][resolved[name]] for name in feature_order], dtype=np.float32)
-        if vec8.shape[0] != 8:
-            raise ValueError(f"輸出特徵維度錯誤，預期 8，實際 {vec8.shape[0]}")
-
-        return torch.tensor(vec8, dtype=torch.float32)
-
-    def _precompute_acoustic_features_with_progress(self):
-        """
-        預先計算整個 datalist 的聲學特徵，並用 tqdm 顯示進度。
-        """
-        self.acoustic_features = []
-        for file_path, _, _, _ in tqdm(
-            self.datalist,
-            desc="Precomputing acoustic features",
-            total=len(self.datalist),
-        ):
-            feat = self._extract_acoustic_feature_from_path(file_path)
-            self.acoustic_features.append(feat)
 
     def __len__(self):
         return len(self.datalist)
@@ -281,7 +141,7 @@ class Vox2Dataset(Dataset):
             utt = row["utterance"] if "utterance" in df.columns else row.iloc[1]
             # turn age into age group / raw age
             age_str = row["age"] if "age" in df.columns else row.iloc[2]
-            age = int(age_str)
+            age = int(float(age_str))
 
             converted_age = self.conv_age.get(next((r for r in self.conv_age if age in r), None), -1)
             if converted_age == -1:
@@ -313,40 +173,27 @@ class Vox2Dataset(Dataset):
 
         return meta_dict
     
-    def get_audio_paths(self, num_utts_per_speaker=10, min_utts_per_speaker=None):
+    def get_audio_paths(self):
         data_list = []
-        if min_utts_per_speaker is None:
-            min_utts_per_speaker = num_utts_per_speaker
-
         total_speakers = len(self.meta)
-        filtered_out = 0
 
         for speaker_id, info in self.meta.items():
             gender = info["gender"]
             utts = list(info["utts"].keys())
 
-            # 先篩掉 utterance 不足門檻的 speaker
-            if len(utts) < min_utts_per_speaker:
-                filtered_out += 1
-                continue
-
-            # 每位 speaker 固定抽取 num_utts_per_speaker 筆
-            sampled_utts = random.sample(utts, k=num_utts_per_speaker)
-
-            for utt in sampled_utts:
+            # 保留每位 speaker 的全部 utterance，且把該 utterance 底下所有 m4a 都加入
+            for utt in utts:
                 audio_folder = Path(self.audio_dir) / speaker_id / f"{utt}"
                 audio_path = list(audio_folder.rglob(f"*.m4a"))
-                random_select = random.sample(audio_path, k=1)[0]
+                if not audio_path:
+                    raise FileNotFoundError(f"找不到 speaker {speaker_id} / utt {utt} 的 m4a 音檔")
 
                 utt_info = info["utts"][utt]
 
-                data_list.append((str(random_select),speaker_id,gender,utt_info["age"]))
+                for m4a_file in sorted(audio_path):
+                    data_list.append((str(m4a_file), speaker_id, gender, utt_info["age"]))
 
-        kept_speakers = total_speakers - filtered_out
-        print(
-            f"Vox2 speaker filter: kept {kept_speakers}/{total_speakers} speakers "
-            f"(min_utts_per_speaker={min_utts_per_speaker})"
-        )
+        print(f"Vox2 speaker filter: kept {total_speakers}/{total_speakers} speakers (all utterances included)")
                 
         # count the speaker, gender, age group amount in datalist, and print the min and max utterance amount among speakers
         # speaker_count = len(set([item[1] for item in data_list]))
@@ -381,12 +228,13 @@ class Vox2Dataset(Dataset):
         if signal.shape[0] > 1:
             signal = torch.mean(signal, dim=0, keepdim=True)
 
-        audio = self._match_waveform_length(signal, self._target_num_samples())
+        target_length = self._target_num_samples()
+        audio = self._match_waveform_length(signal, target_length)
         
         if self.augment:
             augtype = random.randint(0, 5)
-            if augtype == 0:   # 原始資料
-                audio = signal
+            if augtype == 0:   # 原始資料（已調整至固定長度）
+                pass  # 保持 audio 的固定長度
             elif augtype == 1: # 混響
                 audio = self.add_rev(signal)
             elif augtype == 2: # 語音型噪音（多人講話）
@@ -398,6 +246,9 @@ class Vox2Dataset(Dataset):
             elif augtype == 5: # 混合噪音（電視情境）
                 audio = self.add_noise(signal, 'speech')
                 audio = self.add_noise(audio, 'music')
+            
+            # 確保所有分支都返回固定長度
+            audio = self._match_waveform_length(audio, target_length)
             
         audio = audio.squeeze(0)  # [1, T] -> [T]
                 
@@ -492,10 +343,6 @@ class Vox2Dataset(Dataset):
         speaker_idx = self.speaker2idx[speaker_id]
         gender_idx = 1 if gender.lower() == 'm' else 0
         waveform = self._load_and_preprocess_audio(str(path))
-
-        if self.use_acoustic_features:
-            acoustic_feat = self.acoustic_features[idx]
-            return waveform, speaker_idx, gender_idx, age, acoustic_feat
 
         return waveform, speaker_idx, gender_idx, age
     

@@ -95,9 +95,11 @@ class PairwiseDataset(Dataset):
         datalist = []
         
         with open(meta_dir, "r") as f:
-            lines = f.readlines()[:30000]
+            lines = f.readlines()[:20000]
             
-        for line in tqdm(lines, desc="Building pairwise eval dataset"):
+        missing_age_count = 0
+        
+        for line in tqdm(lines, desc="Building zeroshot dataset"):
             line = line.split(" ")
             is_same_speaker = int(line[0])
             spk1_rel_path = line[1]
@@ -124,16 +126,20 @@ class PairwiseDataset(Dataset):
                     spk2_age = self.age_lookup.get((spk2_id, spk2_utt), None)
 
             if spk1_age is None or spk2_age is None:
-                raise KeyError(
-                    f"找不到年齡標籤: spk1={spk1_rel_path}, spk2={spk2_rel_path}"
-                )
-            
+                # 先前會跳過缺少年齡標籤的樣本；暫時保留這些樣本並以 -1 填充年齡
+                if spk1_age is None:
+                    spk1_age = -1
+                    missing_age_count += 1
+                if spk2_age is None:
+                    spk2_age = -1
+                    missing_age_count += 1
+
             datalist.append((is_same_speaker, spk1_id, spk2_id, spk1_path, spk2_path, spk1_age, spk2_age))
             
         # 計算有多少組正對、有多少組負對
         pos_count = sum(1 for item in datalist if item[0] == 1)
         neg_count = sum(1 for item in datalist if item[0] == 0)
-        print(f"正對數量: {pos_count}, 負對數量: {neg_count}")    
+        print(f"正對數量: {pos_count}, 負對數量: {neg_count}, 跳過（缺年齡標籤）: {missing_age_count}")    
         
         return datalist
     

@@ -59,6 +59,7 @@ opensmile==2.6.0
 oyaml==1.0
 packaging==25.0
 pandas==2.3.3
+peft==0.19.1
 pillow==11.0.0
 platformdirs==4.5.0
 plotly==6.5.0
