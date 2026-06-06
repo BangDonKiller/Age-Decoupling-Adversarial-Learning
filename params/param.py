@@ -19,7 +19,9 @@ warnings.filterwarnings(
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-BATCH_SIZE = 128
+BATCH_SIZE = 256
+LEARNING_RATE = 1e-3  # 從零開始訓練，用更高的學習率
+NUM_WORKERS = 0
 
 MODEL_list = {
     # "ECAPA-TDNN": "speechbrain/spkrec-ecapa-voxceleb",
@@ -53,8 +55,8 @@ DATASET_INFO = {
             "audio_suffix": ".wav",
         },
         "Vox-CA10": {
-            "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-CA10.txt",
+            "AUDIO_DIR": ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"],
+            "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/Vox-CA10.txt",
             "audio_suffix": ".wav",
         },
         "Vox-CA15": {
@@ -67,11 +69,44 @@ DATASET_INFO = {
             "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/Vox-CA20.txt",
             "audio_suffix": ".wav",
         },
+        "Vox1-H.S": {
+            "AUDIO_DIR": ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"],
+            "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/Vox1_hard_sample.txt",
+            "audio_suffix": ".wav",
+        },
+        "Vox1-S.S": {
+            "AUDIO_DIR": ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"],
+            "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/same_session.txt",
+            "audio_suffix": ".wav",
+        },
+        "Vox-merge": {
+            "AUDIO_DIR": ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"],
+            "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/Vox1-merged.txt",
+            "audio_suffix": ".wav",
+        },
     },
     "VoxCeleb2": {
-        "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
-        "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5.csv",
-        "audio_suffix": ".m4a",
+        "LE5": {
+            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5",
+            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5.csv",
+        },
+        "Delta5": {
+            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta5",
+            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta5_utts.csv",
+        },
+        "Delta20": {
+            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta20",
+            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta20_utts.csv",
+        },
+        "Mixture": {
+            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_mixture",
+            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_mixture.csv",
+        },
+        "Mini": {
+            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_mini",
+            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_mini.csv",
+        },
+        "audio_suffix": ".wav",
     },
     "LibriSpeech": {
         "AUDIO_DIR": "D:\\Dataset\\LibriSpeech",
