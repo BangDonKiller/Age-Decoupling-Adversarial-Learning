@@ -2,6 +2,9 @@ Build image
 docker build -t adal .
 
 Run container
+Lab 5080 Server
+docker run --gpus device=0 -d --rm -it --name bandonkiller_adal_gpu_0 -v /home/bandonkiller/repo/Age-Decoupling-Adversarial-Learning:/app -v /home/bandonkiller/Dataset:/app/dataset adal 
+
 docker run --gpus device=0 -d --rm -it --name adal -v C:/vscode/Age-Decoupling-Adversarial-Learning:/app -v C:/Dataset:/app/dataset adal
 
 docker run --gpus device=0 -d --rm -it --name adal -v C:/Python/Master/ADAL:/app -v D:/Dataset:/app/dataset adal
