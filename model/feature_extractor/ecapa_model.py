@@ -27,44 +27,33 @@ class ECAPAModel(nn.Module):
             lr=1e-3,
             weight_decay=1e-5
         )
-        # self.lr_scheduler = WarmupExpDecayLR(
-        #     optimizer=self.optim,
-        #     total_steps=10000,
-        #     warmup_steps=500,
-        #     eta_0=1e-3,
-        #     eta_T=1e-5,
-        # )
-        
-        # 將 optimizer 的初始 lr 設為 0，由 scheduler 管理整個訓練過程
-        # for pg in self.optim.param_groups:
-        #     pg["lr"] = 0.0
   
-    def train_network(self, epoch, loader):
+    def train_network(self, epoch, loader, optimizer=None):
         self.train()
-        # self.lr_scheduler.step()
+
+        if optimizer is None:
+            optimizer = self.optim
 
         index, top1, loss = 0, 0, 0
-        lr = self.optim.param_groups[0]['lr']
+        lr = optimizer.param_groups[0]['lr']
         for num, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch+1}", ncols=100), start=1):
             data, labels = batch[:2]
-            self.zero_grad()
+            optimizer.zero_grad()
             labels = torch.LongTensor(labels).cuda()
             speaker_embedding = self.speaker_encoder.forward(data.cuda(), aug=True)
             nloss, prec = self.speaker_loss.forward(speaker_embedding, labels)
             nloss.backward()
-            self.optim.step()
+            optimizer.step()
 
-            index += len(labels)
-            top1 += prec
+            batch_size = len(labels)
+            index += batch_size
+            top1 += (prec / 100.0) * batch_size
             loss += nloss.detach().cpu().numpy()
 
         avg_loss = loss / num
-        avg_acc = top1 / index * len(labels)
+        avg_acc = top1 / index * 100.0
 
-        # 🔥 呼叫 TensorBoard logging
-        # self.log_tensorboard(epoch, avg_loss, avg_acc, None, None)
-
-        return avg_loss, lr, avg_acc
+        return avg_loss, avg_acc
     
     def validate_network(self, epoch, loader):
         self.eval()
@@ -76,18 +65,18 @@ class ECAPAModel(nn.Module):
                 speaker_embedding = self.speaker_encoder.forward(data.cuda(), aug=False)
                 nloss, prec = self.speaker_loss.forward(speaker_embedding, labels)
 
-                index += len(labels)
-                top1 += prec
+                batch_size = len(labels)
+                index += batch_size
+                top1 += (prec / 100.0) * batch_size
                 loss += nloss.detach().cpu().numpy()
 
         avg_loss = loss / num
-        avg_acc = top1 / index * len(labels)
+        avg_acc = top1 / index * 100.0
 
         return avg_loss, avg_acc        
         
     def evaluate_zero_shot(self, test_loader, device):
-        """Zero-shot pairwise evaluation mirroring ECAPA-TDNN_linear_decorr_mlp_step_based.eval_network.
-
+        """
         Returns EER computed on cosine similarity of encoder embeddings.
         """
         self.eval()
