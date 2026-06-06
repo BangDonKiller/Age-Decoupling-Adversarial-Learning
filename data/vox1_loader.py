@@ -23,17 +23,6 @@ class PairwiseDataset(Dataset):
         self.file_dir = audio_dir
         self.audio_meta_csv_path = audio_meta_csv_path
         
-        # 定義年齡分組
-        self.conv_age = {
-            range(0, 21): 0,
-            range(21, 31): 1,
-            range(31, 41): 2,
-            range(41, 51): 3,
-            range(51, 61): 4,
-            range(61, 71): 5,
-            range(71, 81): 6,
-        }
-        
         # 如果提供了 metadata CSV，讀取年齡資訊
         self.age_lookup = {}
         if audio_meta_csv_path is not None:
@@ -53,7 +42,7 @@ class PairwiseDataset(Dataset):
     
     def read_meta_file(self, meta_path: str):
         """
-        讀取 VoxCeleb1 metadata CSV，建立 (speaker_id, utterance) -> age_group 的查詢表
+        讀取 VoxCeleb1 metadata CSV，建立 (speaker_id, utterance) -> age 的查詢表
         """
         lookup = {}
         df = pd.read_csv(
@@ -71,20 +60,12 @@ class PairwiseDataset(Dataset):
             
             try:
                 age = int(age_str)
-                # 找到對應的年齡組
-                age_group = None
-                for age_range, group_idx in self.conv_age.items():
-                    if age in age_range:
-                        age_group = group_idx
-                        break
-                
-                if age_group is None:
-                    if age < 0 or age > 80:
-                        print(f"警告: 年齡超出範圍 {age} for speaker {speaker}")
-                        continue
+                if age < 0 or age > 120:
+                    print(f"警告: 年齡超出範圍 {age} for speaker {speaker}")
+                    continue
                 
                 key = (str(speaker).strip(), str(utt).strip())
-                lookup[key] = age_group
+                lookup[key] = age
             except (ValueError, TypeError) as e:
                 print(f"警告: 無法解析年齡資訊 - {e}")
                 continue
@@ -95,7 +76,7 @@ class PairwiseDataset(Dataset):
         datalist = []
         
         with open(meta_dir, "r") as f:
-            lines = f.readlines()[:20000]
+            lines = f.readlines()[:]
             
         missing_age_count = 0
         
