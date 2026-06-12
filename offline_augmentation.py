@@ -11,6 +11,8 @@ import torchaudio
 import torchaudio.transforms as T
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 TARGET_SAMPLE_RATE = 16000
 TARGET_DURATION_SEC = 2.0
@@ -38,7 +40,7 @@ def parse_args():
     p.add_argument("--methods", nargs="*", default=["rev", "noise_speech", "noise_music", "noise_noise", "mix_speech_music"])
     p.add_argument("--output_ext", default=".wav", help="輸出檔案副檔名 (預設 .wav)")
     p.add_argument("--output_dir", required=False, default=None)
-    p.add_argument("--batch_size", type=int, default=128, help="GPU 批次大小")
+    p.add_argument("--batch_size", type=int, default=1, help="GPU 批次大小")
     p.add_argument("--num_workers", type=int, default=0, help="DataLoader 讀取檔案的 CPU 核心數")
     return p.parse_args()
 
