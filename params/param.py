@@ -86,6 +86,36 @@ DATASET_INFO = {
         },
     },
     "VoxCeleb2": {
+        "small": {
+            "train": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_small_gap",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_small_gap.csv",
+            },
+            "val": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_small_gap.csv",
+            },
+        },
+        "medium": {
+            "train": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_medium_gap",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_medium_gap.csv",
+            },
+            "val": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_medium_gap.csv",
+            },
+        },
+        "large": {
+            "train": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_large_gap",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_large_gap.csv",
+            },
+            "val": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_large_gap.csv",
+            },
+        },
         "LE5": {
             "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5",
             "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5.csv",

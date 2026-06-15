@@ -14,6 +14,7 @@ class Vox2PairDataset(Dataset):
     ):
         self.audio_dir = Path(audio_dir)
         self.audio_meta_dir = Path(audio_meta_dir)
+        self.datalist = []
         self.expert_mapping = {
             "small": 0,
             "medium": 1,

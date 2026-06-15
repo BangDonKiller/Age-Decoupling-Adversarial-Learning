@@ -11,15 +11,15 @@ class SiameseNetwork(nn.Module):
         self.encoder = ECAPA_TDNN(C=1024)
         self.load_parameters("pretrained_models/pretrain.model")
         
-    def forward(self, x1, x2):
+    def forward(self, x1, x2, spec_aug):
         # 提取兩個輸入的特徵
-        feat1 = self.encoder(x1)
-        feat2 = self.encoder(x2)
+        feat1 = self.encoder(x1, aug=spec_aug)
+        feat2 = self.encoder(x2, aug=spec_aug)
         
-        # 計算兩個特徵之間的距離（例如歐氏距離）
-        distance = F.pairwise_distance(feat1, feat2)
+        # 計算兩個特徵之間的距離（例如餘弦距離）
+        distance = F.cosine_similarity(feat1, feat2)
         
-        return distance
+        return feat1, feat2, distance
     
     def load_parameters(self, path):
         checkpoint = torch.load(path, map_location="cpu")
