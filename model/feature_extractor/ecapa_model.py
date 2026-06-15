@@ -2,7 +2,6 @@
 This part is used to train the speaker model and evaluate the performances
 '''
 
-from model.feature_extractor.ecapa_tdnn_ver2 import ECAPA_TDNN
 from tool.linear_decorr_training_utils import WarmupExpDecayLR
 import torch
 import torch.nn.functional as F

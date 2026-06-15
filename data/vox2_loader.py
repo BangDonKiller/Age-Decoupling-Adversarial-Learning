@@ -1,9 +1,84 @@
+from numpy import random
 import pandas as pd
 from pathlib import Path
 import torch
 import torchaudio
 from torch.utils.data import Dataset, DataLoader
 
+class Vox2PairDataset(Dataset):
+    """讀取音檔並 preprocess 到 16kHz 單聲道張量，並且每次回傳一對 speaker 的音檔與年齡差距"""
+    def __init__(
+        self,
+        audio_dir: str,
+        audio_meta_dir: str,
+    ):
+        self.audio_dir = Path(audio_dir)
+        self.audio_meta_dir = Path(audio_meta_dir)
+        self.expert_mapping = {
+            "small": 0,
+            "medium": 1,
+            "large": 2
+        }
+
+        self.datalist = self.read_meta_file(self.audio_meta_dir)
+        
+    def __len__(self):
+        return len(self.datalist)
+    
+    def read_meta_file(self, meta_path: str):
+        """
+        column: 
+            label: 0 or 1 (0: 同一說話者, 1: 不同說話者)
+            speaker1_path: 說話者1的音檔路徑
+            speaker2_path: 說話者2的音檔路徑
+            age_diff: 說話者之間的年齡差距
+            expert: 理想情況下，哪位專家應該處理這些數據？
+        """
+        df = pd.read_csv(
+            meta_path,
+            sep=",",
+            header=0,  # 表示第一列是 header，要跳過
+            dtype={"expert": str}   # 先讀成字串，後續再轉數字
+        )
+        
+        for _, row in df.iterrows():
+            label = int(row["label"])
+            speaker1_path = Path(self.audio_dir) / Path(row["speaker1_path"])
+            speaker2_path = Path(self.audio_dir) / Path(row["speaker2_path"])
+            
+            # 年齡差請四捨五入到第二位
+            age_diff = round(float(row["age_diff"]), 2)
+            expert = self.expert_mapping.get(row["expert"], -1)
+
+            self.datalist.append((label, speaker1_path, speaker2_path, age_diff, expert))
+        
+        return self.datalist
+    
+    def _load_and_preprocess_audio(self, folder_path: str) -> torch.Tensor:
+        # 從 folder_path 中隨機選一個 wav 讀取
+        wav_files = list(Path(folder_path).glob("*.wav"))
+        if not wav_files:
+            raise FileNotFoundError(f"No wav files found in {folder_path}")
+        
+        file_path = str(random.choice(wav_files))
+        signal, _ = torchaudio.load(file_path)
+
+        # Mono
+        if signal.shape[0] > 1:
+            signal = torch.mean(signal, dim=0, keepdim=True)
+
+        audio = signal.squeeze(0)  # [1, T] -> [T]
+                
+        return audio
+    
+    def __getitem__(self, idx):
+        """on-the-fly 讀取兩個音檔並 preprocess，回傳兩個音檔的張量、年齡差距與對應專家標籤"""
+        label, folder1, folder2, age_diff, expert = self.datalist[idx]
+        waveform1 = self._load_and_preprocess_audio(str(folder1))
+        waveform2 = self._load_and_preprocess_audio(str(folder2))
+
+        return label, waveform1, waveform2, age_diff, expert
+        
 class Vox2Dataset(Dataset):
     """只負責讀取音檔並 preprocess 到 16kHz 單聲道張量"""
 
