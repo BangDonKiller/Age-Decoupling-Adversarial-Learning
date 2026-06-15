@@ -249,6 +249,16 @@ def append_csv_row(csv_path: str, row) -> None:
         writer.writerow(row)
 
 
+def print_parameter_summary(model) -> None:
+    total_params = sum(param.numel() for param in model.parameters())
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    trainable_ratio = 100.0 * trainable_params / total_params if total_params > 0 else 0.0
+
+    print(f"總參數量: {total_params:,}")
+    print(f"可訓練參數量: {trainable_params:,}")
+    print(f"可訓練參數占比: {trainable_ratio:.4f}%")
+
+
 def main():
     set_seed(SPLIT_SEED)
 
@@ -265,6 +275,7 @@ def main():
     model = build_model(apply_lora=(RUN_MODE == "train"))
     if RUN_MODE == "train":
         model.encoder.print_trainable_parameters()
+        print_parameter_summary(model)
 
     run_dir = Path(CHECKPOINT_ROOT) / RUN_NAME
     log_dir = Path(LOG_ROOT) / RUN_NAME
