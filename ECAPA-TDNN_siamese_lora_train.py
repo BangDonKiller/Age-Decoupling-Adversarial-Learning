@@ -259,7 +259,7 @@ def main():
     train_loader,val_loader = None, None
     if RUN_MODE == "train":
         train_loader = build_pair_loader(TRAIN_AUDIO_DIR, TRAIN_PAIR_META, shuffle=True)
-        val_loader = build_pair_loader(VAL_AUDIO_DIR, VAL_PAIR_META, shuffle=False, batch_size=1)
+        val_loader = build_pair_loader(VAL_AUDIO_DIR, VAL_PAIR_META, shuffle=False)
 
     print("建立 Siamese 模型...")
     model = build_model(apply_lora=(RUN_MODE == "train"))
