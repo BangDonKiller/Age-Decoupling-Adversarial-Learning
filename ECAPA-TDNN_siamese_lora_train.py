@@ -14,17 +14,17 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, get_peft_model
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data.vox2_loader import Vox2PairDataset
 from data.vox1_loader import PairwiseDataset
 from model.disentangled_model.siamese_network import SiameseNetwork
-from params.param import BATCH_SIZE, DATASET_INFO, DEVICE, LEARNING_RATE, NUM_WORKERS
+from loss.cosineloss import SmoothCosineLoss
+from params.param import BATCH_SIZE, DATASET_INFO, DEVICE, NUM_WORKERS
 from tool.EER import ComputeErrorRates, ComputeMinDcf, compute_eer
 
 warnings.filterwarnings(
@@ -42,10 +42,12 @@ warnings.filterwarnings(
 # ==========================================
 # 1) 基本設定
 # ==========================================
-RUN_MODE = "train"  # "train" 或 "inference"
+RUN_MODE = "inference"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
 TRAIN_DATASET_VARIANT = "small"
+TEST_DATASET_NAME = "VoxCeleb1"
+TEST_DATASET_VARIANT = "Vox-CA20"
 
 # train / val 都使用 Vox2PairDataset。測試時使用 PairwiseDataset 以驗證 LoRA adapter 的 zero-shot 能力
 TRAIN_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_DIR"]
@@ -53,13 +55,12 @@ TRAIN_PAIR_META = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train
 VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
 VAL_PAIR_META = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_META_DIR"]
 
-TEST_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["AUDIO_DIR"]
-TEST_PAIR_META = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["AUDIO_DATALIST"]
-TEST_PAIR_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["AUDIO_META_DIR"]
+TEST_AUDIO_DIR = DATASET_INFO[TEST_DATASET_NAME][TEST_DATASET_VARIANT]["AUDIO_DIR"]
+TEST_PAIR_META = DATASET_INFO[TEST_DATASET_NAME][TEST_DATASET_VARIANT]["AUDIO_DATALIST"]
+TEST_PAIR_META_CSV = DATASET_INFO[TEST_DATASET_NAME]["AUDIO_META_DIR"]
 
 PRETRAINED_PATH = "pretrained_models/pretrain.model"
 
-# LoRA target_modules 參考 ECAPA-TDNN_train.py
 MODULES = {
     1: ["attention.0", "attention.4"],
     2: ["layer4"],
@@ -71,11 +72,11 @@ LORA_R = 4
 LORA_ALPHA = 8
 LORA_DROPOUT = 0.05
 
-EPOCHS = 5
+EPOCHS = 10
+START_LR = 1e-3
+END_LR = 1e-5
 WEIGHT_DECAY = 1e-5
-MIN_LR = 0.0
 SPLIT_SEED = 42
-COSINE_MARGIN = 0.2
 
 CHECKPOINT_ROOT = "checkpoints/siamese_expert_lora"
 LOG_ROOT = "logs/siamese_expert_lora"
@@ -100,14 +101,10 @@ def build_pair_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: 
         num_workers=NUM_WORKERS,
     )
 
-def _to_cosine_target(same_label: torch.Tensor) -> torch.Tensor:
-    # 原始標籤: 0=不同人, 1=同人 -> 轉成 CosineEmbeddingLoss 需要的 -1/1
-    return same_label * 2 - 1
-
 def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
     is_train = optimizer is not None
     model.train(is_train)
-    criterion = torch.nn.CosineEmbeddingLoss(margin=COSINE_MARGIN)
+    criterion = SmoothCosineLoss()
 
     total_loss = 0.0
     total_correct = 0
@@ -130,8 +127,7 @@ def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
 
         feat1, feat2, cosine_score = model(wav1, wav2, spec_aug=is_train)
 
-        target = _to_cosine_target(same_label).to(feat1.dtype)
-        loss = criterion(feat1, feat2, target)
+        loss = criterion(feat1, feat2, same_label)
 
         if is_train:
             loss.backward()
@@ -157,11 +153,19 @@ def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
             "eer": float("nan"),
             "threshold": float("nan"),
             "min_dcf": float("nan"),
+            "pos_mean": float("nan"),
+            "pos_std": float("nan"),
+            "neg_mean": float("nan"),
+            "neg_std": float("nan"),
         }
 
     eer = float("nan")
     threshold = float("nan")
     min_dcf = float("nan")
+    pos_mean = float("nan")
+    pos_std = float("nan")
+    neg_mean = float("nan")
+    neg_std = float("nan")
     if compute_eer_metrics and all_scores:
         scores_np = torch.cat(all_scores).numpy()
         labels_np = torch.cat(all_labels).numpy()
@@ -170,12 +174,26 @@ def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
         fnrs, fprs, thresholds = ComputeErrorRates(scores_np, labels_np)
         min_dcf, _ = ComputeMinDcf(fnrs, fprs, thresholds, p_target=0.01, c_miss=1, c_fa=1)
 
+        pos_scores = scores_np[labels_np == 1]
+        neg_scores = scores_np[labels_np == 0]
+
+        if pos_scores.size > 0:
+            pos_mean = float(np.mean(pos_scores))
+            pos_std = float(np.std(pos_scores))
+        if neg_scores.size > 0:
+            neg_mean = float(np.mean(neg_scores))
+            neg_std = float(np.std(neg_scores))
+
     return {
         "loss": total_loss / total_count,
         "acc": 100.0 * total_correct / total_count,
         "eer": eer,
         "threshold": threshold,
         "min_dcf": min_dcf,
+        "pos_mean": pos_mean,
+        "pos_std": pos_std,
+        "neg_mean": neg_mean,
+        "neg_std": neg_std,
     }
 
 def evaluate_zero_shot(model, loader):
@@ -184,7 +202,7 @@ def evaluate_zero_shot(model, loader):
     all_labels = []
 
     with torch.no_grad():
-        for pair_label, wav1, wav2, _, _ in tqdm(loader, desc="Inference (zero-shot)", leave=False, dynamic_ncols=True):
+        for pair_label, id1, id2, wav1, wav2, _, _ in tqdm(loader, desc="Inference (zero-shot)", leave=False, dynamic_ncols=True):
             pair_label = pair_label.to(DEVICE, non_blocking=True)
             wav1 = wav1.to(DEVICE, non_blocking=True)
             wav2 = wav2.to(DEVICE, non_blocking=True)
@@ -269,7 +287,7 @@ def main():
     train_loader,val_loader = None, None
     if RUN_MODE == "train":
         train_loader = build_pair_loader(TRAIN_AUDIO_DIR, TRAIN_PAIR_META, shuffle=True)
-        val_loader = build_pair_loader(VAL_AUDIO_DIR, VAL_PAIR_META, shuffle=False)
+        val_loader = build_pair_loader(VAL_AUDIO_DIR, VAL_PAIR_META, shuffle=False, batch_size=1)
 
     print("建立 Siamese 模型...")
     model = build_model(apply_lora=(RUN_MODE == "train"))
@@ -289,7 +307,7 @@ def main():
         test_dataset = PairwiseDataset(
             audio_dir=TEST_AUDIO_DIR,
             audio_meta_dir=TEST_PAIR_META,
-            audio_meta_csv_path=DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["PAIR_META_CSV"],
+            audio_meta_csv_path=TEST_PAIR_META_CSV,
         )
         test_loader = DataLoader(
             test_dataset,
@@ -309,10 +327,14 @@ def main():
 
     optimizer = torch.optim.Adam(
         [p for p in model.parameters() if p.requires_grad],
-        lr=LEARNING_RATE,
+        lr=START_LR,
         weight_decay=WEIGHT_DECAY,
     )
-    scheduler = CosineAnnealingLR(optimizer, T_max=max(1, EPOCHS), eta_min=MIN_LR)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=EPOCHS,
+        eta_min=END_LR,
+    )
 
     csv_path = str(log_dir / "train_log.csv")
     save_csv_header(csv_path)
@@ -321,16 +343,24 @@ def main():
 
     print(f"開始訓練，總共 {EPOCHS} epochs")
     for epoch in range(EPOCHS):
+        current_lr = optimizer.param_groups[0]["lr"]
+
         train_stats = run_epoch(model, train_loader, optimizer=optimizer, compute_eer_metrics=False)
         val_stats = run_epoch(model, val_loader, optimizer=None, compute_eer_metrics=True)
 
-        current_lr = optimizer.param_groups[0]["lr"]
         print(
             f"Epoch [{epoch + 1:02d}/{EPOCHS}] | "
             f"LR {current_lr:.2e} | "
             f"Train loss {train_stats['loss']:.4f}, acc {train_stats['acc']:.2f}% | "
             f"Val loss {val_stats['loss']:.4f}, acc {val_stats['acc']:.2f}%, eer {val_stats['eer']:.4f}, minDCF {val_stats['min_dcf']:.4f}"
         )
+
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            print(
+                f"[Val Score Stats] Epoch {epoch + 1:02d} | "
+                f"Pos mean/std: {val_stats['pos_mean']:.4f}/{val_stats['pos_std']:.4f} | "
+                f"Neg mean/std: {val_stats['neg_mean']:.4f}/{val_stats['neg_std']:.4f}"
+            )
 
         append_csv_row(
             csv_path,

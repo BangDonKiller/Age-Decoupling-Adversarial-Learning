@@ -56,12 +56,12 @@ class Vox2PairDataset(Dataset):
         return self.datalist
     
     def _load_and_preprocess_audio(self, folder_path: str) -> torch.Tensor:
-        # 從 folder_path 中隨機選一個 wav 讀取
-        wav_files = list(Path(folder_path).glob("*.wav"))
-        if not wav_files:
-            raise FileNotFoundError(f"No wav files found in {folder_path}")
+        # 從 folder_path 中隨機選一個 wav or m4a 讀取
+        audio_files = list(Path(folder_path).glob("*.wav")) + list(Path(folder_path).glob("*.m4a"))
+        if not audio_files:
+            raise FileNotFoundError(f"No audio files found in {folder_path}")
         
-        file_path = str(random.choice(wav_files))
+        file_path = str(random.choice(audio_files))
         signal, _ = torchaudio.load(file_path)
 
         # Mono
