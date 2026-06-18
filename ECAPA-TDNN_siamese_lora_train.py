@@ -42,12 +42,12 @@ warnings.filterwarnings(
 # ==========================================
 # 1) 基本設定
 # ==========================================
-RUN_MODE = "inference"  # "train" 或 "inference"
+RUN_MODE = "train"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
 TRAIN_DATASET_VARIANT = "small"
 TEST_DATASET_NAME = "VoxCeleb1"
-TEST_DATASET_VARIANT = "Vox-CA20"
+TEST_DATASET_VARIANT = "Vox-CA10"
 
 # train / val 都使用 Vox2PairDataset。測試時使用 PairwiseDataset 以驗證 LoRA adapter 的 zero-shot 能力
 TRAIN_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_DIR"]
@@ -66,8 +66,9 @@ MODULES = {
     2: ["layer4"],
     3: ["fc6"],
     4: ["attention.0", "attention.4", "layer4", "fc6"],
+    5: ["conv1", "attention.0", "attention.4", "layer4", "fc6"]
 }
-MODULE_ID = 4
+MODULE_ID = 5
 LORA_R = 4
 LORA_ALPHA = 8
 LORA_DROPOUT = 0.05
