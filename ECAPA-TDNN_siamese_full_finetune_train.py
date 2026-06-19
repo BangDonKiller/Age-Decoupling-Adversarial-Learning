@@ -39,12 +39,12 @@ warnings.filterwarnings(
 # ==========================================
 # 1) 基本設定
 # ==========================================
-RUN_MODE = "train"  # "train" 或 "inference"
+RUN_MODE = "inference"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
 TRAIN_DATASET_VARIANT = "small"
 TEST_DATASET_NAME = "VoxCeleb1"
-TEST_DATASET_VARIANT = "Vox-O"
+TEST_DATASET_VARIANT = "Vox-CA20"
 
 # train / val 都使用 Vox2PairDataset。測試時使用 PairwiseDataset 做 zero-shot 評估
 TRAIN_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_DIR"]
@@ -57,7 +57,7 @@ TEST_PAIR_META = DATASET_INFO[TEST_DATASET_NAME][TEST_DATASET_VARIANT]["AUDIO_DA
 TEST_PAIR_META_CSV = DATASET_INFO[TEST_DATASET_NAME]["AUDIO_META_DIR"]
 
 EPOCHS = 10
-START_LR = 1e-4
+START_LR = 1e-5
 END_LR = 1e-6
 WEIGHT_DECAY = 1e-5
 SPLIT_SEED = 42
@@ -88,9 +88,9 @@ def build_pair_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: 
     )
 
 
-def run_validation(model, loader):
-    """執行驗證，回傳 loss, acc, eer, threshold, min_dcf 與相關統計。"""
-    model.eval()
+def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
+    is_train = optimizer is not None
+    model.train(is_train)
     criterion = SmoothCosineLoss()
 
     total_loss = 0.0
@@ -100,17 +100,26 @@ def run_validation(model, loader):
     all_scores = []
     all_labels = []
 
-    with torch.no_grad():
-        for pair_label, wav1, wav2, _, _ in tqdm(loader, desc="Val", leave=False, dynamic_ncols=True):
-            pair_label = pair_label.to(DEVICE, non_blocking=True)
-            wav1 = wav1.to(DEVICE, non_blocking=True)
-            wav2 = wav2.to(DEVICE, non_blocking=True)
+    desc = "Train" if is_train else "Val"
 
-            same_label = pair_label.float()
+    for pair_label, wav1, wav2, _, _ in tqdm(loader, desc=desc, leave=False, dynamic_ncols=True):
+        pair_label = pair_label.to(DEVICE, non_blocking=True)
+        wav1 = wav1.to(DEVICE, non_blocking=True)
+        wav2 = wav2.to(DEVICE, non_blocking=True)
 
-            feat1, feat2, cosine_score = model(wav1, wav2, spec_aug=False)
-            loss = criterion(feat1, feat2, same_label)
+        same_label = pair_label.float()
 
+        if is_train:
+            optimizer.zero_grad(set_to_none=True)
+
+        feat1, feat2, cosine_score = model(wav1, wav2, spec_aug=is_train)
+        loss = criterion(feat1, feat2, same_label)
+
+        if is_train:
+            loss.backward()
+            optimizer.step()
+
+        with torch.no_grad():
             pred_same = (cosine_score >= 0.0).long()
             correct = (pred_same == same_label.long()).sum().item()
 
@@ -119,8 +128,9 @@ def run_validation(model, loader):
             total_correct += correct
             total_loss += loss.item() * batch_size
 
-            all_scores.append(cosine_score.detach().cpu())
-            all_labels.append(same_label.detach().cpu().long())
+            if compute_eer_metrics:
+                all_scores.append(cosine_score.detach().cpu())
+                all_labels.append(same_label.detach().cpu().long())
 
     if total_count == 0:
         return {
@@ -143,7 +153,7 @@ def run_validation(model, loader):
     neg_mean = float("nan")
     neg_std = float("nan")
 
-    if all_scores:
+    if compute_eer_metrics and all_scores:
         scores_np = torch.cat(all_scores).numpy()
         labels_np = torch.cat(all_labels).numpy()
 
@@ -215,7 +225,7 @@ def save_csv_header(csv_path: str) -> None:
         writer = csv.writer(file_obj)
         writer.writerow(
             [
-                "global_step",
+                "epoch",
                 "lr",
                 "train_loss",
                 "train_acc",
@@ -223,10 +233,6 @@ def save_csv_header(csv_path: str) -> None:
                 "val_acc",
                 "val_eer",
                 "val_min_dcf",
-                "val_pos_mean",
-                "val_pos_std",
-                "val_neg_mean",
-                "val_neg_std",
             ]
         )
 
@@ -310,91 +316,52 @@ def main():
 
     best_val_eer = float("inf")
 
-    print(f"開始訓練，每 30 steps 驗證一次")
-    criterion = SmoothCosineLoss()
-    global_step = 0
-    best_step = 0
-
+    print(f"開始訓練，總共 {EPOCHS} epochs")
     for epoch in range(EPOCHS):
-        print(f"Epoch [{epoch + 1:02d}/{EPOCHS}]")
-        model.train()
-        total_loss = 0.0
-        total_correct = 0
-        total_count = 0
+        current_lr = optimizer.param_groups[0]["lr"]
 
-        for pair_label, wav1, wav2, _, _ in tqdm(train_loader, desc="Train", leave=False, dynamic_ncols=True):
-            pair_label = pair_label.to(DEVICE, non_blocking=True)
-            wav1 = wav1.to(DEVICE, non_blocking=True)
-            wav2 = wav2.to(DEVICE, non_blocking=True)
+        train_stats = run_epoch(model, train_loader, optimizer=optimizer, compute_eer_metrics=False)
+        val_stats = run_epoch(model, val_loader, optimizer=None, compute_eer_metrics=True)
 
-            same_label = pair_label.float()
+        print(
+            f"Epoch [{epoch + 1:02d}/{EPOCHS}] | "
+            f"LR {current_lr:.2e} | "
+            f"Train loss {train_stats['loss']:.4f}, acc {train_stats['acc']:.2f}% | "
+            f"Val loss {val_stats['loss']:.4f}, acc {val_stats['acc']:.2f}%, eer {val_stats['eer']:.4f}, minDCF {val_stats['min_dcf']:.4f}"
+        )
 
-            optimizer.zero_grad(set_to_none=True)
-            feat1, feat2, cosine_score = model(wav1, wav2, spec_aug=True)
-            loss = criterion(feat1, feat2, same_label)
-            loss.backward()
-            optimizer.step()
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            print(
+                f"[Val Score Stats] Epoch {epoch + 1:02d} | "
+                f"Pos mean/std: {val_stats['pos_mean']:.4f}/{val_stats['pos_std']:.4f} | "
+                f"Neg mean/std: {val_stats['neg_mean']:.4f}/{val_stats['neg_std']:.4f}"
+            )
 
-            with torch.no_grad():
-                pred_same = (cosine_score >= 0.0).long()
-                correct = (pred_same == same_label.long()).sum().item()
+        append_csv_row(
+            csv_path,
+            [
+                epoch + 1,
+                current_lr,
+                train_stats["loss"],
+                train_stats["acc"],
+                val_stats["loss"],
+                val_stats["acc"],
+                val_stats["eer"],
+                val_stats["min_dcf"],
+            ],
+        )
 
-                batch_size = pair_label.size(0)
-                total_count += batch_size
-                total_correct += correct
-                total_loss += loss.item() * batch_size
-                global_step += 1
+        last_ckpt = run_dir / "siamese_last.pt"
+        torch.save(model.state_dict(), str(last_ckpt))
 
-            # 每 30 步驗證一次
-            if global_step % 30 == 0:
-                current_lr = optimizer.param_groups[0]["lr"]
-                train_loss = total_loss / total_count
-                train_acc = 100.0 * total_correct / total_count
-                
-                val_stats = run_validation(model, val_loader)
-
-                print(
-                    f"  [Step {global_step}] LR {current_lr:.2e} | "
-                    f"Train loss {train_loss:.4f}, acc {train_acc:.2f}% | "
-                    f"Val loss {val_stats['loss']:.4f}, acc {val_stats['acc']:.2f}%, eer {val_stats['eer']:.4f}, minDCF {val_stats['min_dcf']:.4f}"
-                )
-
-                print(
-                    f"  [Score Stats] "
-                    f"Pos mean/std: {val_stats['pos_mean']:.4f}/{val_stats['pos_std']:.4f} | "
-                    f"Neg mean/std: {val_stats['neg_mean']:.4f}/{val_stats['neg_std']:.4f}"
-                )
-
-                append_csv_row(
-                    csv_path,
-                    [
-                        global_step,
-                        current_lr,
-                        train_loss,
-                        train_acc,
-                        val_stats["loss"],
-                        val_stats["acc"],
-                        val_stats["eer"],
-                        val_stats["min_dcf"],
-                        val_stats["pos_mean"],
-                        val_stats["pos_std"],
-                        val_stats["neg_mean"],
-                        val_stats["neg_std"],
-                    ],
-                )
-
-                last_ckpt = run_dir / "siamese_last.pt"
-                torch.save(model.state_dict(), str(last_ckpt))
-
-                if val_stats["eer"] < best_val_eer:
-                    best_val_eer = val_stats["eer"]
-                    best_step = global_step
-                    best_ckpt = run_dir / "siamese_best.pt"
-                    torch.save(model.state_dict(), str(best_ckpt))
+        if val_stats["eer"] < best_val_eer:
+            best_val_eer = val_stats["eer"]
+            best_ckpt = run_dir / "siamese_best.pt"
+            torch.save(model.state_dict(), str(best_ckpt))
 
         scheduler.step()
 
-    print(f"訓練完成，最佳驗證 EER: {best_val_eer:.4f} (Step {best_step})")
+    print(f"訓練完成，最佳驗證 EER: {best_val_eer:.4f}")
     print(f"最佳模型: {run_dir / 'siamese_best.pt'}")
     print(f"訓練紀錄: {csv_path}")
 
