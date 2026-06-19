@@ -89,7 +89,7 @@ DATASET_INFO = {
         "small": {
             "train": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_small_gap",
-                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_small_gap.csv",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_small_gap.csv",
             },
             "val": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
@@ -99,7 +99,7 @@ DATASET_INFO = {
         "medium": {
             "train": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_medium_gap",
-                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_medium_gap.csv",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_medium_gap.csv",
             },
             "val": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
@@ -109,7 +109,7 @@ DATASET_INFO = {
         "large": {
             "train": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_large_gap",
-                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_large_gap.csv",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_large_gap.csv",
             },
             "val": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
