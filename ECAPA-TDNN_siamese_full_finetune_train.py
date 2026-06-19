@@ -11,6 +11,7 @@ import os
 import random
 import warnings
 from pathlib import Path
+from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -43,8 +44,20 @@ RUN_MODE = "inference"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
 TRAIN_DATASET_VARIANT = "small"
-TEST_DATASET_NAME = "VoxCeleb1"
-TEST_DATASET_VARIANT = "Vox-CA20"
+
+TRAIN_SEEDS = [42, 1, 2026]
+INFERENCE_SEEDS = [42, 1, 2026]
+
+# 推論可同時跑多個測試資料集（dataset_name, dataset_variant）
+INFERENCE_DATASETS: List[Tuple[str, str]] = [
+    ("VoxCeleb1", "Vox-O"),
+    ("VoxCeleb1", "Vox1-H.S"),
+    ("VoxCeleb1", "Vox-CA10"),
+    ("VoxCeleb1", "Vox-CA20"),
+]
+
+# 若有指定，就優先使用這些權重；留空則會由 INFERENCE_SEEDS 自動組合路徑
+INFERENCE_CKPT_PATHS: List[str] = []
 
 # train / val 都使用 Vox2PairDataset。測試時使用 PairwiseDataset 做 zero-shot 評估
 TRAIN_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_DIR"]
@@ -52,20 +65,14 @@ TRAIN_PAIR_META = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train
 VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
 VAL_PAIR_META = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_META_DIR"]
 
-TEST_AUDIO_DIR = DATASET_INFO[TEST_DATASET_NAME][TEST_DATASET_VARIANT]["AUDIO_DIR"]
-TEST_PAIR_META = DATASET_INFO[TEST_DATASET_NAME][TEST_DATASET_VARIANT]["AUDIO_DATALIST"]
-TEST_PAIR_META_CSV = DATASET_INFO[TEST_DATASET_NAME]["AUDIO_META_DIR"]
-
 EPOCHS = 10
 START_LR = 1e-5
 END_LR = 1e-6
 WEIGHT_DECAY = 1e-5
-SPLIT_SEED = 42
 
 CHECKPOINT_ROOT = "checkpoints/siamese_full_finetune"
 LOG_ROOT = "logs/siamese_full_finetune"
-RUN_NAME = f"full_ft_lr1e4_{TRAIN_DATASET_VARIANT}"
-INFERENCE_CKPT_PATH = f"{CHECKPOINT_ROOT}/{RUN_NAME}/siamese_best.pt"
+RUN_NAME_BASE = f"full_ft_lr1e4_{TRAIN_DATASET_VARIANT}"
 
 
 def set_seed(seed: int = 42) -> None:
@@ -73,6 +80,31 @@ def set_seed(seed: int = 42) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def build_run_name(seed: int) -> str:
+    return f"{RUN_NAME_BASE}_seed{seed}"
+
+
+def resolve_inference_ckpt_paths() -> List[str]:
+    paths: List[str] = []
+
+    if INFERENCE_CKPT_PATHS:
+        paths.extend(INFERENCE_CKPT_PATHS)
+    else:
+        for seed in INFERENCE_SEEDS:
+            run_name = build_run_name(seed)
+            paths.append(str(Path(CHECKPOINT_ROOT) / run_name / "siamese_best.pt"))
+
+    unique_paths: List[str] = []
+    seen = set()
+    for path in paths:
+        normalized = str(Path(path))
+        if normalized not in seen:
+            unique_paths.append(normalized)
+            seen.add(normalized)
+
+    return unique_paths
 
 
 def build_pair_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: int = BATCH_SIZE) -> DataLoader:
@@ -213,6 +245,25 @@ def evaluate_zero_shot(model, loader):
     return eer, threshold, min_dcf
 
 
+def build_test_loader(dataset_name: str, dataset_variant: str) -> DataLoader:
+    test_audio_dir = DATASET_INFO[dataset_name][dataset_variant]["AUDIO_DIR"]
+    test_pair_meta = DATASET_INFO[dataset_name][dataset_variant]["AUDIO_DATALIST"]
+    test_pair_meta_csv = DATASET_INFO[dataset_name]["AUDIO_META_DIR"]
+
+    test_dataset = PairwiseDataset(
+        audio_dir=test_audio_dir,
+        audio_meta_dir=test_pair_meta,
+        audio_meta_csv_path=test_pair_meta_csv,
+    )
+
+    return DataLoader(
+        test_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+
 def build_model() -> SiameseNetwork:
     model = SiameseNetwork().to(DEVICE)
     for param in model.parameters():
@@ -253,52 +304,26 @@ def print_parameter_summary(model) -> None:
     print(f"可訓練參數占比: {trainable_ratio:.4f}%")
 
 
-def main():
-    set_seed(SPLIT_SEED)
+def train_single_seed(seed: int):
+    set_seed(seed)
+    run_name = build_run_name(seed)
 
-    if RUN_MODE not in {"train", "inference"}:
-        raise ValueError(f"RUN_MODE 只能是 train 或 inference，目前是: {RUN_MODE}")
+    print(f"\n{'=' * 72}")
+    print(f"開始訓練 seed={seed} | run_name={run_name}")
+    print(f"{'=' * 72}")
 
     print("建立資料集...")
-    train_loader, val_loader = None, None
-    if RUN_MODE == "train":
-        train_loader = build_pair_loader(TRAIN_AUDIO_DIR, TRAIN_PAIR_META, shuffle=True)
-        val_loader = build_pair_loader(VAL_AUDIO_DIR, VAL_PAIR_META, shuffle=False, batch_size=1)
+    train_loader = build_pair_loader(TRAIN_AUDIO_DIR, TRAIN_PAIR_META, shuffle=True)
+    val_loader = build_pair_loader(VAL_AUDIO_DIR, VAL_PAIR_META, shuffle=False, batch_size=1)
 
     print("建立 Siamese 模型（全參數微調）...")
     model = build_model()
     print_parameter_summary(model)
 
-    run_dir = Path(CHECKPOINT_ROOT) / RUN_NAME
-    log_dir = Path(LOG_ROOT) / RUN_NAME
+    run_dir = Path(CHECKPOINT_ROOT) / run_name
+    log_dir = Path(LOG_ROOT) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
-
-    if RUN_MODE == "inference":
-        if not os.path.exists(INFERENCE_CKPT_PATH):
-            raise FileNotFoundError(f"找不到 checkpoint: {INFERENCE_CKPT_PATH}")
-
-        test_dataset = PairwiseDataset(
-            audio_dir=TEST_AUDIO_DIR,
-            audio_meta_dir=TEST_PAIR_META,
-            audio_meta_csv_path=TEST_PAIR_META_CSV,
-        )
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=1,
-            shuffle=False,
-            num_workers=0,
-        )
-
-        print(f"載入 checkpoint: {INFERENCE_CKPT_PATH}")
-        state_dict = torch.load(INFERENCE_CKPT_PATH, map_location="cpu")
-        model.load_state_dict(state_dict)
-        model = model.to(DEVICE)
-        model.eval()
-
-        eer, threshold, min_dcf = evaluate_zero_shot(model, test_loader)
-        print(f"Zero-shot EER: {eer:.4f}, threshold: {threshold:.6f}, minDCF: {min_dcf:.4f}")
-        return
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -315,6 +340,7 @@ def main():
     save_csv_header(csv_path)
 
     best_val_eer = float("inf")
+    best_ckpt_path = run_dir / "siamese_best.pt"
 
     print(f"開始訓練，總共 {EPOCHS} epochs")
     for epoch in range(EPOCHS):
@@ -356,14 +382,124 @@ def main():
 
         if val_stats["eer"] < best_val_eer:
             best_val_eer = val_stats["eer"]
-            best_ckpt = run_dir / "siamese_best.pt"
-            torch.save(model.state_dict(), str(best_ckpt))
+            torch.save(model.state_dict(), str(best_ckpt_path))
 
         scheduler.step()
 
-    print(f"訓練完成，最佳驗證 EER: {best_val_eer:.4f}")
-    print(f"最佳模型: {run_dir / 'siamese_best.pt'}")
+    print(f"訓練完成，seed={seed}，最佳驗證 EER: {best_val_eer:.4f}")
+    print(f"最佳模型: {best_ckpt_path}")
     print(f"訓練紀錄: {csv_path}")
+
+    return {
+        "seed": seed,
+        "best_val_eer": best_val_eer,
+        "best_ckpt": str(best_ckpt_path),
+        "log_csv": csv_path,
+    }
+
+
+def run_inference_for_multiple_ckpts_and_datasets() -> None:
+    ckpt_paths = resolve_inference_ckpt_paths()
+    if not ckpt_paths:
+        raise ValueError("找不到可用的推論 checkpoint，請檢查 INFERENCE_CKPT_PATHS 或 INFERENCE_SEEDS 設定")
+
+    available_ckpts = [path for path in ckpt_paths if os.path.exists(path)]
+    missing_ckpts = [path for path in ckpt_paths if not os.path.exists(path)]
+
+    for missing in missing_ckpts:
+        print(f"[警告] 找不到 checkpoint，將略過: {missing}")
+
+    if not available_ckpts:
+        raise FileNotFoundError("所有推論 checkpoint 都不存在，無法執行推論")
+
+    print("\n推論設定：")
+    print(f"- 資料集數量: {len(INFERENCE_DATASETS)}")
+    print(f"- 權重數量: {len(available_ckpts)}")
+
+    model = build_model()
+
+    overall_eers = []
+    overall_min_dcfs = []
+
+    for dataset_name, dataset_variant in INFERENCE_DATASETS:
+        dataset_key = f"{dataset_name}/{dataset_variant}"
+        print(f"\n{'=' * 72}")
+        print(f"推論資料集: {dataset_key}")
+        print(f"{'=' * 72}")
+
+        test_loader = build_test_loader(dataset_name, dataset_variant)
+
+        dataset_eers = []
+        dataset_min_dcfs = []
+
+        for ckpt_path in available_ckpts:
+            print(f"載入 checkpoint: {ckpt_path}")
+            state_dict = torch.load(ckpt_path, map_location="cpu")
+            model.load_state_dict(state_dict)
+            model = model.to(DEVICE)
+            model.eval()
+
+            eer, threshold, min_dcf = evaluate_zero_shot(model, test_loader)
+            dataset_eers.append(eer)
+            dataset_min_dcfs.append(min_dcf)
+            overall_eers.append(eer)
+            overall_min_dcfs.append(min_dcf)
+
+            print(
+                f"[{dataset_key}] {Path(ckpt_path).parent.name} | "
+                f"EER: {eer:.4f}, threshold: {threshold:.6f}, minDCF: {min_dcf:.4f}"
+            )
+
+        eer_mean = float(np.mean(dataset_eers)) if dataset_eers else float("nan")
+        eer_std = float(np.std(dataset_eers)) if dataset_eers else float("nan")
+        min_dcf_mean = float(np.mean(dataset_min_dcfs)) if dataset_min_dcfs else float("nan")
+        min_dcf_std = float(np.std(dataset_min_dcfs)) if dataset_min_dcfs else float("nan")
+
+        print(
+            f"[資料集統計] {dataset_key} | "
+            f"EER mean/std: {eer_mean:.4f}/{eer_std:.4f} | "
+            f"minDCF mean/std: {min_dcf_mean:.4f}/{min_dcf_std:.4f}"
+        )
+
+    overall_eer_mean = float(np.mean(overall_eers)) if overall_eers else float("nan")
+    overall_eer_std = float(np.std(overall_eers)) if overall_eers else float("nan")
+    overall_min_dcf_mean = float(np.mean(overall_min_dcfs)) if overall_min_dcfs else float("nan")
+    overall_min_dcf_std = float(np.std(overall_min_dcfs)) if overall_min_dcfs else float("nan")
+
+    print("\n" + "=" * 72)
+    print("整體統計（所有資料集 x 所有權重）")
+    print("=" * 72)
+    print(f"EER mean/std: {overall_eer_mean:.4f}/{overall_eer_std:.4f}")
+    print(f"minDCF mean/std: {overall_min_dcf_mean:.4f}/{overall_min_dcf_std:.4f}")
+
+
+def main():
+    if RUN_MODE not in {"train", "inference"}:
+        raise ValueError(f"RUN_MODE 只能是 train 或 inference，目前是: {RUN_MODE}")
+
+    if RUN_MODE == "inference":
+        run_inference_for_multiple_ckpts_and_datasets()
+        return
+
+    seed_train_results = []
+    for seed in TRAIN_SEEDS:
+        result = train_single_seed(seed)
+        seed_train_results.append(result)
+
+    best_eers = [result["best_val_eer"] for result in seed_train_results]
+    mean_best_eer = float(np.mean(best_eers)) if best_eers else float("nan")
+    std_best_eer = float(np.std(best_eers)) if best_eers else float("nan")
+
+    print("\n" + "=" * 72)
+    print("多 seed 訓練完成")
+    print("=" * 72)
+    for result in seed_train_results:
+        print(
+            f"seed={result['seed']} | "
+            f"best_val_eer={result['best_val_eer']:.4f} | "
+            f"best_ckpt={result['best_ckpt']}"
+        )
+    print(f"Best Val EER mean/std: {mean_best_eer:.4f}/{std_best_eer:.4f}")
 
 
 if __name__ == "__main__":
