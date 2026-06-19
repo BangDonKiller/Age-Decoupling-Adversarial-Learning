@@ -1,9 +1,9 @@
 """
-使用 Vox2PairDataset 訓練/驗證 Siamese LoRA，並支援 zero-shot 推論。
+使用 Vox2PairDataset 訓練/驗證 Siamese ECAPA-TDNN，採用全參數微調（不使用 LoRA）。
 
 模式切換：
   - RUN_MODE = "train"：訓練 + 每個 epoch 驗證
-  - RUN_MODE = "inference"：只載入 LoRA adapter，跑 zero-shot 評估
+  - RUN_MODE = "inference"：載入完整模型 checkpoint，跑 zero-shot 評估
 """
 
 import csv
@@ -14,16 +14,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from peft import LoraConfig, PeftModel, get_peft_model
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data.vox2_loader import Vox2PairDataset
 from data.vox1_loader import PairwiseDataset
+from loss.cosineloss import SmoothCosineLoss
 from model.disentangled_model.siamese_network import SiameseNetwork
-from loss.cosineloss import SmoothCosineLoss, RelaxedCosineLoss
 from params.param import BATCH_SIZE, DATASET_INFO, DEVICE, NUM_WORKERS
 from tool.EER import ComputeErrorRates, ComputeMinDcf, compute_eer
 
@@ -42,14 +39,14 @@ warnings.filterwarnings(
 # ==========================================
 # 1) 基本設定
 # ==========================================
-RUN_MODE = "inference"  # "train" 或 "inference"
+RUN_MODE = "train"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
 TRAIN_DATASET_VARIANT = "small"
 TEST_DATASET_NAME = "VoxCeleb1"
 TEST_DATASET_VARIANT = "Vox-O"
 
-# train / val 都使用 Vox2PairDataset。測試時使用 PairwiseDataset 以驗證 LoRA adapter 的 zero-shot 能力
+# train / val 都使用 Vox2PairDataset。測試時使用 PairwiseDataset 做 zero-shot 評估
 TRAIN_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_DIR"]
 TRAIN_PAIR_META = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_META_DIR"]
 VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
@@ -59,36 +56,24 @@ TEST_AUDIO_DIR = DATASET_INFO[TEST_DATASET_NAME][TEST_DATASET_VARIANT]["AUDIO_DI
 TEST_PAIR_META = DATASET_INFO[TEST_DATASET_NAME][TEST_DATASET_VARIANT]["AUDIO_DATALIST"]
 TEST_PAIR_META_CSV = DATASET_INFO[TEST_DATASET_NAME]["AUDIO_META_DIR"]
 
-PRETRAINED_PATH = "pretrained_models/pretrain.model"
-
-MODULES = {
-    1: ["attention.0", "attention.4"],
-    2: ["layer4"],
-    3: ["fc6"],
-    4: ["attention.0", "attention.4", "layer4", "fc6"],
-    5: ["conv1", "attention.0", "attention.4", "layer4", "fc6"]
-}
-MODULE_ID = 4
-LORA_R = 4
-LORA_ALPHA = 8
-LORA_DROPOUT = 0.05
-
 EPOCHS = 10
-START_LR = 1e-3
-END_LR = 1e-5
+START_LR = 1e-4
+END_LR = 1e-6
 WEIGHT_DECAY = 1e-5
 SPLIT_SEED = 42
 
-CHECKPOINT_ROOT = "checkpoints/siamese_expert_lora"
-LOG_ROOT = "logs/siamese_expert_lora"
-RUN_NAME = f"m{MODULE_ID}_r{LORA_R}_a{LORA_ALPHA}_{TRAIN_DATASET_VARIANT}"
-INFERENCE_ADAPTER_PATH = f"{CHECKPOINT_ROOT}/{RUN_NAME}/lora_adapter_best"
+CHECKPOINT_ROOT = "checkpoints/siamese_full_finetune"
+LOG_ROOT = "logs/siamese_full_finetune"
+RUN_NAME = f"full_ft_lr1e4_{TRAIN_DATASET_VARIANT}"
+INFERENCE_CKPT_PATH = f"{CHECKPOINT_ROOT}/{RUN_NAME}/siamese_best.pt"
+
 
 def set_seed(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
 
 def build_pair_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: int = BATCH_SIZE) -> DataLoader:
     dataset = Vox2PairDataset(
@@ -101,6 +86,7 @@ def build_pair_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: 
         shuffle=shuffle,
         num_workers=NUM_WORKERS,
     )
+
 
 def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
     is_train = optimizer is not None
@@ -127,7 +113,6 @@ def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
             optimizer.zero_grad(set_to_none=True)
 
         feat1, feat2, cosine_score = model(wav1, wav2, spec_aug=is_train)
-
         loss = criterion(feat1, feat2, same_label)
 
         if is_train:
@@ -167,6 +152,7 @@ def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
     pos_std = float("nan")
     neg_mean = float("nan")
     neg_std = float("nan")
+
     if compute_eer_metrics and all_scores:
         scores_np = torch.cat(all_scores).numpy()
         labels_np = torch.cat(all_labels).numpy()
@@ -197,22 +183,22 @@ def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
         "neg_std": neg_std,
     }
 
+
 def evaluate_zero_shot(model, loader):
     model.eval()
     all_scores = []
     all_labels = []
 
     with torch.no_grad():
-        for pair_label, id1, id2, wav1, wav2, _, _ in tqdm(loader, desc="Inference (zero-shot)", leave=False, dynamic_ncols=True):
+        for pair_label, _, _, wav1, wav2, _, _ in tqdm(loader, desc="Inference (zero-shot)", leave=False, dynamic_ncols=True):
             pair_label = pair_label.to(DEVICE, non_blocking=True)
             wav1 = wav1.to(DEVICE, non_blocking=True)
             wav2 = wav2.to(DEVICE, non_blocking=True)
 
-            same_label = pair_label
             _, _, cosine_score = model(wav1, wav2, spec_aug=False)
 
             all_scores.append(cosine_score.detach().cpu())
-            all_labels.append(same_label.detach().cpu())
+            all_labels.append(pair_label.detach().cpu())
 
     if not all_scores:
         return float("nan"), float("nan"), float("nan")
@@ -226,28 +212,17 @@ def evaluate_zero_shot(model, loader):
 
     return eer, threshold, min_dcf
 
-def build_model(apply_lora: bool = True) -> SiameseNetwork:
+
+def build_model() -> SiameseNetwork:
     model = SiameseNetwork().to(DEVICE)
-
-    if apply_lora:
-        if MODULE_ID not in MODULES:
-            raise ValueError(f"MODULE_ID 必須在 {list(MODULES.keys())}，目前是 {MODULE_ID}")
-
-        lora_config = LoraConfig(
-            r=LORA_R,
-            lora_alpha=LORA_ALPHA,
-            target_modules=MODULES[MODULE_ID],
-            lora_dropout=LORA_DROPOUT,
-            bias="none",
-        )
-
-        model.encoder = get_peft_model(model.encoder, lora_config)
+    for param in model.parameters():
+        param.requires_grad = True
     return model
 
 
 def save_csv_header(csv_path: str) -> None:
-    with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+    with open(csv_path, mode="w", newline="", encoding="utf-8") as file_obj:
+        writer = csv.writer(file_obj)
         writer.writerow(
             [
                 "epoch",
@@ -263,8 +238,8 @@ def save_csv_header(csv_path: str) -> None:
 
 
 def append_csv_row(csv_path: str, row) -> None:
-    with open(csv_path, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+    with open(csv_path, mode="a", newline="", encoding="utf-8") as file_obj:
+        writer = csv.writer(file_obj)
         writer.writerow(row)
 
 
@@ -285,16 +260,14 @@ def main():
         raise ValueError(f"RUN_MODE 只能是 train 或 inference，目前是: {RUN_MODE}")
 
     print("建立資料集...")
-    train_loader,val_loader = None, None
+    train_loader, val_loader = None, None
     if RUN_MODE == "train":
         train_loader = build_pair_loader(TRAIN_AUDIO_DIR, TRAIN_PAIR_META, shuffle=True)
         val_loader = build_pair_loader(VAL_AUDIO_DIR, VAL_PAIR_META, shuffle=False, batch_size=1)
 
-    print("建立 Siamese 模型...")
-    model = build_model(apply_lora=(RUN_MODE == "train"))
-    if RUN_MODE == "train":
-        model.encoder.print_trainable_parameters()
-        print_parameter_summary(model)
+    print("建立 Siamese 模型（全參數微調）...")
+    model = build_model()
+    print_parameter_summary(model)
 
     run_dir = Path(CHECKPOINT_ROOT) / RUN_NAME
     log_dir = Path(LOG_ROOT) / RUN_NAME
@@ -302,9 +275,9 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=True)
 
     if RUN_MODE == "inference":
-        if not os.path.exists(INFERENCE_ADAPTER_PATH):
-            raise FileNotFoundError(f"找不到 adapter: {INFERENCE_ADAPTER_PATH}")
-        
+        if not os.path.exists(INFERENCE_CKPT_PATH):
+            raise FileNotFoundError(f"找不到 checkpoint: {INFERENCE_CKPT_PATH}")
+
         test_dataset = PairwiseDataset(
             audio_dir=TEST_AUDIO_DIR,
             audio_meta_dir=TEST_PAIR_META,
@@ -317,8 +290,9 @@ def main():
             num_workers=0,
         )
 
-        print(f"載入 LoRA adapter: {INFERENCE_ADAPTER_PATH}")
-        model.encoder = PeftModel.from_pretrained(model.encoder, INFERENCE_ADAPTER_PATH)
+        print(f"載入 checkpoint: {INFERENCE_CKPT_PATH}")
+        state_dict = torch.load(INFERENCE_CKPT_PATH, map_location="cpu")
+        model.load_state_dict(state_dict)
         model = model.to(DEVICE)
         model.eval()
 
@@ -327,7 +301,7 @@ def main():
         return
 
     optimizer = torch.optim.Adam(
-        [p for p in model.parameters() if p.requires_grad],
+        model.parameters(),
         lr=START_LR,
         weight_decay=WEIGHT_DECAY,
     )
@@ -377,21 +351,18 @@ def main():
             ],
         )
 
-        adapter_dir = run_dir / "lora_adapter_last"
-        model.encoder.save_pretrained(str(adapter_dir))
+        last_ckpt = run_dir / "siamese_last.pt"
+        torch.save(model.state_dict(), str(last_ckpt))
 
         if val_stats["eer"] < best_val_eer:
             best_val_eer = val_stats["eer"]
-            best_dir = run_dir / "lora_adapter_best"
-            model.encoder.save_pretrained(str(best_dir))
-        
-        if epoch == EPOCHS - 1:
-            last_dir = run_dir / "lora_adapter_last"
-            model.encoder.save_pretrained(str(last_dir))
+            best_ckpt = run_dir / "siamese_best.pt"
+            torch.save(model.state_dict(), str(best_ckpt))
 
         scheduler.step()
 
     print(f"訓練完成，最佳驗證 EER: {best_val_eer:.4f}")
+    print(f"最佳模型: {run_dir / 'siamese_best.pt'}")
     print(f"訓練紀錄: {csv_path}")
 
 
