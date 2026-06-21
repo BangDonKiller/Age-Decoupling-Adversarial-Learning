@@ -40,10 +40,10 @@ warnings.filterwarnings(
 # ==========================================
 # 1) 基本設定
 # ==========================================
-RUN_MODE = "inference"  # "train" 或 "inference"
+RUN_MODE = "train"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
-TRAIN_DATASET_VARIANT = "small"
+TRAIN_DATASET_VARIANT = "large"
 
 TRAIN_SEEDS = [42, 1, 2026]
 INFERENCE_SEEDS = [42, 1, 2026]
