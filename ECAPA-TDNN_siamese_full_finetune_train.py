@@ -21,6 +21,7 @@ from tqdm import tqdm
 from data.vox2_loader import Vox2PairDataset
 from data.vox1_loader import PairwiseDataset
 from loss.cosineloss import SmoothCosineLoss
+from loss.circleloss import CircleLoss
 from model.disentangled_model.siamese_network import SiameseNetwork
 from params.param import BATCH_SIZE, DATASET_INFO, DEVICE, NUM_WORKERS
 from tool.EER import ComputeErrorRates, ComputeMinDcf, compute_eer
@@ -43,9 +44,10 @@ warnings.filterwarnings(
 RUN_MODE = "train"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
-TRAIN_DATASET_VARIANT = "large"
+TRAIN_DATASET_VARIANT = "small"
 
-TRAIN_SEEDS = [42, 1, 2026]
+# TRAIN_SEEDS = [42, 1, 2026]
+TRAIN_SEEDS = [43]  # 為了快速測試，先只跑一個 seed；正式訓練時可以改回多個 seed
 INFERENCE_SEEDS = [42, 1, 2026]
 
 # 推論可同時跑多個測試資料集（dataset_name, dataset_variant）
@@ -123,7 +125,7 @@ def build_pair_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: 
 def run_epoch(model, loader, optimizer=None, compute_eer_metrics: bool = False):
     is_train = optimizer is not None
     model.train(is_train)
-    criterion = SmoothCosineLoss()
+    criterion = CircleLoss()
 
     total_loss = 0.0
     total_correct = 0
