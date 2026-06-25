@@ -60,8 +60,8 @@ DATASET_INFO = {
             "audio_suffix": ".wav",
         },
         "Vox-CA15": {
-            "AUDIO_DIR": ["D:\\Dataset\\VoxCeleb1\\vox1_dev_wav\\wav", "D:\\Dataset\\VoxCeleb1\\vox1_test_wav\\wav"],
-            "AUDIO_DATALIST": "D:\\Dataset\\VoxCeleb1\\Vox-CA15.txt",
+            "AUDIO_DIR": ["/app/dataset/VoxCeleb1/vox1_dev_wav/wav", "/app/dataset/VoxCeleb1/vox1_test_wav/wav"],
+            "AUDIO_DATALIST": "/app/dataset/VoxCeleb1/Vox-CA15.txt",
             "audio_suffix": ".wav",
         },
         "Vox-CA20": {

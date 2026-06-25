@@ -44,17 +44,18 @@ warnings.filterwarnings(
 RUN_MODE = "train"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
-TRAIN_DATASET_VARIANT = "small"
+TRAIN_DATASET_VARIANT = "large"
 
-# TRAIN_SEEDS = [42, 1, 2026]
-TRAIN_SEEDS = [43]  # 為了快速測試，先只跑一個 seed；正式訓練時可以改回多個 seed
+TRAIN_SEEDS = [42, 1, 2026]
 INFERENCE_SEEDS = [42, 1, 2026]
 
 # 推論可同時跑多個測試資料集（dataset_name, dataset_variant）
 INFERENCE_DATASETS: List[Tuple[str, str]] = [
     ("VoxCeleb1", "Vox-O"),
     ("VoxCeleb1", "Vox1-H.S"),
+    ("VoxCeleb1", "Vox-CA5"),
     ("VoxCeleb1", "Vox-CA10"),
+    ("VoxCeleb1", "Vox-CA15"),
     ("VoxCeleb1", "Vox-CA20"),
 ]
 

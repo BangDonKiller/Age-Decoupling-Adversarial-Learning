@@ -153,6 +153,9 @@ def summarize_metrics(scores: np.ndarray, labels: np.ndarray) -> Dict[str, float
 			"eer": float("nan"),
 			"threshold": float("nan"),
 			"min_dcf": float("nan"),
+			"min_dcf_threshold": float("nan"),
+			"min_dcf_fpr": float("nan"),
+			"min_dcf_fnr": float("nan"),
 			"num_pos": 0,
 			"num_neg": 0,
 		}
@@ -164,18 +167,33 @@ def summarize_metrics(scores: np.ndarray, labels: np.ndarray) -> Dict[str, float
 			"eer": float("nan"),
 			"threshold": float("nan"),
 			"min_dcf": float("nan"),
+			"min_dcf_threshold": float("nan"),
+			"min_dcf_fpr": float("nan"),
+			"min_dcf_fnr": float("nan"),
 			"num_pos": num_pos,
 			"num_neg": num_neg,
 		}
 
 	eer, threshold = compute_eer(scores, labels)
 	fnrs, fprs, thresholds = ComputeErrorRates(scores, labels)
-	min_dcf, _ = ComputeMinDcf(fnrs, fprs, thresholds, p_target=0.01, c_miss=1, c_fa=1)
+	min_dcf, min_dcf_threshold = ComputeMinDcf(fnrs, fprs, thresholds, p_target=0.01, c_miss=1, c_fa=1)
+
+	min_dcf_idx = 0
+	for idx, t in enumerate(thresholds):
+		if np.isclose(float(t), float(min_dcf_threshold)):
+			min_dcf_idx = idx
+			break
+
+	min_dcf_fnr = float(fnrs[min_dcf_idx])
+	min_dcf_fpr = float(fprs[min_dcf_idx])
 
 	return {
 		"eer": float(eer),
 		"threshold": float(threshold),
 		"min_dcf": float(min_dcf),
+		"min_dcf_threshold": float(min_dcf_threshold),
+		"min_dcf_fpr": min_dcf_fpr,
+		"min_dcf_fnr": min_dcf_fnr,
 		"num_pos": num_pos,
 		"num_neg": num_neg,
 	}
@@ -184,7 +202,19 @@ def summarize_metrics(scores: np.ndarray, labels: np.ndarray) -> Dict[str, float
 def save_summary_csv(summary_path: Path, summary_rows: List[Dict[str, float]]) -> None:
 	with open(summary_path, mode="w", newline="", encoding="utf-8") as file_obj:
 		writer = csv.writer(file_obj)
-		writer.writerow(["expert", "eer", "threshold", "min_dcf", "num_pos", "num_neg"])
+		writer.writerow(
+			[
+				"expert",
+				"eer",
+				"threshold",
+				"min_dcf",
+				"min_dcf_threshold",
+				"min_dcf_fpr",
+				"min_dcf_fnr",
+				"num_pos",
+				"num_neg",
+			]
+		)
 		for row in summary_rows:
 			writer.writerow(
 				[
@@ -192,6 +222,9 @@ def save_summary_csv(summary_path: Path, summary_rows: List[Dict[str, float]]) -
 					row["eer"],
 					row["threshold"],
 					row["min_dcf"],
+					row["min_dcf_threshold"],
+					row["min_dcf_fpr"],
+					row["min_dcf_fnr"],
 					row["num_pos"],
 					row["num_neg"],
 				]
@@ -249,8 +282,11 @@ def main() -> None:
 		print(
 			f"{expert_name}: "
 			f"EER={metrics['eer']:.4f}, "
-			f"threshold={metrics['threshold']:.6f}, "
+			f"EER_threshold={metrics['threshold']:.6f}, "
 			f"minDCF={metrics['min_dcf']:.4f}, "
+			f"minDCF_threshold={metrics['min_dcf_threshold']:.6f}, "
+			f"minDCF_FPR={metrics['min_dcf_fpr']:.6f}, "
+			f"minDCF_FNR={metrics['min_dcf_fnr']:.6f}, "
 			f"pos={metrics['num_pos']}, neg={metrics['num_neg']}"
 		)
 
