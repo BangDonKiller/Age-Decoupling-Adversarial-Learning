@@ -212,7 +212,7 @@ def plot_kde_by_label(
 	if label_value not in (0, 1):
 		raise ValueError("label_value 必須是 0 或 1")
 
-	score_type = "Target (同人)" if label_value == 1 else "Imposter (異人)"
+	score_type = "Target (positive)" if label_value == 1 else "Imposter (negative)"
 	palette = {
 		"Small": "#1f77b4",
 		"Medium": "#2ca02c",
