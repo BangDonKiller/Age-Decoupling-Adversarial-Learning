@@ -202,3 +202,42 @@ class ECAPA_TDNN(nn.Module):
 
         return x
     
+# === 新增：為了可視化實驗設計的輔助函數，平常訓練不需要 ===
+    def get_spectrogram(self, x):
+        """只提取頻譜圖，不經過卷積層 (給可視化腳本用的)"""
+        with torch.no_grad():
+            spec = self.torchfbank(x) + 1e-6
+            spec = spec.log()
+            spec = spec - torch.mean(spec, dim=-1, keepdim=True)
+        return spec
+
+    def forward_from_spectrogram(self, x):
+        """直接輸入頻譜圖進行後續特徵提取 (這樣可以對頻譜圖求梯度)"""
+        # 注意：這裡沒有 with torch.no_grad()，也沒有 self.specaug
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.bn1(x)
+
+        x1 = self.layer1(x)
+        x2 = self.layer2(x+x1)
+        x3 = self.layer3(x+x1+x2)
+
+        x = self.layer4(torch.cat((x1,x2,x3), dim=1))
+        x = self.relu(x)
+
+        t = x.size()[-1]
+        global_x = torch.cat((x, torch.mean(x, dim=2, keepdim=True).repeat(1, 1, t), 
+                              torch.sqrt(torch.var(x, dim=2, keepdim=True).clamp(min=1e-4)).repeat(1, 1, t)), dim=1)
+        
+        w = self.attention(global_x)
+
+        mu = torch.sum(x * w, dim=2)
+        sg = torch.sqrt((torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-4))
+
+        x = torch.cat((mu, sg), 1)
+        x = self.bn5(x)
+        x = self.fc6(x)
+        x = self.bn6(x)
+
+        return x
+    
