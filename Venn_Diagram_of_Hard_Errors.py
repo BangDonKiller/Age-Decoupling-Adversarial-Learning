@@ -81,6 +81,7 @@ def get_error_pairs(model: SiameseNetwork, loader: DataLoader):
         eer      (float)
         threshold(float)
         labels_np(np.ndarray)
+        scores_np(np.ndarray)
     """
     model.eval()
     all_scores = []
@@ -112,7 +113,7 @@ def get_error_pairs(model: SiameseNetwork, loader: DataLoader):
     print(f"  EER: {eer:.4f} | Threshold: {threshold:.4f}")
     print(f"  總錯誤數: {len(errors)}  (FA={fa_count}, FR={fr_count}) / {len(scores_np)} pairs")
 
-    return errors, eer, threshold, labels_np
+    return errors, eer, threshold, labels_np, scores_np
 
 
 def summarize_exclusive_errors(
@@ -131,49 +132,38 @@ def summarize_exclusive_errors(
     print(f"  - FR (把同人誤認成異人): {fr_count}")
 
 
-def load_same_video_flags() -> np.ndarray:
-    """依 Vox-O pair 清單順序回傳每個 pair 是否為同影片（1:同影片, 0:跨影片）。"""
-    pair_txt_path = DATASET_INFO[DATASET_NAME][DATASET_VARIANT]["AUDIO_DATALIST"]
-    flags = []
-
-    with open(pair_txt_path, "r", encoding="utf-8") as file_obj:
-        for line in file_obj:
-            parts = line.strip().split()
-            if len(parts) < 3:
-                continue
-
-            rel_path_1 = parts[1]
-            rel_path_2 = parts[2]
-
-            seg_1 = rel_path_1.split("/")
-            seg_2 = rel_path_2.split("/")
-            video_id_1 = seg_1[1] if len(seg_1) > 1 else ""
-            video_id_2 = seg_2[1] if len(seg_2) > 1 else ""
-            flags.append(1 if video_id_1 == video_id_2 else 0)
-
-    return np.array(flags, dtype=np.int64)
-
-
-def summarize_same_cross_video_ratio(
-    focus_name: str,
-    other_name: str,
-    focus_errors: set,
-    other_errors: set,
-    same_video_flags: np.ndarray,
+def draw_complementary_error_scatter(
+    small_scores: np.ndarray,
+    medium_scores: np.ndarray,
+    small_threshold: float,
+    medium_threshold: float,
+    output_path: Path,
 ) -> None:
-    exclusive_errors = focus_errors - other_errors
-    if not exclusive_errors:
-        print(f"\n{focus_name}專家錯/{other_name}專家對：0 個樣本，無法統計同/跨影片比例")
+    """畫出「中錯/小對」樣本在兩個專家分數空間中的散點圖。"""
+    if len(small_scores) == 0:
+        print("\n[提示] 中錯/小對 樣本數為 0，略過散點圖。")
         return
 
-    same_count = sum(1 for idx in exclusive_errors if same_video_flags[idx] == 1)
-    cross_count = len(exclusive_errors) - same_count
-    same_ratio = same_count / len(exclusive_errors)
-    cross_ratio = cross_count / len(exclusive_errors)
+    plt.figure(figsize=(8, 6))
+    plt.scatter(
+        small_scores,
+        medium_scores,
+        color="red",
+        alpha=0.6,
+        label="Medium Error / Small Correct",
+    )
 
-    print(f"\n{focus_name}專家錯/{other_name}專家對 的 {len(exclusive_errors)} 個樣本中：")
-    print(f"  - 同影片: {same_count} ({same_ratio:.2%})")
-    print(f"  - 跨影片: {cross_count} ({cross_ratio:.2%})")
+    plt.axvline(x=small_threshold, color="black", linestyle="--", label="Small Threshold")
+    plt.axhline(y=medium_threshold, color="black", linestyle="-.", label="Medium Threshold")
+
+    plt.xlabel("Small Expert Score")
+    plt.ylabel("Medium Expert Score")
+    plt.title("Score Distribution of Complementary Errors")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(str(output_path), dpi=150)
+    plt.close()
+    print(f"\n互補錯誤散點圖已儲存: {output_path}")
 
 
 def pairwise_iou(set_a: set, set_b: set) -> float:
@@ -230,13 +220,13 @@ def draw_venn2(error_sets: dict, label_a: str, label_b: str, output_path: Path) 
 def main():
     print("載入測試資料集 (Vox-O)...")
     test_loader = build_test_loader()
-    same_video_flags = load_same_video_flags()
 
     model = build_model()
 
     error_sets: dict[str, set] = {}
     eer_info:   dict[str, dict] = {}
     labels_by_expert: dict[str, np.ndarray] = {}
+    scores_by_expert: dict[str, np.ndarray] = {}
 
     for expert_name, ckpt_path in EXPERTS.items():
         print(f"\n{'=' * 64}")
@@ -250,10 +240,11 @@ def main():
         model.load_state_dict(state_dict)
         model = model.to(DEVICE)
 
-        errors, eer, threshold, labels_np = get_error_pairs(model, test_loader)
+        errors, eer, threshold, labels_np, scores_np = get_error_pairs(model, test_loader)
         error_sets[expert_name] = errors
         eer_info[expert_name]   = {"eer": eer, "threshold": threshold}
         labels_by_expert[expert_name] = labels_np
+        scores_by_expert[expert_name] = scores_np
 
     available = list(error_sets.keys())
     print(f"\n可用專家: {available}")
@@ -311,20 +302,16 @@ def main():
             labels_np=labels_np,
         )
 
-        print("\n同/跨影片比例分析")
-        summarize_same_cross_video_ratio(
-            focus_name="小",
-            other_name="中",
-            focus_errors=error_sets["small"],
-            other_errors=error_sets["medium"],
-            same_video_flags=same_video_flags,
-        )
-        summarize_same_cross_video_ratio(
-            focus_name="中",
-            other_name="小",
-            focus_errors=error_sets["medium"],
-            other_errors=error_sets["small"],
-            same_video_flags=same_video_flags,
+        medium_error_small_correct = sorted(error_sets["medium"] - error_sets["small"])
+        small_scores_for_the_69 = scores_by_expert["small"][medium_error_small_correct]
+        med_scores_for_the_69 = scores_by_expert["medium"][medium_error_small_correct]
+
+        draw_complementary_error_scatter(
+            small_scores=small_scores_for_the_69,
+            medium_scores=med_scores_for_the_69,
+            small_threshold=eer_info["small"]["threshold"],
+            medium_threshold=eer_info["medium"]["threshold"],
+            output_path=OUTPUT_DIR / "medium_error_small_correct_scatter.png",
         )
 
     # ---- 繪製文氏圖 ----
