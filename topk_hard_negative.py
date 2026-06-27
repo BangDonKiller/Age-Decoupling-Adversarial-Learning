@@ -44,7 +44,7 @@ warnings.filterwarnings(
 
 
 TEST_DATASET_NAME = "VoxCeleb1"
-TEST_DATASET_VARIANT = "Vox-CA20"
+TEST_DATASET_VARIANT = "Vox1-H.S"
 TOP_K = 100
 
 EXPERT_WEIGHTS: List[Tuple[str, str]] = [
@@ -366,7 +366,7 @@ def main() -> None:
 	if len(EXPERT_WEIGHTS) != 3:
 		raise ValueError("EXPERT_WEIGHTS 必須剛好有三個專家")
 
-	print("建立 Vox-CA20 測試資料集...")
+	print("建立 Vox1-H.S 測試資料集...")
 	test_loader = build_test_loader(TEST_DATASET_NAME, TEST_DATASET_VARIANT)
 
 	print("載入三個 full-finetune 專家權重...")
