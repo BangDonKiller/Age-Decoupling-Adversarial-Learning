@@ -131,6 +131,51 @@ def summarize_exclusive_errors(
     print(f"  - FR (把同人誤認成異人): {fr_count}")
 
 
+def load_same_video_flags() -> np.ndarray:
+    """依 Vox-O pair 清單順序回傳每個 pair 是否為同影片（1:同影片, 0:跨影片）。"""
+    pair_txt_path = DATASET_INFO[DATASET_NAME][DATASET_VARIANT]["AUDIO_DATALIST"]
+    flags = []
+
+    with open(pair_txt_path, "r", encoding="utf-8") as file_obj:
+        for line in file_obj:
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+
+            rel_path_1 = parts[1]
+            rel_path_2 = parts[2]
+
+            seg_1 = rel_path_1.split("/")
+            seg_2 = rel_path_2.split("/")
+            video_id_1 = seg_1[1] if len(seg_1) > 1 else ""
+            video_id_2 = seg_2[1] if len(seg_2) > 1 else ""
+            flags.append(1 if video_id_1 == video_id_2 else 0)
+
+    return np.array(flags, dtype=np.int64)
+
+
+def summarize_same_cross_video_ratio(
+    focus_name: str,
+    other_name: str,
+    focus_errors: set,
+    other_errors: set,
+    same_video_flags: np.ndarray,
+) -> None:
+    exclusive_errors = focus_errors - other_errors
+    if not exclusive_errors:
+        print(f"\n{focus_name}專家錯/{other_name}專家對：0 個樣本，無法統計同/跨影片比例")
+        return
+
+    same_count = sum(1 for idx in exclusive_errors if same_video_flags[idx] == 1)
+    cross_count = len(exclusive_errors) - same_count
+    same_ratio = same_count / len(exclusive_errors)
+    cross_ratio = cross_count / len(exclusive_errors)
+
+    print(f"\n{focus_name}專家錯/{other_name}專家對 的 {len(exclusive_errors)} 個樣本中：")
+    print(f"  - 同影片: {same_count} ({same_ratio:.2%})")
+    print(f"  - 跨影片: {cross_count} ({cross_ratio:.2%})")
+
+
 def pairwise_iou(set_a: set, set_b: set) -> float:
     union = len(set_a | set_b)
     return len(set_a & set_b) / union if union > 0 else 0.0
@@ -185,6 +230,7 @@ def draw_venn2(error_sets: dict, label_a: str, label_b: str, output_path: Path) 
 def main():
     print("載入測試資料集 (Vox-O)...")
     test_loader = build_test_loader()
+    same_video_flags = load_same_video_flags()
 
     model = build_model()
 
@@ -263,6 +309,22 @@ def main():
             focus_errors=error_sets["small"],
             other_errors=error_sets["medium"],
             labels_np=labels_np,
+        )
+
+        print("\n同/跨影片比例分析")
+        summarize_same_cross_video_ratio(
+            focus_name="小",
+            other_name="中",
+            focus_errors=error_sets["small"],
+            other_errors=error_sets["medium"],
+            same_video_flags=same_video_flags,
+        )
+        summarize_same_cross_video_ratio(
+            focus_name="中",
+            other_name="小",
+            focus_errors=error_sets["medium"],
+            other_errors=error_sets["small"],
+            same_video_flags=same_video_flags,
         )
 
     # ---- 繪製文氏圖 ----
