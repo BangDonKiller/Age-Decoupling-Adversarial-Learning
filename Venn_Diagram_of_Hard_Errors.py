@@ -80,6 +80,7 @@ def get_error_pairs(model: SiameseNetwork, loader: DataLoader):
         errors   (set[int]): 錯誤 pair 的索引集合
         eer      (float)
         threshold(float)
+        labels_np(np.ndarray)
     """
     model.eval()
     all_scores = []
@@ -111,7 +112,23 @@ def get_error_pairs(model: SiameseNetwork, loader: DataLoader):
     print(f"  EER: {eer:.4f} | Threshold: {threshold:.4f}")
     print(f"  總錯誤數: {len(errors)}  (FA={fa_count}, FR={fr_count}) / {len(scores_np)} pairs")
 
-    return errors, eer, threshold
+    return errors, eer, threshold, labels_np
+
+
+def summarize_exclusive_errors(
+    focus_name: str,
+    other_name: str,
+    focus_errors: set,
+    other_errors: set,
+    labels_np: np.ndarray,
+) -> None:
+    exclusive_errors = focus_errors - other_errors
+    fa_count = sum(1 for idx in exclusive_errors if labels_np[idx] == 0)
+    fr_count = sum(1 for idx in exclusive_errors if labels_np[idx] == 1)
+
+    print(f"\n{focus_name}專家錯/{other_name}專家對 的 {len(exclusive_errors)} 個樣本中：")
+    print(f"  - FA (把異人誤認成同人): {fa_count}")
+    print(f"  - FR (把同人誤認成異人): {fr_count}")
 
 
 def pairwise_iou(set_a: set, set_b: set) -> float:
@@ -173,6 +190,7 @@ def main():
 
     error_sets: dict[str, set] = {}
     eer_info:   dict[str, dict] = {}
+    labels_by_expert: dict[str, np.ndarray] = {}
 
     for expert_name, ckpt_path in EXPERTS.items():
         print(f"\n{'=' * 64}")
@@ -186,9 +204,10 @@ def main():
         model.load_state_dict(state_dict)
         model = model.to(DEVICE)
 
-        errors, eer, threshold = get_error_pairs(model, test_loader)
+        errors, eer, threshold, labels_np = get_error_pairs(model, test_loader)
         error_sets[expert_name] = errors
         eer_info[expert_name]   = {"eer": eer, "threshold": threshold}
+        labels_by_expert[expert_name] = labels_np
 
     available = list(error_sets.keys())
     print(f"\n可用專家: {available}")
@@ -223,6 +242,28 @@ def main():
     print("=" * 64)
     for name, info in eer_info.items():
         print(f"  {name:8s}: EER={info['eer']:.4f}  |  Threshold={info['threshold']:.4f}")
+
+    # ---- 中小專家互補錯誤分析 ----
+    if "small" in error_sets and "medium" in error_sets:
+        print("\n" + "=" * 64)
+        print("中小專家互補錯誤分析")
+        print("=" * 64)
+
+        labels_np = labels_by_expert["small"]
+        summarize_exclusive_errors(
+            focus_name="中",
+            other_name="小",
+            focus_errors=error_sets["medium"],
+            other_errors=error_sets["small"],
+            labels_np=labels_np,
+        )
+        summarize_exclusive_errors(
+            focus_name="小",
+            other_name="中",
+            focus_errors=error_sets["small"],
+            other_errors=error_sets["medium"],
+            labels_np=labels_np,
+        )
 
     # ---- 繪製文氏圖 ----
     if len(available) >= 3:
