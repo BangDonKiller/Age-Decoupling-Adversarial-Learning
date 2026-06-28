@@ -9,17 +9,32 @@ class CircleLoss(nn.Module):
 		self.m = m
 		self.gamma = gamma
 
-	def forward(self, feat1, feat2, same_label):
+	def forward(self, feat1_or_scores, feat2_or_same_label, same_label=None):
 		"""
 		Pairwise Circle Loss for speaker verification.
 
 		Args:
-			feat1: Tensor [B, D], assumed to be L2-normalized.
-			feat2: Tensor [B, D], assumed to be L2-normalized.
-			same_label: Tensor [B], 1 for same speaker, 0 for different speakers.
+			Legacy mode:
+				feat1_or_scores: Tensor [B, D], assumed to be L2-normalized.
+				feat2_or_same_label: Tensor [B, D], assumed to be L2-normalized.
+				same_label: Tensor [B], 1 for same speaker, 0 for different speakers.
+
+			Score mode:
+				feat1_or_scores: Tensor [B], cosine-like similarity scores.
+				feat2_or_same_label: Tensor [B], 1 for same speaker, 0 for different speakers.
+				same_label: None
 		"""
-		# Compute cosine similarity directly because the embeddings are already normalized.
-		cos_sim = torch.sum(feat1 * feat2, dim=1)
+		# Backward-compatible dual interface:
+		# 1) forward(feat1, feat2, same_label)
+		# 2) forward(scores, same_label)
+		if same_label is None:
+			cos_sim = feat1_or_scores
+			same_label = feat2_or_same_label
+		else:
+			feat1 = feat1_or_scores
+			feat2 = feat2_or_same_label
+			# Compute cosine similarity directly because embeddings are assumed normalized.
+			cos_sim = torch.sum(feat1 * feat2, dim=1)
 
 		# Use float32 for the loss math to improve numerical stability under mixed precision.
 		cos_sim = cos_sim.float()
