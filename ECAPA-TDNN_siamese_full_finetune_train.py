@@ -44,7 +44,7 @@ warnings.filterwarnings(
 RUN_MODE = "train"  # "train" 或 "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
-TRAIN_DATASET_VARIANT = "large"
+TRAIN_DATASET_VARIANT = "mixture"
 
 TRAIN_SEEDS = [42, 1, 2026]
 INFERENCE_SEEDS = [42, 1, 2026]

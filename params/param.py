@@ -116,6 +116,16 @@ DATASET_INFO = {
                 "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_large_gap.csv",
             },
         },
+        "mixture": {
+            "train": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_mixture",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_mixture.csv",
+            },
+            "val": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_mixture_gap.csv",
+            },
+        },
         "LE5": {
             "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5",
             "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5.csv",
