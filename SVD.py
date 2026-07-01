@@ -171,6 +171,55 @@ def compute_cumulative_variance_explained(matrix: np.ndarray) -> Tuple[np.ndarra
 	return singular_values, explained_variance_ratio, cumulative_variance_ratio
 
 
+def plot_singular_value_decay(
+	small_matrix: np.ndarray,
+	large_matrix: np.ndarray,
+	out_path: Path,
+) -> None:
+	def _compute_svd_stats(embeddings: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+		centered = embeddings.astype(np.float64, copy=False) - embeddings.mean(axis=0, keepdims=True)
+		_, S, _ = np.linalg.svd(centered, full_matrices=False)
+		eigenvalues = S ** 2
+		explained = eigenvalues / eigenvalues.sum()
+		return explained, np.cumsum(explained)
+
+	var_small, cum_var_small = _compute_svd_stats(small_matrix)
+	var_large, cum_var_large = _compute_svd_stats(large_matrix)
+
+	dim_90_small = int(np.argmax(cum_var_small >= 0.90)) + 1
+	dim_90_large = int(np.argmax(cum_var_large >= 0.90)) + 1
+
+	fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+	x_axis = np.arange(1, len(var_small) + 1)
+
+	ax1.plot(x_axis, var_small, color="#440154", linewidth=2.5, label="Small Expert")
+	ax1.plot(x_axis, var_large, color="#fde725", linewidth=2.5, label="Large Expert")
+	ax1.set_yscale("log")
+	ax1.set_xlabel("Singular Value Rank (Dimension Index)", fontsize=12)
+	ax1.set_ylabel("Explained Variance Ratio (Log Scale)", fontsize=12)
+	ax1.set_title("Singular Value Decay (Feature Collapse)", fontsize=14, pad=10)
+	ax1.grid(True, linestyle=":", alpha=0.6)
+	ax1.legend(fontsize=11)
+
+	ax2.plot(x_axis, cum_var_small, color="#440154", linewidth=2.5, label=f"Small Expert (90% at dim {dim_90_small})")
+	ax2.plot(x_axis, cum_var_large, color="#fde725", linewidth=2.5, label=f"Large Expert (90% at dim {dim_90_large})")
+	ax2.axhline(y=0.90, color="red", linestyle="--", linewidth=1.5, alpha=0.7)
+	ax2.text(x_axis[-1] * 0.8, 0.92, "90% Variance", color="red", fontsize=11)
+	ax2.axvline(x=dim_90_small, color="#440154", linestyle=":", linewidth=1.5, alpha=0.6)
+	ax2.axvline(x=dim_90_large, color="#fde725", linestyle=":", linewidth=1.5, alpha=0.6)
+	ax2.set_xlabel("Number of Dimensions Used", fontsize=12)
+	ax2.set_ylabel("Cumulative Explained Variance", fontsize=12)
+	ax2.set_title("Effective Dimensionality Analysis", fontsize=14, pad=10)
+	ax2.grid(True, linestyle=":", alpha=0.6)
+	ax2.legend(fontsize=11, loc="lower right")
+
+	plt.tight_layout()
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	plt.savefig(out_path, dpi=200, bbox_inches="tight")
+	plt.close(fig)
+
+
+
 def plot_cumulative_variance(
 	results: Sequence[Tuple[str, np.ndarray]],
 	out_path: Path,
@@ -259,7 +308,11 @@ def main() -> None:
 		large_cumulative_variance=large_cumulative,
 	)
 
+	decay_path = output_dir / f"{TEST_DATASET_VARIANT}_singular_value_decay.png"
+	plot_singular_value_decay(small_matrix, large_matrix, decay_path)
+
 	print(f"Saved plot: {plot_path}")
+	print(f"Saved decay plot: {decay_path}")
 	print(f"Saved stats: {output_dir / f'{TEST_DATASET_VARIANT}_svd_stats.npz'}")
 
 
