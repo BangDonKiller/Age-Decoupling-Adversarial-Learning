@@ -123,7 +123,7 @@ DATASET_INFO = {
             },
             "val": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
-                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_mixture_gap.csv",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_mixture.csv",
             },
         },
         "LE5": {
