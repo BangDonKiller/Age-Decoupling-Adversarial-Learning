@@ -207,7 +207,7 @@ def plot_cumulative_variance(
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="SVD analysis for CA20 small/large expert embeddings.")
-	parser.add_argument("--k", type=int, default=50, help="Plot the first K singular values.")
+	parser.add_argument("--k", type=int, default=None, help="Optional manual cap for K. Defaults to the maximum available SVD dimension.")
 	parser.add_argument("--small-checkpoint", type=str, default=DEFAULT_SMALL_CKPT, help="Path to the small expert checkpoint.")
 	parser.add_argument("--large-checkpoint", type=str, default=DEFAULT_LARGE_CKPT, help="Path to the large expert checkpoint.")
 	parser.add_argument("--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR), help="Directory used to save figures and arrays.")
@@ -237,11 +237,13 @@ def main() -> None:
 	small_singular_values, small_explained, small_cumulative = compute_cumulative_variance_explained(small_matrix)
 	large_singular_values, large_explained, large_cumulative = compute_cumulative_variance_explained(large_matrix)
 
-	plot_path = output_dir / f"{TEST_DATASET_VARIANT}_small_vs_large_cumulative_variance_k{args.k}.png"
+	max_k = min(len(small_cumulative), len(large_cumulative))
+	plot_k = min(args.k, max_k) if args.k is not None else max_k
+	plot_path = output_dir / f"{TEST_DATASET_VARIANT}_small_vs_large_cumulative_variance_k{plot_k}.png"
 	plot_cumulative_variance(
 		[("Small Expert", small_cumulative), ("Large Expert", large_cumulative)],
 		plot_path,
-		args.k,
+		plot_k,
 	)
 
 	np.savez_compressed(

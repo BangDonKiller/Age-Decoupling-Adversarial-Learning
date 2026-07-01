@@ -1,216 +1,157 @@
 """
-Vox-CA20 正樣本散點圖分析。
-
-作法：
-1) 讀取 Vox-CA20 測試集的所有 pair。
-2) 只保留 label = 1 的同人樣本。
-3) 分別使用小專家與大專家計算 cosine similarity score。
-4) 畫出 2D scatter plot：X 軸為小專家分數，Y 軸為大專家分數。
-
-輸出：
-1) 散點圖 PNG
-2) 正樣本分數 CSV
+讀取 CSV 分數檔案並生成兩張獨立的學術圖表：
+1) 乾淨的邊緣直方圖 + 散點圖 (無文字遮擋)
+2) 統計指標對比柱狀圖
 """
 
-import csv
-import os
-import warnings
 from pathlib import Path
-from typing import Dict, List, Tuple
-
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
-from torch.utils.data import DataLoader
-from tqdm import tqdm
+import pandas as pd
 
-from data.vox1_loader import PairwiseDataset
-from model.disentangled_model.siamese_network import SiameseNetwork
-from params.param import DATASET_INFO, DEVICE, NUM_WORKERS
-
-warnings.filterwarnings(
-	"ignore",
-	message=r".*torchaudio\.load_with_torchcodec.*",
-	category=UserWarning,
-)
-warnings.filterwarnings(
-	"ignore",
-	message=r".*StreamingMediaDecoder has been deprecated.*",
-	category=UserWarning,
-)
+# ==================== 設定區 ====================
+CSV_PATH = Path("logs") / "positive_pair_scatter" / "Vox-CA20_positive_pair_scores.csv"
+OUTPUT_SCATTER_FIG = Path("logs") / "positive_pair_scatter" / "Vox-CA20_academic_scatter_clean.png"
+OUTPUT_STATS_FIG = Path("logs") / "positive_pair_scatter" / "Vox-CA20_statistics_bar_chart.png"
+# ===============================================
 
 
-TEST_DATASET_NAME = "VoxCeleb1"
-TEST_DATASET_VARIANT = "Vox-CA20"
-
-EXPERT_WEIGHTS: List[Tuple[str, str]] = [
-	("Small", "checkpoints/siamese_full_finetune/full_ft_lr1e4_small_seed42/siamese_best.pt"),
-	("Large", "checkpoints/siamese_full_finetune/full_ft_lr1e4_large_seed42/siamese_best.pt"),
-]
-
-OUTPUT_DIR = Path("logs") / "positive_pair_scatter"
-SCORES_CSV = OUTPUT_DIR / f"{TEST_DATASET_VARIANT}_positive_pair_scores.csv"
-SCATTER_FIG = OUTPUT_DIR / f"{TEST_DATASET_VARIANT}_small_vs_large_scatter.png"
+def load_data(csv_path: Path):
+    if not csv_path.exists():
+        raise FileNotFoundError(f"找不到 CSV 檔案: {csv_path}，請先運行模型產生 CSV。")
+    print(f"正在讀取 CSV 數據: {csv_path}")
+    df = pd.read_csv(csv_path)
+    x_scores = df["Small_score"].values
+    y_scores = df["Large_score"].values
+    age_gap = np.abs(df["spk1_age"].values - df["spk2_age"].values)
+    return x_scores, y_scores, age_gap, len(df)
 
 
-def build_test_loader(dataset_name: str, dataset_variant: str) -> DataLoader:
-	test_dataset = PairwiseDataset(
-		audio_dir=DATASET_INFO[dataset_name][dataset_variant]["AUDIO_DIR"],
-		audio_meta_dir=DATASET_INFO[dataset_name][dataset_variant]["AUDIO_DATALIST"],
-		audio_meta_csv_path=DATASET_INFO[dataset_name]["AUDIO_META_DIR"],
-	)
-	return DataLoader(
-		test_dataset,
-		batch_size=1,
-		shuffle=False,
-		num_workers=NUM_WORKERS,
-		pin_memory=torch.cuda.is_available(),
-	)
+def plot_clean_scatter(x_scores, y_scores, age_gap, n_samples, output_path: Path):
+    """繪製無文字遮擋的純淨版散點圖+邊緣直方圖"""
+    mean_x = np.mean(x_scores)
+    mean_y = np.mean(y_scores)
+
+    fig = plt.figure(figsize=(10, 10))
+    gs = fig.add_gridspec(2, 2, width_ratios=(7, 2), height_ratios=(2, 7),
+                          left=0.1, right=0.9, bottom=0.1, top=0.9,
+                          wspace=0.05, hspace=0.05)
+
+    # 1. 主散點圖 (左下)
+    ax_scatter = fig.add_subplot(gs[1, 0])
+    scatter = ax_scatter.scatter(
+        x_scores,
+        y_scores,
+        c=age_gap,
+        cmap="viridis",
+        s=18,
+        alpha=0.25,  # 降低透明度以看清重疊密度
+        edgecolors="none",
+    )
+    
+    ax_scatter.set_xlim([-0.2, 1.0])
+    ax_scatter.set_ylim([-0.2, 1.0])
+    ax_scatter.plot([-0.2, 1.0], [-0.2, 1.0], linestyle="--", color="#666666", linewidth=1.2, label="y = x")
+
+    # 2. 小專家邊緣直方圖 (上方)
+    ax_histx = fig.add_subplot(gs[0, 0], sharex=ax_scatter)
+    ax_histx.hist(x_scores, bins=60, color="#440154", alpha=0.7, density=True)
+    ax_histx.axvline(mean_x, color="red", linestyle="--", linewidth=1.2, label=f"Mean: {mean_x:.3f}")
+    ax_histx.axis("off")
+    ax_histx.legend(loc="upper right", fontsize=9)
+
+    # 3. 大專家邊緣直方圖 (右方)
+    ax_histy = fig.add_subplot(gs[1, 1], sharey=ax_scatter)
+    ax_histy.hist(y_scores, bins=60, color="#fde725", alpha=0.7, density=True, orientation="horizontal")
+    ax_histy.axhline(mean_y, color="red", linestyle="--", linewidth=1.2, label=f"Mean: {mean_y:.3f}")
+    ax_histy.axis("off")
+    ax_histy.legend(loc="lower right", fontsize=9)
+
+    # 4. 裝飾
+    ax_scatter.set_xlabel("Small Expert Cosine Similarity", fontsize=12)
+    ax_scatter.set_ylabel("Large Expert Cosine Similarity", fontsize=12)
+    ax_scatter.grid(True, linestyle=":", alpha=0.6)
+    ax_scatter.legend(loc="upper left")
+    ax_scatter.set_title(f"Vox-CA20 Positive Pairs Scatter Plot (N = {n_samples})", fontsize=13, pad=10)
+
+    # 5. 色條
+    cbar_ax = fig.add_axes([0.93, 0.1, 0.02, 0.7])
+    fig.colorbar(scatter, cax=cbar_ax, label="Age Gap")
+
+    plt.savefig(str(output_path), dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"🎉 成功！純淨版散點圖已儲存至: {output_path}")
 
 
-def build_siamese_model() -> SiameseNetwork:
-	model = SiameseNetwork().to(DEVICE)
-	model.eval()
-	return model
+def plot_statistics_bars(x_scores, y_scores, output_path: Path):
+    """繪製獨立的指標對比柱狀圖"""
+    mean_x, median_x = np.mean(x_scores), np.median(x_scores)
+    mean_y, median_y = np.mean(y_scores), np.median(y_scores)
+    
+    threshold = 0.4
+    above_th_x = np.mean(x_scores > threshold) * 100
+    above_th_y = np.mean(y_scores > threshold) * 100
 
+    # 建立雙子圖 (左邊比分數，右邊比通過率)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    
+    # 子圖 1: Mean & Median 對比
+    labels = ['Mean Score', 'Median Score']
+    small_vals = [mean_x, median_x]
+    large_vals = [mean_y, median_y]
+    
+    x = np.arange(len(labels))
+    width = 0.35
+    
+    rects1 = ax1.bar(x - width/2, small_vals, width, label='Small Expert', color='#440154', alpha=0.8)
+    rects2 = ax1.bar(x + width/2, large_vals, width, label='Large Expert', color='#fde725', alpha=0.8)
+    
+    ax1.set_ylabel('Cosine Similarity', fontsize=11)
+    ax1.set_title('Average Score Comparison', fontsize=12, pad=10)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    ax1.set_ylim([0, 0.6])
+    ax1.legend()
+    ax1.grid(True, linestyle=":", alpha=0.5)
+    
+    # 在柱狀圖上標註數值
+    ax1.bar_label(rects1, padding=3, fmt='%.3f')
+    ax1.bar_label(rects2, padding=3, fmt='%.3f')
 
-def _load_full_checkpoint(model: SiameseNetwork, checkpoint_path: str) -> None:
-	checkpoint = torch.load(checkpoint_path, map_location="cpu")
-	if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-		state_dict = checkpoint["model_state_dict"]
-	else:
-		state_dict = checkpoint
-	model.load_state_dict(state_dict, strict=False)
+    # 子圖 2: 識別率 (Score > 0.4) 對比
+    categories = ['Ratio > 0.4']
+    rects3 = ax2.bar([0 - 0.2], [above_th_x], 0.4, label='Small Expert', color='#440154', alpha=0.8)
+    rects4 = ax2.bar([0 + 0.2], [above_th_y], 0.4, label='Large Expert', color='#fde725', alpha=0.8)
+    
+    ax2.set_ylabel('Percentage (%)', fontsize=11)
+    ax2.set_title(f'Pass Rate Comparison (Threshold = {threshold})', fontsize=12, pad=10)
+    ax2.set_xticks([0])
+    ax2.set_xticklabels(categories)
+    ax2.set_ylim([0, 100])
+    ax2.legend()
+    ax2.grid(True, linestyle=":", alpha=0.5)
+    
+    ax2.bar_label(rects3, padding=3, fmt='%.1f%%')
+    ax2.bar_label(rects4, padding=3, fmt='%.1f%%')
 
+    plt.tight_layout()
+    plt.savefig(str(output_path), dpi=200)
+    plt.close()
+    print(f"🎉 成功！統計對比圖已儲存至: {output_path}")
 
-def load_expert_model(weight_path: str) -> SiameseNetwork:
-	if not os.path.exists(weight_path):
-		raise FileNotFoundError(f"找不到權重: {weight_path}")
-
-	model = build_siamese_model()
-	_load_full_checkpoint(model, weight_path)
-	model = model.to(DEVICE)
-	model.eval()
-	return model
-
-
-def _unwrap_singleton(value):
-	if isinstance(value, (list, tuple)) and len(value) == 1:
-		return value[0]
-	return value
-
-
-def collect_positive_pair_scores(
-	experts: List[Tuple[str, SiameseNetwork]],
-	loader: DataLoader,
-) -> List[Dict[str, float]]:
-	records: List[Dict[str, float]] = []
-
-	for pair_index, batch in enumerate(
-		tqdm(loader, desc="Scoring positive pairs", dynamic_ncols=True),
-		start=1,
-	):
-		pair_label, spk1_id, spk2_id, wav1, wav2, spk1_age, spk2_age = batch
-		label_value = int(pair_label.item())
-
-		if label_value != 1:
-			continue
-
-		wav1 = wav1.to(DEVICE, non_blocking=True)
-		wav2 = wav2.to(DEVICE, non_blocking=True)
-
-		record: Dict[str, float] = {
-			"pair_index": pair_index,
-			"label": label_value,
-			"spk1_id": str(_unwrap_singleton(spk1_id)),
-			"spk2_id": str(_unwrap_singleton(spk2_id)),
-			"spk1_age": int(spk1_age.item()),
-			"spk2_age": int(spk2_age.item()),
-		}
-
-		with torch.no_grad():
-			for expert_name, model in experts:
-				_, _, cosine_score = model(wav1, wav2, spec_aug=False)
-				record[f"{expert_name}_score"] = float(cosine_score.detach().cpu().item())
-
-		records.append(record)
-
-	return records
-
-
-def save_scores_csv(output_path: Path, records: List[Dict[str, float]], expert_names: List[str]) -> None:
-	output_path.parent.mkdir(parents=True, exist_ok=True)
-	with open(output_path, mode="w", newline="", encoding="utf-8") as file_obj:
-		writer = csv.writer(file_obj)
-		writer.writerow(
-			[
-				"pair_index",
-				"label",
-				"spk1_id",
-				"spk2_id",
-				"spk1_age",
-				"spk2_age",
-				*[f"{expert_name}_score" for expert_name in expert_names],
-			]
-		)
-
-		for row in records:
-			writer.writerow(
-				[
-					row["pair_index"],
-					row["label"],
-					row["spk1_id"],
-					row["spk2_id"],
-					row["spk1_age"],
-					row["spk2_age"],
-					*[row[f"{expert_name}_score"] for expert_name in expert_names],
-				]
-			)
-
-
-def plot_positive_pair_scatter(records: List[Dict[str, float]], output_path: Path) -> None:
-	if not records:
-		raise RuntimeError("沒有找到任何 label=1 的樣本，無法繪圖。")
-
-	x_scores = np.asarray([row["Small_score"] for row in records], dtype=np.float32)
-	y_scores = np.asarray([row["Large_score"] for row in records], dtype=np.float32)
-	age_gap = np.asarray([abs(int(row["spk1_age"]) - int(row["spk2_age"])) for row in records], dtype=np.float32)
-
-	plt.figure(figsize=(8.5, 7.0))
-	scatter = plt.scatter(
-		x_scores,
-		y_scores,
-		c=age_gap,
-		cmap="viridis",
-		s=28,
-		alpha=0.75,
-		edgecolors="none",
-	)
-	min_score = float(min(x_scores.min(), y_scores.min()))
-	max_score = float(max(x_scores.max(), y_scores.max()))
-	plt.plot([min_score, max_score], [min_score, max_score], linestyle="--", color="#666666", linewidth=1.2, label="y = x")
-	plt.colorbar(scatter, label="Age Gap")
-	plt.xlabel("Small Expert Cosine Similarity")
-	plt.ylabel("Large Expert Cosine Similarity")
-	plt.title(f"Vox-CA20 Positive Pairs Scatter Plot\nN = {len(records)}")
-	plt.legend(loc="best")
-	plt.tight_layout()
-	output_path.parent.mkdir(parents=True, exist_ok=True)
-	plt.savefig(str(output_path), dpi=180)
-	plt.close()
-
-
-def main() -> None:
-	loader = build_test_loader(TEST_DATASET_NAME, TEST_DATASET_VARIANT)
-	experts = [(expert_name, load_expert_model(weight_path)) for expert_name, weight_path in EXPERT_WEIGHTS]
-
-	records = collect_positive_pair_scores(experts, loader)
-	save_scores_csv(SCORES_CSV, records, [expert_name for expert_name, _ in EXPERT_WEIGHTS])
-	plot_positive_pair_scatter(records, SCATTER_FIG)
-
-	print(f"已輸出正樣本分數 CSV: {SCORES_CSV}")
-	print(f"已輸出散點圖: {SCATTER_FIG}")
+    # 同時在終端機印出文字報告，方便複製
+    print("\n" + "="*40)
+    print("【Vox-CA20 同人樣本統計報告】")
+    print(f"小專家 (Small Expert) 均值: {mean_x:.4f} | 中位數: {median_x:.4f} | 通過率: {above_th_x:.2f}%")
+    print(f"大專家 (Large Expert) 均值: {mean_y:.4f} | 中位數: {median_y:.4f} | 通過率: {above_th_y:.2f}%")
+    print("="*40)
 
 
 if __name__ == "__main__":
-	main()
+    x_sc, y_sc, gap, n_samp = load_data(CSV_PATH)
+    
+    # 1. 畫純淨版散點圖 (無文字遮擋)
+    plot_clean_scatter(x_sc, y_sc, gap, n_samp, OUTPUT_SCATTER_FIG)
+    
+    # 2. 畫獨立柱狀圖
+    plot_statistics_bars(x_sc, y_sc, OUTPUT_STATS_FIG)
