@@ -171,6 +171,22 @@ def compute_cumulative_variance_explained(matrix: np.ndarray) -> Tuple[np.ndarra
 	return singular_values, explained_variance_ratio, cumulative_variance_ratio
 
 
+def dimensions_for_variance_thresholds(
+	cumulative_variance: np.ndarray,
+	thresholds: Sequence[float],
+) -> Dict[float, int]:
+	if cumulative_variance.ndim != 1:
+		raise ValueError(f"Expected a 1D cumulative variance array, got shape={cumulative_variance.shape}")
+
+	threshold_to_dimension: Dict[float, int] = {}
+	for threshold in thresholds:
+		if not 0.0 < threshold <= 1.0:
+			raise ValueError(f"Threshold must be in (0, 1], got {threshold}")
+		dimension = int(np.argmax(cumulative_variance >= threshold)) + 1
+		threshold_to_dimension[threshold] = dimension
+	return threshold_to_dimension
+
+
 def plot_singular_value_decay(
 	small_matrix: np.ndarray,
 	large_matrix: np.ndarray,
@@ -285,6 +301,18 @@ def main() -> None:
 	print("Running SVD...")
 	small_singular_values, small_explained, small_cumulative = compute_cumulative_variance_explained(small_matrix)
 	large_singular_values, large_explained, large_cumulative = compute_cumulative_variance_explained(large_matrix)
+
+	variance_thresholds = (0.25, 0.50, 0.75)
+	small_dims = dimensions_for_variance_thresholds(small_cumulative, variance_thresholds)
+	large_dims = dimensions_for_variance_thresholds(large_cumulative, variance_thresholds)
+
+	print("Dimensions needed to reach cumulative explained variance thresholds:")
+	for threshold in variance_thresholds:
+		threshold_pct = int(threshold * 100)
+		print(
+			f"  {threshold_pct}% variance -> Small Expert: {small_dims[threshold]} dims, "
+			f"Large Expert: {large_dims[threshold]} dims"
+		)
 
 	max_k = min(len(small_cumulative), len(large_cumulative))
 	plot_k = min(args.k, max_k) if args.k is not None else max_k
