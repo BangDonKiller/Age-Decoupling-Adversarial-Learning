@@ -302,7 +302,7 @@ def main() -> None:
 	small_singular_values, small_explained, small_cumulative = compute_cumulative_variance_explained(small_matrix)
 	large_singular_values, large_explained, large_cumulative = compute_cumulative_variance_explained(large_matrix)
 
-	variance_thresholds = (0.25, 0.50, 0.75)
+	variance_thresholds = (0.25, 0.50, 0.75, 0.90, 0.95, 0.99)
 	small_dims = dimensions_for_variance_thresholds(small_cumulative, variance_thresholds)
 	large_dims = dimensions_for_variance_thresholds(large_cumulative, variance_thresholds)
 
