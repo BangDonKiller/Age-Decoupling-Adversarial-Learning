@@ -126,25 +126,15 @@ DATASET_INFO = {
                 "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_mixture.csv",
             },
         },
-        "LE5": {
-            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5",
-            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta_LE5.csv",
-        },
-        "Delta5": {
-            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta5",
-            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta5_utts.csv",
-        },
-        "Delta20": {
-            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_delta20",
-            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_delta20_utts.csv",
-        },
-        "Mixture": {
-            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_mixture",
-            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_mixture.csv",
-        },
-        "Mini": {
-            "AUDIO_DIR": "/app/dataset/VoxCeleb2/Vox2_mini",
-            "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/Vox2_mini.csv",
+        "moe": {
+            "train": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_moe_train.csv",
+            },
+            "val": {
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
+                "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_moe_val.csv",
+            },
         },
         "audio_suffix": ".wav",
     },

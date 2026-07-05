@@ -26,7 +26,7 @@ from tqdm import tqdm
 from data.vox2_loader import Vox2PairDataset
 from loss.circleloss import CircleLoss
 from model.disentangled_model import CrossGapMoE, ExpertCheckpointPaths
-from params.param import DEVICE, NUM_WORKERS, BATCH_SIZE
+from params.param import DEVICE, NUM_WORKERS, BATCH_SIZE, DATASET_INFO
 
 
 # ==========================================
@@ -45,12 +45,13 @@ SAME_LABEL_IS_ONE = True
 TRAIN_SPEC_AUG = False
 PRINT_EVERY_STEPS = 20
 
-TRAIN_AUDIO_DIR = "/app/dataset/VoxCeleb2/Vox2_mixture"
-TRAIN_META_CSV = "/app/dataset/VoxCeleb2/Vox2_mixture.csv"
+TRAIN_DATASET_NAME = "VoxCeleb2"
+TRAIN_DATASET_VARIANT = "moe"
 
-# Optional validation set; set to None to skip validation.
-VAL_AUDIO_DIR = None
-VAL_META_CSV = None
+TRAIN_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_DIR"]
+TRAIN_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_META_DIR"]
+VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
+VAL_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_META_DIR"]
 
 SAVE_ROOT = Path("checkpoints/cross_gap_moe")
 LOG_ROOT = Path("logs/cross_gap_moe")
