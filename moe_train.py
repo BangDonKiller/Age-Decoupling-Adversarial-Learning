@@ -26,15 +26,14 @@ from tqdm import tqdm
 from data.vox2_loader import Vox2PairDataset
 from loss.circleloss import CircleLoss
 from model.disentangled_model import CrossGapMoE, ExpertCheckpointPaths
-from params.param import DEVICE, NUM_WORKERS
+from params.param import DEVICE, NUM_WORKERS, BATCH_SIZE
 
 
 # ==========================================
 # 1) Config
 # ==========================================
 SEED = 42
-EPOCHS = 10
-BATCH_SIZE = 16
+EPOCHS = 1
 LR = 1e-4
 WEIGHT_DECAY = 1e-5
 BETA = 0.1  # total_loss = loss_circle + beta * loss_router
