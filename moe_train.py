@@ -29,6 +29,7 @@ from data.vox2_loader import Vox2PairDataset
 from loss.circleloss import CircleLoss
 from model.disentangled_model import CrossGapMoE, ExpertCheckpointPaths
 from params.param import DEVICE, NUM_WORKERS, BATCH_SIZE, DATASET_INFO
+from tool.EER import ComputeErrorRates, ComputeMinDcf, compute_eer
 
 warnings.filterwarnings(
     "ignore",
@@ -44,9 +45,9 @@ warnings.filterwarnings(
 # ==========================================
 # 1) Config
 # ==========================================
-SEED = 42
+SEEDS = [42, 1, 2026]
 EPOCHS = 1
-LR = 1e-4
+LR = 1e-3
 WEIGHT_DECAY = 1e-5
 BETA = 0.1  # total_loss = loss_circle + beta * loss_router
 
@@ -55,7 +56,6 @@ BETA = 0.1  # total_loss = loss_circle + beta * loss_router
 SAME_LABEL_IS_ONE = True
 
 TRAIN_SPEC_AUG = False
-PRINT_EVERY_STEPS = 20
 
 MODE = "train"  # "train" or "inference"
 
@@ -121,6 +121,45 @@ def build_vox1_loader(audio_dir: list[str], pair_list: str, age_meta_csv: str) -
 	)
 
 
+def _fmt_metric(value: float, digits: int = 4, suffix: str = "") -> str:
+	if isinstance(value, (float, np.floating)) and np.isnan(value):
+		return "N/A"
+	return f"{value:.{digits}f}{suffix}"
+
+
+def print_metrics_block(title: str, metrics: dict, show_det_metrics: bool) -> None:
+	print("\n" + "=" * 66)
+	print(f"{title}")
+	print("-" * 66)
+	print(f"{'total_loss':<16}: {_fmt_metric(metrics['total_loss'])}")
+	print(f"{'circle_loss':<16}: {_fmt_metric(metrics['circle_loss'])}")
+	print(f"{'router_loss':<16}: {_fmt_metric(metrics['router_loss'])}")
+	print(f"{'router_acc':<16}: {_fmt_metric(metrics['router_acc'], digits=2, suffix='%')}")
+	print(f"{'pair_acc':<16}: {_fmt_metric(metrics['pair_acc'], digits=2, suffix='%')}")
+	if show_det_metrics:
+		print(f"{'eer':<16}: {_fmt_metric(metrics['eer'])}")
+		print(f"{'min_dcf':<16}: {_fmt_metric(metrics['min_dcf'])}")
+		print(f"{'eer_threshold':<16}: {_fmt_metric(metrics['eer_threshold'])}")
+	print("=" * 66)
+
+
+def print_trainable_parameters(model: CrossGapMoE) -> None:
+	trainable_named_params = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
+	total_trainable = sum(param.numel() for _, param in trainable_named_params)
+
+	print("\n" + "=" * 66)
+	print("Trainable Parameters")
+	print("-" * 66)
+	print(f"{'param_name':<48} {'shape':<12} {'count':>12}")
+	print("-" * 66)
+	for name, param in trainable_named_params:
+		shape_str = str(tuple(param.shape))
+		print(f"{name:<48} {shape_str:<12} {param.numel():>12}")
+	print("-" * 66)
+	print(f"{'total_trainable':<48} {'':<12} {total_trainable:>12}")
+	print("=" * 66)
+
+
 def run_epoch(
 	model: CrossGapMoE,
 	loader: DataLoader,
@@ -132,6 +171,7 @@ def run_epoch(
 	epoch_idx: int,
 	total_epochs: int,
 	dataset_mode: str,
+	compute_det_metrics: bool = False,
 ):
 	is_train = optimizer is not None
 	model.train(is_train)
@@ -143,6 +183,8 @@ def run_epoch(
 
 	total_router_correct = 0
 	total_pair_correct = 0
+	all_scores: list[torch.Tensor] = []
+	all_labels: list[torch.Tensor] = []
 
 	pbar = tqdm(
 		loader,
@@ -151,7 +193,7 @@ def run_epoch(
 		leave=False,
 	)
 
-	for step, batch in enumerate(pbar, start=1):
+	for batch in pbar:
 		if dataset_mode == "vox2":
 			pair_labels, wav1, wav2, _, true_gap_labels = batch
 		elif dataset_mode == "vox1":
@@ -210,14 +252,25 @@ def run_epoch(
 			pair_pred = (s_final >= 0.0).long()
 			total_pair_correct += int((pair_pred == same_labels).sum().item())
 
-			if step % PRINT_EVERY_STEPS == 0 or step == len(loader):
-				pbar.set_postfix(
-					total=f"{float(total_loss.detach().cpu()):.4f}",
-					circle=f"{float(loss_circle.detach().cpu()):.4f}",
-					router=f"{float(loss_router.detach().cpu()):.4f}",
-				)
+			if compute_det_metrics:
+				all_scores.append(s_final.detach().cpu())
+				all_labels.append(same_labels.detach().cpu())
 
 	denom = max(1, total_samples)
+	eer = float("nan")
+	min_dcf = float("nan")
+	eer_threshold = float("nan")
+
+	if compute_det_metrics and all_scores:
+		scores_np = torch.cat(all_scores).numpy()
+		labels_np = torch.cat(all_labels).numpy()
+		if np.unique(labels_np).size >= 2:
+			eer, eer_threshold = compute_eer(scores_np, labels_np)
+			fnrs, fprs, thresholds = ComputeErrorRates(scores_np, labels_np)
+			min_dcf, _ = ComputeMinDcf(fnrs, fprs, thresholds, p_target=0.01, c_miss=1, c_fa=1)
+		else:
+			print("[Warn] DET metrics skipped: validation labels contain only one class.")
+
 	router_acc = 100.0 * total_router_correct / denom if dataset_mode == "vox2" else float("nan")
 	return {
 		"total_loss": total_total_loss / denom,
@@ -225,6 +278,9 @@ def run_epoch(
 		"router_loss": total_router_loss / denom,
 		"router_acc": router_acc,
 		"pair_acc": 100.0 * total_pair_correct / denom,
+		"eer": eer,
+		"min_dcf": min_dcf,
+		"eer_threshold": eer_threshold,
 	}
 
 
@@ -245,7 +301,6 @@ def save_checkpoint(model: CrossGapMoE, optimizer: torch.optim.Optimizer, epoch:
 
 
 def main() -> None:
-	set_seed(SEED)
 	if MODE not in {"train", "inference"}:
 		raise ValueError(f"MODE must be 'train' or 'inference', got: {MODE}")
 
@@ -254,45 +309,26 @@ def main() -> None:
 	if is_train_mode:
 		if not os.path.exists(TRAIN_META_CSV):
 			raise FileNotFoundError(f"Train metadata csv not found: {TRAIN_META_CSV}")
-
-		train_loader = build_vox2_loader(TRAIN_AUDIO_DIR, TRAIN_META_CSV, shuffle=True, batch_size=BATCH_SIZE)
-		val_loader = None
-		if VAL_AUDIO_DIR and VAL_META_CSV:
-			if os.path.exists(VAL_META_CSV):
-				val_loader = build_vox2_loader(VAL_AUDIO_DIR, VAL_META_CSV, shuffle=False, batch_size=1)
-			else:
-				print(f"[Warn] Skip val: metadata not found at {VAL_META_CSV}")
 	else:
+		set_seed(SEEDS[0])
 		if not os.path.exists(INFER_META_LIST):
 			raise FileNotFoundError(f"Inference pair list not found: {INFER_META_LIST}")
 		if not os.path.exists(INFER_META_CSV):
 			raise FileNotFoundError(f"Inference metadata csv not found: {INFER_META_CSV}")
 		infer_loader = build_vox1_loader(INFER_AUDIO_DIR, INFER_META_LIST, INFER_META_CSV)
 
-	model = CrossGapMoE(
-		C=1024,
-		feature_dim=192,
-		router_hidden_dim=256,
-		router_dropout=0.1,
-		expert_ckpt_paths=ExpertCheckpointPaths(),
-	).to(DEVICE)
-
-	trainable_params = [p for p in model.parameters() if p.requires_grad]
-	print(f"Trainable parameter count: {sum(p.numel() for p in trainable_params)}")
-
-	optimizer = torch.optim.Adam(trainable_params, lr=LR, weight_decay=WEIGHT_DECAY)
-	ce_loss_fn = nn.CrossEntropyLoss()
-	circle_loss_fn = CircleLoss(m=0.25, gamma=256.0)
-
-	run_dir = SAVE_ROOT / RUN_NAME
-	log_dir = LOG_ROOT / RUN_NAME
-	run_dir.mkdir(parents=True, exist_ok=True)
-	log_dir.mkdir(parents=True, exist_ok=True)
-	csv_path = log_dir / "train_log.csv"
-
-	best_train_loss = float("inf")
-
 	if not is_train_mode:
+		model = CrossGapMoE(
+			C=1024,
+			feature_dim=192,
+			router_hidden_dim=256,
+			router_dropout=0.1,
+			expert_ckpt_paths=ExpertCheckpointPaths(),
+		).to(DEVICE)
+
+		ce_loss_fn = nn.CrossEntropyLoss()
+		circle_loss_fn = CircleLoss(m=0.25, gamma=256.0)
+
 		with torch.no_grad():
 			infer_metrics = run_epoch(
 				model=model,
@@ -305,112 +341,196 @@ def main() -> None:
 				epoch_idx=0,
 				total_epochs=1,
 				dataset_mode="vox1",
+				compute_det_metrics=True,
 			)
 
-		print(
-			f"[Inference][{INFER_DATASET_NAME}-{INFER_DATASET_VARIANT}] "
-			f"total={infer_metrics['total_loss']:.4f}, "
-			f"circle={infer_metrics['circle_loss']:.4f}, "
-			f"pair_acc={infer_metrics['pair_acc']:.2f}%"
+		print_metrics_block(
+			title=f"[Inference][{INFER_DATASET_NAME}-{INFER_DATASET_VARIANT}]",
+			metrics=infer_metrics,
+			show_det_metrics=True,
 		)
 		return
 
-	with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
-		writer = csv.writer(f)
-		writer.writerow(
-			[
-				"epoch",
-				"split",
-				"total_loss",
-				"circle_loss",
-				"router_loss",
-				"router_acc",
-				"pair_acc",
-			]
-		)
+	print(f"\nRunning multi-seed training: {SEEDS}")
+	seed_summaries = []
 
-		for epoch in range(EPOCHS):
-			train_metrics = run_epoch(
-				model=model,
-				loader=train_loader,
-				optimizer=optimizer,
-				ce_loss_fn=ce_loss_fn,
-				circle_loss_fn=circle_loss_fn,
-				beta=BETA,
-				device=DEVICE,
-				epoch_idx=epoch,
-				total_epochs=EPOCHS,
-				dataset_mode="vox2",
-			)
+	for seed in SEEDS:
+		set_seed(seed)
 
-			print(
-				f"[Train][Epoch {epoch + 1}/{EPOCHS}] "
-				f"total={train_metrics['total_loss']:.4f}, "
-				f"circle={train_metrics['circle_loss']:.4f}, "
-				f"router={train_metrics['router_loss']:.4f}, "
-				f"router_acc={train_metrics['router_acc']:.2f}%, "
-				f"pair_acc={train_metrics['pair_acc']:.2f}%"
-			)
+		train_loader = build_vox2_loader(TRAIN_AUDIO_DIR, TRAIN_META_CSV, shuffle=True, batch_size=BATCH_SIZE)
+		val_loader = None
+		if VAL_AUDIO_DIR and VAL_META_CSV:
+			if os.path.exists(VAL_META_CSV):
+				val_loader = build_vox2_loader(VAL_AUDIO_DIR, VAL_META_CSV, shuffle=False, batch_size=1)
+			else:
+				print(f"[Warn] Skip val: metadata not found at {VAL_META_CSV}")
 
+		model = CrossGapMoE(
+			C=1024,
+			feature_dim=192,
+			router_hidden_dim=256,
+			router_dropout=0.1,
+			expert_ckpt_paths=ExpertCheckpointPaths(),
+		).to(DEVICE)
+
+		trainable_params = [p for p in model.parameters() if p.requires_grad]
+		print_trainable_parameters(model)
+
+		optimizer = torch.optim.Adam(trainable_params, lr=LR, weight_decay=WEIGHT_DECAY)
+		ce_loss_fn = nn.CrossEntropyLoss()
+		circle_loss_fn = CircleLoss(m=0.25, gamma=256.0)
+
+		run_name = f"{RUN_NAME}_seed{seed}"
+		run_dir = SAVE_ROOT / run_name
+		log_dir = LOG_ROOT / run_name
+		run_dir.mkdir(parents=True, exist_ok=True)
+		log_dir.mkdir(parents=True, exist_ok=True)
+		csv_path = log_dir / "train_log.csv"
+
+		print(f"\n{'=' * 66}")
+		print(f"[Seed {seed}] Training start | run_name={run_name}")
+		print(f"{'=' * 66}")
+
+		best_train_loss = float("inf")
+		best_val_eer = float("inf")
+		best_eer_ckpt_path = run_dir / f"best_eer_seed{seed}.pt"
+		last_epoch_ckpt_path = run_dir / f"last_epoch_seed{seed}.pt"
+
+		with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+			writer = csv.writer(f)
 			writer.writerow(
 				[
-					epoch + 1,
-					"train",
-					train_metrics["total_loss"],
-					train_metrics["circle_loss"],
-					train_metrics["router_loss"],
-					train_metrics["router_acc"],
-					train_metrics["pair_acc"],
+					"epoch",
+					"train_total_loss",
+					"train_circle_loss",
+					"train_router_loss",
+					"train_router_acc",
+					"train_pair_acc",
+					"val_total_loss",
+					"val_circle_loss",
+					"val_router_loss",
+					"val_router_acc",
+					"val_pair_acc",
+					"val_eer",
+					"val_min_dcf",
+					"val_eer_threshold",
 				]
 			)
-			f.flush()
 
-			if train_metrics["total_loss"] < best_train_loss:
-				best_train_loss = train_metrics["total_loss"]
-				save_checkpoint(model, optimizer, epoch + 1, run_dir / "best_train.pt")
+			for epoch in range(EPOCHS):
+				train_metrics = run_epoch(
+					model=model,
+					loader=train_loader,
+					optimizer=optimizer,
+					ce_loss_fn=ce_loss_fn,
+					circle_loss_fn=circle_loss_fn,
+					beta=BETA,
+					device=DEVICE,
+					epoch_idx=epoch,
+					total_epochs=EPOCHS,
+					dataset_mode="vox2",
+					compute_det_metrics=False,
+				)
 
-			if val_loader is not None:
-				with torch.no_grad():
-					val_metrics = run_epoch(
-						model=model,
-						loader=val_loader,
-						optimizer=None,
-						ce_loss_fn=ce_loss_fn,
-						circle_loss_fn=circle_loss_fn,
-						beta=BETA,
-						device=DEVICE,
-						epoch_idx=epoch,
-						total_epochs=EPOCHS,
-						dataset_mode="vox2",
+				print_metrics_block(
+					title=f"[Train][Seed {seed}][Epoch {epoch + 1}/{EPOCHS}]",
+					metrics=train_metrics,
+					show_det_metrics=False,
+				)
+
+				if train_metrics["total_loss"] < best_train_loss:
+					best_train_loss = train_metrics["total_loss"]
+
+				val_metrics = {
+					"total_loss": float("nan"),
+					"circle_loss": float("nan"),
+					"router_loss": float("nan"),
+					"router_acc": float("nan"),
+					"pair_acc": float("nan"),
+					"eer": float("nan"),
+					"min_dcf": float("nan"),
+					"eer_threshold": float("nan"),
+				}
+
+				if val_loader is not None:
+					with torch.no_grad():
+						val_metrics = run_epoch(
+							model=model,
+							loader=val_loader,
+							optimizer=None,
+							ce_loss_fn=ce_loss_fn,
+							circle_loss_fn=circle_loss_fn,
+							beta=BETA,
+							device=DEVICE,
+							epoch_idx=epoch,
+							total_epochs=EPOCHS,
+							dataset_mode="vox2",
+							compute_det_metrics=True,
+						)
+
+					print_metrics_block(
+						title=f"[Val][Seed {seed}][Epoch {epoch + 1}/{EPOCHS}]",
+						metrics=val_metrics,
+						show_det_metrics=True,
 					)
 
-				print(
-					f"[Val][Epoch {epoch + 1}/{EPOCHS}] "
-					f"total={val_metrics['total_loss']:.4f}, "
-					f"circle={val_metrics['circle_loss']:.4f}, "
-					f"router={val_metrics['router_loss']:.4f}, "
-					f"router_acc={val_metrics['router_acc']:.2f}%, "
-					f"pair_acc={val_metrics['pair_acc']:.2f}%"
-				)
+					if not np.isnan(val_metrics["eer"]):
+						if val_metrics["eer"] < best_val_eer:
+							best_val_eer = val_metrics["eer"]
+							save_checkpoint(model, optimizer, epoch + 1, best_eer_ckpt_path)
 
 				writer.writerow(
 					[
 						epoch + 1,
-						"val",
+						train_metrics["total_loss"],
+						train_metrics["circle_loss"],
+						train_metrics["router_loss"],
+						train_metrics["router_acc"],
+						train_metrics["pair_acc"],
 						val_metrics["total_loss"],
 						val_metrics["circle_loss"],
 						val_metrics["router_loss"],
 						val_metrics["router_acc"],
 						val_metrics["pair_acc"],
+						val_metrics["eer"],
+						val_metrics["min_dcf"],
+						val_metrics["eer_threshold"],
 					]
 				)
 				f.flush()
 
-			save_checkpoint(model, optimizer, epoch + 1, run_dir / f"epoch_{epoch + 1:03d}.pt")
+				save_checkpoint(model, optimizer, epoch + 1, run_dir / f"epoch_{epoch + 1:03d}.pt")
+				save_checkpoint(model, optimizer, epoch + 1, last_epoch_ckpt_path)
 
-	print(f"Training completed. Best train loss: {best_train_loss:.4f}")
-	print(f"Checkpoints: {run_dir}")
-	print(f"Log file: {csv_path}")
+		seed_summaries.append(
+			{
+				"seed": seed,
+				"best_train_loss": best_train_loss,
+				"best_val_eer": best_val_eer,
+				"run_dir": str(run_dir),
+				"csv_path": str(csv_path),
+			}
+		)
+
+		print(f"[Seed {seed}] Training completed. Best train loss: {best_train_loss:.4f}")
+		if np.isnan(best_val_eer) or np.isinf(best_val_eer):
+			print(f"[Seed {seed}] Best EER checkpoint: N/A (validation EER unavailable)")
+		else:
+			print(f"[Seed {seed}] Best EER checkpoint: {best_eer_ckpt_path} (EER={best_val_eer:.4f})")
+		print(f"[Seed {seed}] Last epoch checkpoint: {last_epoch_ckpt_path}")
+		print(f"[Seed {seed}] Checkpoints: {run_dir}")
+		print(f"[Seed {seed}] Log file: {csv_path}")
+
+	print("\n" + "=" * 66)
+	print("Multi-Seed Summary")
+	print("-" * 66)
+	for summary in seed_summaries:
+		best_val_eer_str = "N/A" if np.isnan(summary["best_val_eer"]) else f"{summary['best_val_eer']:.4f}"
+		print(
+			f"seed={summary['seed']} | best_train_loss={summary['best_train_loss']:.4f} | "
+			f"best_val_eer={best_val_eer_str}"
+		)
+	print("=" * 66)
 
 
 if __name__ == "__main__":
