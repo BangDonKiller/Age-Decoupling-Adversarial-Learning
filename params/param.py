@@ -128,7 +128,7 @@ DATASET_INFO = {
         },
         "moe": {
             "train": {
-                "AUDIO_DIR": "/app/dataset/VoxCeleb2/wav",
+                "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_moe_train",
                 "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_moe_train.csv",
             },
             "val": {
