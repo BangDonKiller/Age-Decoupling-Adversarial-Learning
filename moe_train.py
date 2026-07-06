@@ -46,10 +46,11 @@ warnings.filterwarnings(
 # 1) Config
 # ==========================================
 SEEDS = [42, 1, 2026]
-EPOCHS = 1
+INFERENCE_SEEDS = [42, 1, 2026]
+EPOCHS = 10
 LR = 1e-3
 WEIGHT_DECAY = 1e-5
-BETA = 0.1  # total_loss = loss_circle + beta * loss_router
+BETA = 1.0  # total_loss = loss_circle + beta * loss_router
 
 # If your csv uses 1 for same-speaker and 0 for different-speaker, keep True.
 # If your csv uses 0 for same-speaker and 1 for different-speaker, set False.
@@ -62,17 +63,21 @@ MODE = "train"  # "train" or "inference"
 TRAIN_DATASET_NAME = "VoxCeleb2"
 TRAIN_DATASET_VARIANT = "moe"
 
-INFER_DATASET_NAME = "VoxCeleb1"
-INFER_DATASET_VARIANT = "Vox-O"
+INFERENCE_DATASETS: list[tuple[str, str]] = [
+	("VoxCeleb1", "Vox-O"),
+	("VoxCeleb1", "Vox1-H.S"),
+	("VoxCeleb1", "Vox-CA5"),
+	("VoxCeleb1", "Vox-CA10"),
+	("VoxCeleb1", "Vox-CA15"),
+	("VoxCeleb1", "Vox-CA20"),
+]
+
+INFERENCE_CKPT_PATHS: list[str] = []
 
 TRAIN_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_DIR"]
 TRAIN_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"]["AUDIO_META_DIR"]
 VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
 VAL_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_META_DIR"]
-
-INFER_AUDIO_DIR = DATASET_INFO[INFER_DATASET_NAME][INFER_DATASET_VARIANT]["AUDIO_DIR"]
-INFER_META_LIST = DATASET_INFO[INFER_DATASET_NAME][INFER_DATASET_VARIANT]["AUDIO_DATALIST"]
-INFER_META_CSV = DATASET_INFO[INFER_DATASET_NAME]["AUDIO_META_DIR"]
 
 SAVE_ROOT = Path("checkpoints/cross_gap_moe")
 LOG_ROOT = Path("logs/cross_gap_moe")
@@ -104,18 +109,22 @@ def build_vox2_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: 
 		drop_last=False,
 	)
 
+def build_test_loader(dataset_name: str, dataset_variant: str) -> DataLoader:
+	test_audio_dir = DATASET_INFO[dataset_name][dataset_variant]["AUDIO_DIR"]
+	test_pair_meta = DATASET_INFO[dataset_name][dataset_variant]["AUDIO_DATALIST"]
+	test_pair_meta_csv = DATASET_INFO[dataset_name]["AUDIO_META_DIR"]
 
-def build_vox1_loader(audio_dir: list[str], pair_list: str, age_meta_csv: str) -> DataLoader:
-	dataset = Vox1PairDataset(
-		audio_dir=audio_dir,
-		audio_meta_dir=pair_list,
-		audio_meta_csv_path=age_meta_csv,
+	test_dataset = Vox1PairDataset(
+		audio_dir=test_audio_dir,
+		audio_meta_dir=test_pair_meta,
+		audio_meta_csv_path=test_pair_meta_csv,
 	)
+
 	return DataLoader(
-		dataset,
+		test_dataset,
 		batch_size=1,
 		shuffle=False,
-		num_workers=NUM_WORKERS,
+		num_workers=0,
 		pin_memory=torch.cuda.is_available(),
 		drop_last=False,
 	)
@@ -125,6 +134,143 @@ def _fmt_metric(value: float, digits: int = 4, suffix: str = "") -> str:
 	if isinstance(value, (float, np.floating)) and np.isnan(value):
 		return "N/A"
 	return f"{value:.{digits}f}{suffix}"
+
+
+def build_run_name(seed: int) -> str:
+	return f"{RUN_NAME}_seed{seed}"
+
+
+def build_model() -> CrossGapMoE:
+	return CrossGapMoE(
+		C=1024,
+		feature_dim=192,
+		router_hidden_dim=256,
+		router_dropout=0.1,
+		expert_ckpt_paths=ExpertCheckpointPaths(),
+	).to(DEVICE)
+
+
+def resolve_inference_ckpt_paths() -> list[str]:
+	paths: list[str] = []
+
+	if INFERENCE_CKPT_PATHS:
+		paths.extend(INFERENCE_CKPT_PATHS)
+	else:
+		for seed in INFERENCE_SEEDS:
+			run_name = build_run_name(seed)
+			paths.append(str(SAVE_ROOT / run_name / "best.pt"))
+
+	unique_paths: list[str] = []
+	seen = set()
+	for path in paths:
+		normalized = str(Path(path))
+		if normalized not in seen:
+			unique_paths.append(normalized)
+			seen.add(normalized)
+
+	return unique_paths
+
+
+def load_moe_checkpoint(model: CrossGapMoE, checkpoint_path: Path, device: str) -> dict:
+	checkpoint = torch.load(str(checkpoint_path), map_location=device)
+	model_state_dict = checkpoint.get("model_state_dict")
+	if model_state_dict is None:
+		raise KeyError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
+
+	load_result = model.load_state_dict(model_state_dict, strict=True)
+	print("\n" + "=" * 66)
+	print(f"Loaded MoE checkpoint: {checkpoint_path}")
+	print("-" * 66)
+	# print(f"{'epoch':<16}: {checkpoint.get('epoch', 'N/A')}")
+	print(f"{'missing_keys':<16}: {len(load_result.missing_keys)}")
+	print(f"{'unexpected_keys':<16}: {len(load_result.unexpected_keys)}")
+	print("=" * 66)
+	return checkpoint
+
+
+def run_inference_for_multiple_ckpts_and_datasets() -> None:
+	ckpt_paths = resolve_inference_ckpt_paths()
+	if not ckpt_paths:
+		raise ValueError("找不到可用的推論 checkpoint，請檢查 INFERENCE_CKPT_PATHS 或 INFERENCE_SEEDS 設定")
+
+	available_ckpts = [path for path in ckpt_paths if os.path.exists(path)]
+	missing_ckpts = [path for path in ckpt_paths if not os.path.exists(path)]
+
+	for missing in missing_ckpts:
+		print(f"[警告] 找不到 checkpoint，將略過: {missing}")
+
+	if not available_ckpts:
+		raise FileNotFoundError("所有推論 checkpoint 都不存在，無法執行推論")
+
+	print("\n推論設定：")
+	print(f"- 資料集數量: {len(INFERENCE_DATASETS)}")
+	print(f"- 權重數量: {len(available_ckpts)}")
+
+	model = build_model()
+	overall_eers = []
+	overall_min_dcfs = []
+
+	for dataset_name, dataset_variant in INFERENCE_DATASETS:
+		dataset_key = f"{dataset_name}/{dataset_variant}"
+		print(f"\n{'=' * 72}")
+		print(f"推論資料集: {dataset_key}")
+		print(f"{'=' * 72}")
+
+		test_loader = build_test_loader(dataset_name, dataset_variant)
+		dataset_eers = []
+		dataset_min_dcfs = []
+
+		for ckpt_path in available_ckpts:
+			print(f"載入 checkpoint: {ckpt_path}")
+			load_moe_checkpoint(model, Path(ckpt_path), DEVICE)
+
+			with torch.no_grad():
+				infer_metrics = run_epoch(
+					model=model,
+					loader=test_loader,
+					optimizer=None,
+					ce_loss_fn=nn.CrossEntropyLoss(),
+					circle_loss_fn=CircleLoss(m=0.25, gamma=256.0),
+					beta=BETA,
+					device=DEVICE,
+					epoch_idx=0,
+					total_epochs=1,
+					dataset_mode="vox1",
+					compute_det_metrics=True,
+				)
+
+			dataset_eers.append(infer_metrics["eer"])
+			dataset_min_dcfs.append(infer_metrics["min_dcf"])
+			overall_eers.append(infer_metrics["eer"])
+			overall_min_dcfs.append(infer_metrics["min_dcf"])
+
+			print_metrics_block(
+				title=f"[Inference][{dataset_key}][{Path(ckpt_path).parent.name}]",
+				metrics=infer_metrics,
+				show_det_metrics=True,
+			)
+
+		eer_mean = float(np.mean(dataset_eers)) if dataset_eers else float("nan")
+		eer_std = float(np.std(dataset_eers)) if dataset_eers else float("nan")
+		min_dcf_mean = float(np.mean(dataset_min_dcfs)) if dataset_min_dcfs else float("nan")
+		min_dcf_std = float(np.std(dataset_min_dcfs)) if dataset_min_dcfs else float("nan")
+
+		print(
+			f"[資料集統計] {dataset_key} | "
+			f"EER mean/std: {eer_mean:.4f}/{eer_std:.4f} | "
+			f"minDCF mean/std: {min_dcf_mean:.4f}/{min_dcf_std:.4f}"
+		)
+
+	overall_eer_mean = float(np.mean(overall_eers)) if overall_eers else float("nan")
+	overall_eer_std = float(np.std(overall_eers)) if overall_eers else float("nan")
+	overall_min_dcf_mean = float(np.mean(overall_min_dcfs)) if overall_min_dcfs else float("nan")
+	overall_min_dcf_std = float(np.std(overall_min_dcfs)) if overall_min_dcfs else float("nan")
+
+	print("\n" + "=" * 72)
+	print("整體統計（所有資料集 x 所有權重）")
+	print("=" * 72)
+	print(f"EER mean/std: {overall_eer_mean:.4f}/{overall_eer_std:.4f}")
+	print(f"minDCF mean/std: {overall_min_dcf_mean:.4f}/{overall_min_dcf_std:.4f}")
 
 
 def print_metrics_block(title: str, metrics: dict, show_det_metrics: bool) -> None:
@@ -310,45 +456,7 @@ def main() -> None:
 		if not os.path.exists(TRAIN_META_CSV):
 			raise FileNotFoundError(f"Train metadata csv not found: {TRAIN_META_CSV}")
 	else:
-		set_seed(SEEDS[0])
-		if not os.path.exists(INFER_META_LIST):
-			raise FileNotFoundError(f"Inference pair list not found: {INFER_META_LIST}")
-		if not os.path.exists(INFER_META_CSV):
-			raise FileNotFoundError(f"Inference metadata csv not found: {INFER_META_CSV}")
-		infer_loader = build_vox1_loader(INFER_AUDIO_DIR, INFER_META_LIST, INFER_META_CSV)
-
-	if not is_train_mode:
-		model = CrossGapMoE(
-			C=1024,
-			feature_dim=192,
-			router_hidden_dim=256,
-			router_dropout=0.1,
-			expert_ckpt_paths=ExpertCheckpointPaths(),
-		).to(DEVICE)
-
-		ce_loss_fn = nn.CrossEntropyLoss()
-		circle_loss_fn = CircleLoss(m=0.25, gamma=256.0)
-
-		with torch.no_grad():
-			infer_metrics = run_epoch(
-				model=model,
-				loader=infer_loader,
-				optimizer=None,
-				ce_loss_fn=ce_loss_fn,
-				circle_loss_fn=circle_loss_fn,
-				beta=BETA,
-				device=DEVICE,
-				epoch_idx=0,
-				total_epochs=1,
-				dataset_mode="vox1",
-				compute_det_metrics=True,
-			)
-
-		print_metrics_block(
-			title=f"[Inference][{INFER_DATASET_NAME}-{INFER_DATASET_VARIANT}]",
-			metrics=infer_metrics,
-			show_det_metrics=True,
-		)
+		run_inference_for_multiple_ckpts_and_datasets()
 		return
 
 	print(f"\nRunning multi-seed training: {SEEDS}")
@@ -365,13 +473,7 @@ def main() -> None:
 			else:
 				print(f"[Warn] Skip val: metadata not found at {VAL_META_CSV}")
 
-		model = CrossGapMoE(
-			C=1024,
-			feature_dim=192,
-			router_hidden_dim=256,
-			router_dropout=0.1,
-			expert_ckpt_paths=ExpertCheckpointPaths(),
-		).to(DEVICE)
+		model = build_model()
 
 		trainable_params = [p for p in model.parameters() if p.requires_grad]
 		print_trainable_parameters(model)
@@ -380,7 +482,7 @@ def main() -> None:
 		ce_loss_fn = nn.CrossEntropyLoss()
 		circle_loss_fn = CircleLoss(m=0.25, gamma=256.0)
 
-		run_name = f"{RUN_NAME}_seed{seed}"
+		run_name = build_run_name(seed)
 		run_dir = SAVE_ROOT / run_name
 		log_dir = LOG_ROOT / run_name
 		run_dir.mkdir(parents=True, exist_ok=True)
@@ -393,8 +495,8 @@ def main() -> None:
 
 		best_train_loss = float("inf")
 		best_val_eer = float("inf")
-		best_eer_ckpt_path = run_dir / f"best_eer_seed{seed}.pt"
-		last_epoch_ckpt_path = run_dir / f"last_epoch_seed{seed}.pt"
+		best_eer_ckpt_path = run_dir / "best.pt"
+		last_epoch_ckpt_path = run_dir / "last.pt"
 
 		with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
 			writer = csv.writer(f)
@@ -499,7 +601,6 @@ def main() -> None:
 				)
 				f.flush()
 
-				save_checkpoint(model, optimizer, epoch + 1, run_dir / f"epoch_{epoch + 1:03d}.pt")
 				save_checkpoint(model, optimizer, epoch + 1, last_epoch_ckpt_path)
 
 		seed_summaries.append(

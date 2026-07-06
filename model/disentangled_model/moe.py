@@ -43,14 +43,22 @@ def _load_flexible_weights(module: nn.Module, path: str) -> None:
 	checkpoint = torch.load(path, map_location="cpu")
 	loaded_state = _extract_state_dict(checkpoint)
 	current_state = module.state_dict()
+	loaded_weights = []
+	skipped_weights = []
+	unmatched_weights = []
 
 	for name, param in loaded_state.items():
 		if name in ("speaker_loss.weight", "speaker_loss.bias"):
+			skipped_weights.append(name)
 			continue
 
 		candidate_names = [name]
 		if name.startswith("module."):
 			candidate_names.append(name.replace("module.", "", 1))
+		if name.startswith("encoder."):
+			candidate_names.append(name.replace("encoder.", "", 1))
+		if name.startswith("module.encoder."):
+			candidate_names.append(name.replace("module.encoder.", "", 1))
 		if name.startswith("speaker_encoder."):
 			candidate_names.append(name.replace("speaker_encoder.", "", 1))
 		if name.startswith("module.speaker_encoder."):
@@ -63,9 +71,26 @@ def _load_flexible_weights(module: nn.Module, path: str) -> None:
 				break
 
 		if matched_name is None:
+			unmatched_weights.append(name)
 			continue
 
 		current_state[matched_name].copy_(param)
+		loaded_weights.append((name, matched_name))
+
+	total_target_params = len(current_state)
+	print("\n" + "=" * 66)
+	print(f"Expert checkpoint load summary: {path}")
+	print("-" * 66)
+	print(f"{'loaded_params':<20}: {len(loaded_weights)} / {total_target_params}")
+	print(f"{'skipped_params':<20}: {len(skipped_weights)}")
+	print(f"{'unmatched_params':<20}: {len(unmatched_weights)}")
+	if loaded_weights:
+		print(f"{'first_loaded':<20}: {loaded_weights[0][0]} -> {loaded_weights[0][1]}")
+	if unmatched_weights:
+		print(f"{'first_unmatched':<20}: {unmatched_weights[0]}")
+	if len(loaded_weights) == 0:
+		print("[Warn] No checkpoint parameters matched the expert encoder. The expert remains randomly initialized.")
+	print("=" * 66)
 
 
 class BaseExpertModel(nn.Module):
