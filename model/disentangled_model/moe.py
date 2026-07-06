@@ -244,7 +244,7 @@ class CrossGapMoE(nn.Module):
 		score_l_calib = self.calib_large(score_l)
 
 		stacked_scores = torch.stack([score_s_calib, score_m_calib, score_l_calib], dim=1)
-		score_final = torch.sum(weights * stacked_scores, dim=1)
+		score_final = torch.sum(weights.detach() * stacked_scores, dim=1)
 
 		if not return_details:
 			return score_final, weights

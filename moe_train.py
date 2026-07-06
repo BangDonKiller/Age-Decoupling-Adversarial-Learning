@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import os
 import random
+import re
 import warnings
 from pathlib import Path
 
@@ -136,6 +137,25 @@ def _fmt_metric(value: float, digits: int = 4, suffix: str = "") -> str:
 	return f"{value:.{digits}f}{suffix}"
 
 
+def _sanitize_filename(text: str) -> str:
+	return re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+
+
+def save_router_weights_csv(csv_path: Path, rows: list[tuple[int, int, float, float, float, float]]) -> None:
+	csv_path.parent.mkdir(parents=True, exist_ok=True)
+	with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+		writer = csv.writer(f)
+		writer.writerow([
+			"sample_index",
+			"same_label",
+			"score_final",
+			"weight_small",
+			"weight_medium",
+			"weight_large",
+		])
+		writer.writerows(rows)
+
+
 def build_run_name(seed: int) -> str:
 	return f"{RUN_NAME}_seed{seed}"
 
@@ -237,6 +257,7 @@ def run_inference_for_multiple_ckpts_and_datasets() -> None:
 					total_epochs=1,
 					dataset_mode="vox1",
 					compute_det_metrics=True,
+					collect_router_weights=True,
 				)
 
 			dataset_eers.append(infer_metrics["eer"])
@@ -249,6 +270,13 @@ def run_inference_for_multiple_ckpts_and_datasets() -> None:
 				metrics=infer_metrics,
 				show_det_metrics=True,
 			)
+
+			weights_dir = LOG_ROOT / "inference_router_weights"
+			dataset_tag = _sanitize_filename(dataset_key)
+			ckpt_tag = _sanitize_filename(Path(ckpt_path).parent.name)
+			weights_csv_path = weights_dir / f"{dataset_tag}__{ckpt_tag}.csv"
+			save_router_weights_csv(weights_csv_path, infer_metrics["router_weight_rows"])
+			print(f"[Router Weights] CSV saved: {weights_csv_path}")
 
 		eer_mean = float(np.mean(dataset_eers)) if dataset_eers else float("nan")
 		eer_std = float(np.std(dataset_eers)) if dataset_eers else float("nan")
@@ -318,6 +346,7 @@ def run_epoch(
 	total_epochs: int,
 	dataset_mode: str,
 	compute_det_metrics: bool = False,
+	collect_router_weights: bool = False,
 ):
 	is_train = optimizer is not None
 	model.train(is_train)
@@ -331,6 +360,8 @@ def run_epoch(
 	total_pair_correct = 0
 	all_scores: list[torch.Tensor] = []
 	all_labels: list[torch.Tensor] = []
+	router_weight_rows: list[tuple[int, int, float, float, float, float]] = []
+	sample_index = 0
 
 	pbar = tqdm(
 		loader,
@@ -402,6 +433,22 @@ def run_epoch(
 				all_scores.append(s_final.detach().cpu())
 				all_labels.append(same_labels.detach().cpu())
 
+			if collect_router_weights:
+				weights_cpu = weights.detach().cpu()
+				scores_cpu = s_final.detach().cpu()
+				labels_cpu = same_labels.detach().cpu()
+				for i in range(bs):
+					row = (
+						sample_index,
+						int(labels_cpu[i].item()),
+						float(scores_cpu[i].item()),
+						float(weights_cpu[i, 0].item()),
+						float(weights_cpu[i, 1].item()),
+						float(weights_cpu[i, 2].item()),
+					)
+					router_weight_rows.append(row)
+					sample_index += 1
+
 	denom = max(1, total_samples)
 	eer = float("nan")
 	min_dcf = float("nan")
@@ -427,6 +474,7 @@ def run_epoch(
 		"eer": eer,
 		"min_dcf": min_dcf,
 		"eer_threshold": eer_threshold,
+		"router_weight_rows": router_weight_rows,
 	}
 
 
