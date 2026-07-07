@@ -66,10 +66,10 @@ TRAIN_DATASET_VARIANT = "moe"
 
 INFERENCE_DATASETS: list[tuple[str, str]] = [
 	("VoxCeleb1", "Vox-O"),
-	("VoxCeleb1", "Vox1-H.S"),
-	("VoxCeleb1", "Vox-CA5"),
-	("VoxCeleb1", "Vox-CA10"),
-	("VoxCeleb1", "Vox-CA15"),
+	# ("VoxCeleb1", "Vox1-H.S"),
+	# ("VoxCeleb1", "Vox-CA5"),
+	# ("VoxCeleb1", "Vox-CA10"),
+	# ("VoxCeleb1", "Vox-CA15"),
 	("VoxCeleb1", "Vox-CA20"),
 ]
 
@@ -244,31 +244,21 @@ def run_inference_for_multiple_ckpts_and_datasets() -> None:
 			print(f"載入 checkpoint: {ckpt_path}")
 			load_moe_checkpoint(model, Path(ckpt_path), DEVICE)
 
-			with torch.no_grad():
-				infer_metrics = run_epoch(
-					model=model,
-					loader=test_loader,
-					optimizer=None,
-					ce_loss_fn=nn.CrossEntropyLoss(),
-					circle_loss_fn=CircleLoss(m=0.25, gamma=256.0),
-					beta=BETA,
-					device=DEVICE,
-					epoch_idx=0,
-					total_epochs=1,
-					dataset_mode="vox1",
-					compute_det_metrics=True,
-					collect_router_weights=True,
-				)
+			infer_metrics = run_zeroshot_inference_epoch(
+				model=model,
+				loader=test_loader,
+				device=DEVICE,
+				collect_router_weights=True,
+			)
 
 			dataset_eers.append(infer_metrics["eer"])
 			dataset_min_dcfs.append(infer_metrics["min_dcf"])
 			overall_eers.append(infer_metrics["eer"])
 			overall_min_dcfs.append(infer_metrics["min_dcf"])
 
-			print_metrics_block(
+			print_zeroshot_metrics_block(
 				title=f"[Inference][{dataset_key}][{Path(ckpt_path).parent.name}]",
 				metrics=infer_metrics,
-				show_det_metrics=True,
 			)
 
 			weights_dir = LOG_ROOT / "inference_router_weights"
@@ -314,6 +304,16 @@ def print_metrics_block(title: str, metrics: dict, show_det_metrics: bool) -> No
 		print(f"{'eer':<16}: {_fmt_metric(metrics['eer'])}")
 		print(f"{'min_dcf':<16}: {_fmt_metric(metrics['min_dcf'])}")
 		print(f"{'eer_threshold':<16}: {_fmt_metric(metrics['eer_threshold'])}")
+	print("=" * 66)
+
+
+def print_zeroshot_metrics_block(title: str, metrics: dict) -> None:
+	print("\n" + "=" * 66)
+	print(f"{title}")
+	print("-" * 66)
+	print(f"{'eer':<16}: {_fmt_metric(metrics['eer'])}")
+	print(f"{'min_dcf':<16}: {_fmt_metric(metrics['min_dcf'])}")
+	print(f"{'eer_threshold':<16}: {_fmt_metric(metrics['eer_threshold'])}")
 	print("=" * 66)
 
 
@@ -471,6 +471,79 @@ def run_epoch(
 		"router_loss": total_router_loss / denom,
 		"router_acc": router_acc,
 		"pair_acc": 100.0 * total_pair_correct / denom,
+		"eer": eer,
+		"min_dcf": min_dcf,
+		"eer_threshold": eer_threshold,
+		"router_weight_rows": router_weight_rows,
+	}
+
+
+def run_zeroshot_inference_epoch(
+	model: CrossGapMoE,
+	loader: DataLoader,
+	device: str,
+	collect_router_weights: bool = False,
+) -> dict:
+	model.eval()
+
+	all_scores: list[torch.Tensor] = []
+	all_labels: list[torch.Tensor] = []
+	router_weight_rows: list[tuple[int, int, float, float, float, float]] = []
+	sample_index = 0
+
+	pbar = tqdm(loader, desc="Inference", dynamic_ncols=True, leave=False)
+
+	with torch.no_grad():
+		for batch in pbar:
+			pair_labels, _, _, wav1, wav2, _, _ = batch
+			same_labels = _to_same_labels(pair_labels)
+
+			wav1 = wav1.to(device, non_blocking=True)
+			wav2 = wav2.to(device, non_blocking=True)
+			same_labels = same_labels.to(device, non_blocking=True)
+
+			s_final, weights, _ = model(
+				wav1,
+				wav2,
+				spec_aug=False,
+				return_details=True,
+			)
+
+			all_scores.append(s_final.detach().cpu())
+			all_labels.append(same_labels.detach().cpu())
+
+			if collect_router_weights:
+				bs = same_labels.size(0)
+				weights_cpu = weights.detach().cpu()
+				scores_cpu = s_final.detach().cpu()
+				labels_cpu = same_labels.detach().cpu()
+				for i in range(bs):
+					row = (
+						sample_index,
+						int(labels_cpu[i].item()),
+						float(scores_cpu[i].item()),
+						float(weights_cpu[i, 0].item()),
+						float(weights_cpu[i, 1].item()),
+						float(weights_cpu[i, 2].item()),
+					)
+					router_weight_rows.append(row)
+					sample_index += 1
+
+	eer = float("nan")
+	min_dcf = float("nan")
+	eer_threshold = float("nan")
+
+	if all_scores:
+		scores_np = torch.cat(all_scores).numpy()
+		labels_np = torch.cat(all_labels).numpy()
+		if np.unique(labels_np).size >= 2:
+			eer, eer_threshold = compute_eer(scores_np, labels_np)
+			fnrs, fprs, thresholds = ComputeErrorRates(scores_np, labels_np)
+			min_dcf, _ = ComputeMinDcf(fnrs, fprs, thresholds, p_target=0.01, c_miss=1, c_fa=1)
+		else:
+			print("[Warn] DET metrics skipped: inference labels contain only one class.")
+
+	return {
 		"eer": eer,
 		"min_dcf": min_dcf,
 		"eer_threshold": eer_threshold,
