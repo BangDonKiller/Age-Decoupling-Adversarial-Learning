@@ -166,6 +166,7 @@ def build_model() -> CrossGapMoE:
 		feature_dim=192,
 		router_hidden_dim=256,
 		router_dropout=0.1,
+		router_input_mode="cosine_distance",  # Revert to "embedding_diff" when needed.
 		expert_ckpt_paths=ExpertCheckpointPaths(),
 	).to(DEVICE)
 

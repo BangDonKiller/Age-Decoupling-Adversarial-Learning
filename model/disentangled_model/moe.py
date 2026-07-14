@@ -119,9 +119,19 @@ class ScoreCalibrator(nn.Module):
 class PairwiseRouter(nn.Module):
 	"""Dynamic router based on concatenated expert-wise pair differences."""
 
-	def __init__(self, feature_dim: int = 192, hidden_dim: int = 256, dropout: float = 0.1):
+	def __init__(
+		self,
+		feature_dim: int = 192,
+		hidden_dim: int = 256,
+		dropout: float = 0.1,
+		input_mode: str = "embedding_diff",
+	):
 		super().__init__()
-		input_dim = feature_dim * 3
+		if input_mode not in {"embedding_diff", "cosine_distance"}:
+			raise ValueError(f"Unsupported router input_mode: {input_mode}")
+		self.input_mode = input_mode
+
+		input_dim = feature_dim * 3 if input_mode == "embedding_diff" else 3
 		self.mlp = nn.Sequential(
 			nn.Linear(input_dim, hidden_dim),
 			nn.ReLU(inplace=True),
@@ -137,7 +147,10 @@ class PairwiseRouter(nn.Module):
 		diff_large: torch.Tensor,
 		return_logits: bool = False,
 	) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
-		fused_diff = torch.cat([diff_small, diff_medium, diff_large], dim=-1)
+		if self.input_mode == "cosine_distance":
+			fused_diff = torch.stack([diff_small, diff_medium, diff_large], dim=-1)
+		else:
+			fused_diff = torch.cat([diff_small, diff_medium, diff_large], dim=-1)
 		logits = self.mlp(fused_diff)
 		weights = F.softmax(logits, dim=-1)
 		if return_logits:
@@ -163,6 +176,7 @@ class CrossGapMoE(nn.Module):
 		feature_dim: int = 192,
 		router_hidden_dim: int = 256,
 		router_dropout: float = 0.1,
+		router_input_mode: str = "embedding_diff",
 		expert_ckpt_paths: ExpertCheckpointPaths | None = None,
 	):
 		super().__init__()
@@ -187,6 +201,7 @@ class CrossGapMoE(nn.Module):
 			feature_dim=feature_dim,
 			hidden_dim=router_hidden_dim,
 			dropout=router_dropout,
+			input_mode=router_input_mode,
 		)
 
 	def _freeze_experts(self) -> None:
@@ -231,11 +246,20 @@ class CrossGapMoE(nn.Module):
 			diff_s = torch.abs(f1_s - f2_s)
 			diff_m = torch.abs(f1_m - f2_m)
 			diff_l = torch.abs(f1_l - f2_l)
+   
+			dist_s = 1 - score_s
+			dist_m = 1 - score_m
+			dist_l = 1 - score_l
+
+		if self.router.input_mode == "cosine_distance":
+			router_in_small, router_in_medium, router_in_large = dist_s, dist_m, dist_l
+		else:
+			router_in_small, router_in_medium, router_in_large = diff_s, diff_m, diff_l
 
 		weights, router_logits = self.router(
-			diff_s,
-			diff_m,
-			diff_l,
+			router_in_small,
+			router_in_medium,
+			router_in_large,
 			return_logits=True,
 		)
 
@@ -260,6 +284,9 @@ class CrossGapMoE(nn.Module):
 			"diff_small": diff_s,
 			"diff_medium": diff_m,
 			"diff_large": diff_l,
+			"dist_small": dist_s,
+			"dist_medium": dist_m,
+			"dist_large": dist_l,
 		}
 		return score_final, weights, details
 
