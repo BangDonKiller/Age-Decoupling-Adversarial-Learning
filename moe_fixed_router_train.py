@@ -1,13 +1,18 @@
 """
-Train script for CrossGapMoE (3 frozen experts + dynamic router + per-expert calibrators).
+Train script for CrossGapFixedRouterMoE (3 frozen experts + dynamic router during training).
 
-Loss design (as requested):
+Loss design:
 1) Router guidance loss:
    loss_router = CrossEntropyLoss(weights_logits, true_gap_labels)
 2) Final metric loss:
    loss_circle = CircleLoss(S_final, same_person_labels)
 3) Joint optimization:
    total_loss = loss_circle + beta * loss_router
+
+Inference behavior:
+- No score calibrators.
+- The router is converted to one fixed 3-way weight vector from the saved checkpoint.
+- Test-time routing is not sample-adaptive.
 """
 
 from __future__ import annotations
@@ -28,48 +33,43 @@ from tqdm import tqdm
 from data.vox1_loader import PairwiseDataset as Vox1PairDataset
 from data.vox2_loader import Vox2PairDataset
 from loss.circleloss import CircleLoss
-from model.disentangled_model import CrossGapMoE, ExpertCheckpointPaths
+from model.disentangled_model import CrossGapFixedRouterMoE, FixedRouterExpertCheckpointPaths
 from params.param import DEVICE, NUM_WORKERS, BATCH_SIZE, DATASET_INFO
 from tool.EER import ComputeErrorRates, ComputeMinDcf, compute_eer
 
 warnings.filterwarnings(
-    "ignore",
-    message=r".*torchaudio\.load_with_torchcodec.*",
-    category=UserWarning,
+	"ignore",
+	message=r".*torchaudio\.load_with_torchcodec.*",
+	category=UserWarning,
 )
 warnings.filterwarnings(
-    "ignore",
-    message=r".*StreamingMediaDecoder has been deprecated.*",
-    category=UserWarning,
+	"ignore",
+	message=r".*StreamingMediaDecoder has been deprecated.*",
+	category=UserWarning,
 )
 
-# ==========================================
-# 1) Config
-# ==========================================
 SEEDS = [42, 1, 2026]
 INFERENCE_SEEDS = [42, 1, 2026]
 EPOCHS = 10
 LR = 1e-3
 WEIGHT_DECAY = 1e-5
-BETA = 1.0  # total_loss = loss_circle + beta * loss_router
+BETA = 1.0
 
-# If your csv uses 1 for same-speaker and 0 for different-speaker, keep True.
-# If your csv uses 0 for same-speaker and 1 for different-speaker, set False.
 SAME_LABEL_IS_ONE = True
 
 TRAIN_SPEC_AUG = False
 
-MODE = "train"  # "train" or "inference"
+MODE = "train"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
 TRAIN_DATASET_VARIANT = "moe"
 
 INFERENCE_DATASETS: list[tuple[str, str]] = [
 	("VoxCeleb1", "Vox-O"),
-	# ("VoxCeleb1", "Vox1-H.S"),
-	# ("VoxCeleb1", "Vox-CA5"),
-	# ("VoxCeleb1", "Vox-CA10"),
-	# ("VoxCeleb1", "Vox-CA15"),
+	("VoxCeleb1", "Vox1-H.S"),
+	("VoxCeleb1", "Vox-CA5"),
+	("VoxCeleb1", "Vox-CA10"),
+	("VoxCeleb1", "Vox-CA15"),
 	("VoxCeleb1", "Vox-CA20"),
 ]
 
@@ -80,9 +80,9 @@ TRAIN_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"
 VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
 VAL_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_META_DIR"]
 
-SAVE_ROOT = Path("checkpoints/cross_gap_moe")
-LOG_ROOT = Path("logs/cross_gap_moe")
-RUN_NAME = "cross_gap_moe_router_circle"
+SAVE_ROOT = Path("checkpoints/cross_gap_moe_fixed_router")
+LOG_ROOT = Path("logs/cross_gap_moe_fixed_router")
+RUN_NAME = "cross_gap_moe_fixed_router_no_calibrator"
 
 
 def set_seed(seed: int) -> None:
@@ -109,6 +109,7 @@ def build_vox2_loader(audio_dir: str, meta_csv: str, shuffle: bool, batch_size: 
 		pin_memory=torch.cuda.is_available(),
 		drop_last=False,
 	)
+
 
 def build_test_loader(dataset_name: str, dataset_variant: str) -> DataLoader:
 	test_audio_dir = DATASET_INFO[dataset_name][dataset_variant]["AUDIO_DIR"]
@@ -141,6 +142,11 @@ def _sanitize_filename(text: str) -> str:
 	return re.sub(r"[^A-Za-z0-9._-]+", "_", text)
 
 
+def _weights_to_tuple(weights: torch.Tensor) -> tuple[float, float, float]:
+	weights = weights.detach().cpu().flatten()
+	return float(weights[0].item()), float(weights[1].item()), float(weights[2].item())
+
+
 def save_router_weights_csv(csv_path: Path, rows: list[tuple[int, int, float, float, float, float]]) -> None:
 	csv_path.parent.mkdir(parents=True, exist_ok=True)
 	with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
@@ -160,14 +166,14 @@ def build_run_name(seed: int) -> str:
 	return f"{RUN_NAME}_seed{seed}"
 
 
-def build_model() -> CrossGapMoE:
-	return CrossGapMoE(
+def build_model() -> CrossGapFixedRouterMoE:
+	return CrossGapFixedRouterMoE(
 		C=1024,
 		feature_dim=192,
 		router_hidden_dim=256,
 		router_dropout=0.1,
-		router_input_mode="embedding_diff",  # Revert to "embedding_diff" when needed.
-		expert_ckpt_paths=ExpertCheckpointPaths(),
+		router_input_mode="embedding_diff",
+		expert_ckpt_paths=FixedRouterExpertCheckpointPaths(),
 	).to(DEVICE)
 
 
@@ -192,19 +198,27 @@ def resolve_inference_ckpt_paths() -> list[str]:
 	return unique_paths
 
 
-def load_moe_checkpoint(model: CrossGapMoE, checkpoint_path: Path, device: str) -> dict:
+def load_moe_checkpoint(model: CrossGapFixedRouterMoE, checkpoint_path: Path, device: str) -> dict:
 	checkpoint = torch.load(str(checkpoint_path), map_location=device)
 	model_state_dict = checkpoint.get("model_state_dict")
 	if model_state_dict is None:
 		raise KeyError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
 
 	load_result = model.load_state_dict(model_state_dict, strict=True)
+	checkpoint_fixed_weights = checkpoint.get("fixed_router_weights")
+	if checkpoint_fixed_weights is not None:
+		model.set_fixed_router_weights(checkpoint_fixed_weights.to(device))
+	else:
+		print("[Warn] Checkpoint missing fixed_router_weights. Falling back to uniform weights.")
+	model.enable_fixed_router(True)
+
+	fixed_router_weights = model.router.fixed_weights.detach().cpu()
 	print("\n" + "=" * 66)
 	print(f"Loaded MoE checkpoint: {checkpoint_path}")
 	print("-" * 66)
-	# print(f"{'epoch':<16}: {checkpoint.get('epoch', 'N/A')}")
 	print(f"{'missing_keys':<16}: {len(load_result.missing_keys)}")
 	print(f"{'unexpected_keys':<16}: {len(load_result.unexpected_keys)}")
+	print(f"{'fixed_weights':<16}: {_weights_to_tuple(fixed_router_weights)}")
 	print("=" * 66)
 	return checkpoint
 
@@ -301,6 +315,9 @@ def print_metrics_block(title: str, metrics: dict, show_det_metrics: bool) -> No
 	print(f"{'router_loss':<16}: {_fmt_metric(metrics['router_loss'])}")
 	print(f"{'router_acc':<16}: {_fmt_metric(metrics['router_acc'], digits=2, suffix='%')}")
 	print(f"{'pair_acc':<16}: {_fmt_metric(metrics['pair_acc'], digits=2, suffix='%')}")
+	if "mean_router_weights" in metrics:
+		mean_weights = metrics["mean_router_weights"]
+		print(f"{'router_weights':<16}: {tuple(round(x, 4) for x in mean_weights)}")
 	if show_det_metrics:
 		print(f"{'eer':<16}: {_fmt_metric(metrics['eer'])}")
 		print(f"{'min_dcf':<16}: {_fmt_metric(metrics['min_dcf'])}")
@@ -318,7 +335,7 @@ def print_zeroshot_metrics_block(title: str, metrics: dict) -> None:
 	print("=" * 66)
 
 
-def print_trainable_parameters(model: CrossGapMoE) -> None:
+def print_trainable_parameters(model: CrossGapFixedRouterMoE) -> None:
 	trainable_named_params = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
 	total_trainable = sum(param.numel() for _, param in trainable_named_params)
 
@@ -336,7 +353,7 @@ def print_trainable_parameters(model: CrossGapMoE) -> None:
 
 
 def run_epoch(
-	model: CrossGapMoE,
+	model: CrossGapFixedRouterMoE,
 	loader: DataLoader,
 	optimizer: torch.optim.Optimizer | None,
 	ce_loss_fn: nn.Module,
@@ -350,12 +367,15 @@ def run_epoch(
 	collect_router_weights: bool = False,
 ):
 	is_train = optimizer is not None
+	if is_train:
+		model.enable_fixed_router(False)
 	model.train(is_train)
 
 	total_total_loss = 0.0
 	total_circle_loss = 0.0
 	total_router_loss = 0.0
 	total_samples = 0
+	total_router_weight_sum = torch.zeros(3, dtype=torch.float64)
 
 	total_router_correct = 0
 	total_pair_correct = 0
@@ -397,18 +417,14 @@ def run_epoch(
 			spec_aug=TRAIN_SPEC_AUG if is_train else False,
 			return_details=True,
 		)
-		weights_logits = details["router_logits"]
+		weights_logits = details.get("router_logits")
 		loss_circle = circle_loss_fn(s_final, same_labels)
 
-		# 1) Router guidance loss
-		if true_gap_labels is not None:
+		if true_gap_labels is not None and weights_logits is not None:
 			loss_router = ce_loss_fn(weights_logits, true_gap_labels)
 		else:
 			loss_router = torch.zeros_like(loss_circle)
 
-		# 2) Final metric loss
-
-		# 3) Joint optimization
 		total_loss = loss_circle + beta * loss_router
 
 		if is_train:
@@ -422,8 +438,9 @@ def run_epoch(
 			total_total_loss += float(total_loss.detach().cpu()) * bs
 			total_circle_loss += float(loss_circle.detach().cpu()) * bs
 			total_router_loss += float(loss_router.detach().cpu()) * bs
+			total_router_weight_sum += weights.detach().cpu().to(torch.float64).sum(dim=0)
 
-			if true_gap_labels is not None:
+			if true_gap_labels is not None and weights_logits is not None:
 				router_pred = torch.argmax(weights_logits, dim=1)
 				total_router_correct += int((router_pred == true_gap_labels).sum().item())
 
@@ -465,6 +482,7 @@ def run_epoch(
 		else:
 			print("[Warn] DET metrics skipped: validation labels contain only one class.")
 
+	mean_router_weights_tensor = (total_router_weight_sum / denom).to(torch.float32)
 	router_acc = 100.0 * total_router_correct / denom if dataset_mode == "vox2" else float("nan")
 	return {
 		"total_loss": total_total_loss / denom,
@@ -476,15 +494,18 @@ def run_epoch(
 		"min_dcf": min_dcf,
 		"eer_threshold": eer_threshold,
 		"router_weight_rows": router_weight_rows,
+		"mean_router_weights_tensor": mean_router_weights_tensor,
+		"mean_router_weights": _weights_to_tuple(mean_router_weights_tensor),
 	}
 
 
 def run_zeroshot_inference_epoch(
-	model: CrossGapMoE,
+	model: CrossGapFixedRouterMoE,
 	loader: DataLoader,
 	device: str,
 	collect_router_weights: bool = False,
 ) -> dict:
+	model.enable_fixed_router(True)
 	model.eval()
 
 	all_scores: list[torch.Tensor] = []
@@ -552,7 +573,13 @@ def run_zeroshot_inference_epoch(
 	}
 
 
-def save_checkpoint(model: CrossGapMoE, optimizer: torch.optim.Optimizer, epoch: int, path: Path) -> None:
+def save_checkpoint(
+	model: CrossGapFixedRouterMoE,
+	optimizer: torch.optim.Optimizer,
+	epoch: int,
+	path: Path,
+	fixed_router_weights: torch.Tensor,
+) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	torch.save(
 		{
@@ -563,6 +590,7 @@ def save_checkpoint(model: CrossGapMoE, optimizer: torch.optim.Optimizer, epoch:
 			"same_label_is_one": SAME_LABEL_IS_ONE,
 			"train_audio_dir": TRAIN_AUDIO_DIR,
 			"train_meta_csv": TRAIN_META_CSV,
+			"fixed_router_weights": fixed_router_weights.detach().cpu(),
 		},
 		str(path),
 	)
@@ -630,6 +658,9 @@ def main() -> None:
 					"train_router_loss",
 					"train_router_acc",
 					"train_pair_acc",
+					"train_weight_small",
+					"train_weight_medium",
+					"train_weight_large",
 					"val_total_loss",
 					"val_circle_loss",
 					"val_router_loss",
@@ -701,7 +732,13 @@ def main() -> None:
 					if not np.isnan(val_metrics["eer"]):
 						if val_metrics["eer"] < best_val_eer:
 							best_val_eer = val_metrics["eer"]
-							save_checkpoint(model, optimizer, epoch + 1, best_eer_ckpt_path)
+							save_checkpoint(
+								model,
+								optimizer,
+								epoch + 1,
+								best_eer_ckpt_path,
+								train_metrics["mean_router_weights_tensor"],
+							)
 
 				writer.writerow(
 					[
@@ -711,6 +748,7 @@ def main() -> None:
 						train_metrics["router_loss"],
 						train_metrics["router_acc"],
 						train_metrics["pair_acc"],
+						*train_metrics["mean_router_weights"],
 						val_metrics["total_loss"],
 						val_metrics["circle_loss"],
 						val_metrics["router_loss"],
@@ -723,7 +761,13 @@ def main() -> None:
 				)
 				f.flush()
 
-				save_checkpoint(model, optimizer, epoch + 1, last_epoch_ckpt_path)
+				save_checkpoint(
+					model,
+					optimizer,
+					epoch + 1,
+					last_epoch_ckpt_path,
+					train_metrics["mean_router_weights_tensor"],
+				)
 
 		seed_summaries.append(
 			{
