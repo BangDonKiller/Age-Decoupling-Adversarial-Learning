@@ -147,7 +147,10 @@ def _weights_to_tuple(weights: torch.Tensor) -> tuple[float, float, float]:
 	return float(weights[0].item()), float(weights[1].item()), float(weights[2].item())
 
 
-def save_router_weights_csv(csv_path: Path, rows: list[tuple[int, int, float, float, float, float]]) -> None:
+def save_router_weights_csv(
+	csv_path: Path,
+	rows: list[tuple[int, int, float, float, float, float, float, float, float, float]],
+) -> None:
 	csv_path.parent.mkdir(parents=True, exist_ok=True)
 	with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
 		writer = csv.writer(f)
@@ -155,9 +158,14 @@ def save_router_weights_csv(csv_path: Path, rows: list[tuple[int, int, float, fl
 			"sample_index",
 			"same_label",
 			"score_final",
+			"router_mode",
 			"weight_small",
 			"weight_medium",
 			"weight_large",
+			"fixed_weight_small",
+			"fixed_weight_medium",
+			"fixed_weight_large",
+			"max_abs_diff_from_fixed",
 		])
 		writer.writerows(rows)
 
@@ -206,6 +214,11 @@ def load_moe_checkpoint(model: CrossGapFixedRouterMoE, checkpoint_path: Path, de
 
 	load_result = model.load_state_dict(model_state_dict, strict=True)
 	checkpoint_fixed_weights = checkpoint.get("fixed_router_weights")
+	if checkpoint_fixed_weights is None:
+		router_weights_path = checkpoint_path.with_name(f"{checkpoint_path.stem}_router_weights.pt")
+		if router_weights_path.exists():
+			router_weights_checkpoint = torch.load(str(router_weights_path), map_location=device)
+			checkpoint_fixed_weights = router_weights_checkpoint.get("fixed_router_weights")
 	if checkpoint_fixed_weights is not None:
 		model.set_fixed_router_weights(checkpoint_fixed_weights.to(device))
 	else:
@@ -282,6 +295,12 @@ def run_inference_for_multiple_ckpts_and_datasets() -> None:
 			weights_csv_path = weights_dir / f"{dataset_tag}__{ckpt_tag}.csv"
 			save_router_weights_csv(weights_csv_path, infer_metrics["router_weight_rows"])
 			print(f"[Router Weights] CSV saved: {weights_csv_path}")
+			print(
+				"[Router Weights Summary] "
+				f"mode={infer_metrics['router_mode']} | "
+				f"fixed_weights={infer_metrics['fixed_router_weights']} | "
+				f"max_abs_diff={infer_metrics['max_abs_diff_from_fixed']:.8f}"
+			)
 
 		eer_mean = float(np.mean(dataset_eers)) if dataset_eers else float("nan")
 		eer_std = float(np.std(dataset_eers)) if dataset_eers else float("nan")
@@ -381,7 +400,7 @@ def run_epoch(
 	total_pair_correct = 0
 	all_scores: list[torch.Tensor] = []
 	all_labels: list[torch.Tensor] = []
-	router_weight_rows: list[tuple[int, int, float, float, float, float]] = []
+	router_weight_rows: list[tuple[int, int, float, float, float, float, float, float, float, float]] = []
 	sample_index = 0
 
 	pbar = tqdm(
@@ -510,8 +529,11 @@ def run_zeroshot_inference_epoch(
 
 	all_scores: list[torch.Tensor] = []
 	all_labels: list[torch.Tensor] = []
-	router_weight_rows: list[tuple[int, int, float, float, float, float]] = []
+	router_weight_rows: list[tuple[int, int, float, float, float, float, float, float, float, float]] = []
 	sample_index = 0
+	fixed_router_weights = model.router.fixed_weights.detach().cpu().flatten()
+	router_mode = "fixed" if model.router.use_fixed_weights else "dynamic"
+	max_abs_diff_from_fixed = 0.0
 
 	pbar = tqdm(loader, desc="Inference", dynamic_ncols=True, leave=False)
 
@@ -540,13 +562,21 @@ def run_zeroshot_inference_epoch(
 				scores_cpu = s_final.detach().cpu()
 				labels_cpu = same_labels.detach().cpu()
 				for i in range(bs):
+					row_weights = weights_cpu[i]
+					max_abs_diff = float(torch.max(torch.abs(row_weights - fixed_router_weights)).item())
+					max_abs_diff_from_fixed = max(max_abs_diff_from_fixed, max_abs_diff)
 					row = (
 						sample_index,
 						int(labels_cpu[i].item()),
 						float(scores_cpu[i].item()),
-						float(weights_cpu[i, 0].item()),
-						float(weights_cpu[i, 1].item()),
-						float(weights_cpu[i, 2].item()),
+						router_mode,
+						float(row_weights[0].item()),
+						float(row_weights[1].item()),
+						float(row_weights[2].item()),
+						float(fixed_router_weights[0].item()),
+						float(fixed_router_weights[1].item()),
+						float(fixed_router_weights[2].item()),
+						max_abs_diff,
 					)
 					router_weight_rows.append(row)
 					sample_index += 1
@@ -570,6 +600,9 @@ def run_zeroshot_inference_epoch(
 		"min_dcf": min_dcf,
 		"eer_threshold": eer_threshold,
 		"router_weight_rows": router_weight_rows,
+		"router_mode": router_mode,
+		"fixed_router_weights": _weights_to_tuple(fixed_router_weights),
+		"max_abs_diff_from_fixed": max_abs_diff_from_fixed,
 	}
 
 
@@ -581,6 +614,8 @@ def save_checkpoint(
 	fixed_router_weights: torch.Tensor,
 ) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
+	router_weights_path = path.with_name(f"{path.stem}_router_weights.pt")
+	fixed_router_weights_cpu = fixed_router_weights.detach().cpu()
 	torch.save(
 		{
 			"epoch": epoch,
@@ -590,9 +625,17 @@ def save_checkpoint(
 			"same_label_is_one": SAME_LABEL_IS_ONE,
 			"train_audio_dir": TRAIN_AUDIO_DIR,
 			"train_meta_csv": TRAIN_META_CSV,
-			"fixed_router_weights": fixed_router_weights.detach().cpu(),
+			"fixed_router_weights": fixed_router_weights_cpu,
 		},
 		str(path),
+	)
+	torch.save(
+		{
+			"epoch": epoch,
+			"checkpoint_path": str(path),
+			"fixed_router_weights": fixed_router_weights_cpu,
+		},
+		str(router_weights_path),
 	)
 
 
