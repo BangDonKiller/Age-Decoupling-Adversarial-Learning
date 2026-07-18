@@ -177,9 +177,13 @@ class CrossGapMoE(nn.Module):
 		router_hidden_dim: int = 256,
 		router_dropout: float = 0.1,
 		router_input_mode: str = "embedding_diff",
+		score_aggregation_mode: str = "weighted",
 		expert_ckpt_paths: ExpertCheckpointPaths | None = None,
 	):
 		super().__init__()
+		if score_aggregation_mode not in {"weighted", "top1"}:
+			raise ValueError(f"Unsupported score_aggregation_mode: {score_aggregation_mode}")
+		self.score_aggregation_mode = score_aggregation_mode
 
 		paths = expert_ckpt_paths or ExpertCheckpointPaths()
 
@@ -268,13 +272,19 @@ class CrossGapMoE(nn.Module):
 		score_l_calib = self.calib_large(score_l)
 
 		stacked_scores = torch.stack([score_s_calib, score_m_calib, score_l_calib], dim=1)
-		score_final = torch.sum(weights.detach() * stacked_scores, dim=1)
+		if self.score_aggregation_mode == "top1":
+			top1_idx = torch.argmax(weights, dim=1, keepdim=True)
+			score_final = torch.gather(stacked_scores, dim=1, index=top1_idx).squeeze(1)
+		else:
+			score_final = torch.sum(weights.detach() * stacked_scores, dim=1)
 
 		if not return_details:
 			return score_final, weights
 
 		details = {
 			"router_logits": router_logits,
+			"score_aggregation_mode": torch.tensor(0 if self.score_aggregation_mode == "weighted" else 1, device=weights.device),
+			"top1_expert_idx": torch.argmax(weights, dim=1),
 			"score_small": score_s,
 			"score_medium": score_m,
 			"score_large": score_l,

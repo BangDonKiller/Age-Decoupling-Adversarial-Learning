@@ -58,6 +58,7 @@ BETA = 1.0  # total_loss = loss_circle + beta * loss_router
 SAME_LABEL_IS_ONE = True
 
 TRAIN_SPEC_AUG = False
+SCORE_AGGREGATION_MODE = "weighted"  # "weighted" or "top1"
 
 MODE = "train"  # "train" or "inference"
 
@@ -167,6 +168,7 @@ def build_model() -> CrossGapMoE:
 		router_hidden_dim=256,
 		router_dropout=0.1,
 		router_input_mode="embedding_diff",  # Revert to "embedding_diff" when needed.
+		score_aggregation_mode=SCORE_AGGREGATION_MODE,
 		expert_ckpt_paths=ExpertCheckpointPaths(),
 	).to(DEVICE)
 
