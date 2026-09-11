@@ -11,12 +11,6 @@
 - 使用固定 router 的 Ensemble 變體，以及校準器與不同跨年齡 gap 的比較。
 - 以 EER、minDCF、年齡分類 AUC、embedding 分布與統計分析評估模型。
 
-本專案的研究名稱、論文連結、資料集版本與最終實驗結果尚待補充：
-
-- 論文或技術報告：`[待填寫]`
-- 預期重現的主要結果：`[待填寫]`
-- 聯絡人與作者資訊：`[待填寫]`
-
 ## Repository Structure
 
 - `ECAPA-TDNN_linear_decorr_mlp_step_based.py`: 使用 step-based scheduler 訓練線性解耦 MLP，並評估年齡相關性與 speaker verification。
@@ -25,14 +19,13 @@
 - `fixed_weight_ensemble_train.py`: 訓練與評估固定 router 的 CrossGapFixedRouterEnsemble。
 - `model/`: ECAPA-TDNN 特徵擷取器、Siamese network、解耦模型與 Ensemble 模型。
 - `loss/`: Circle Loss、Cosine Loss 與其他訓練目標。
-- `data/`: VoxCeleb1、VoxCeleb2、LibriSpeech、GLOBE 與 TIMIT 的資料載入器。
+- `data/`: VoxCeleb1、VoxCeleb2 的資料載入器。
 - `tool/`: EER、minDCF、checkpoint 管理、解耦訓練與評估工具。
 - `analysis/`: embedding、相似度分布、降維、shortcut dependency 與模型錯誤分析腳本。
 - `params/param.py`: 裝置、batch size、預訓練模型與資料集路徑設定。
 - `checkpoints/`: 模型 checkpoint 輸出位置。
 - `logs/`: TensorBoard 與各項實驗的輸出紀錄。
-- `dataset/`: 本地資料集掛載或準備位置，不包含於 repository 中。
-- `Dockerfile`、`DockerReadme.md`: Docker 建置與 GPU container 執行說明。
+- `Dockerfile`: Docker 建置與 GPU container 執行說明。
 
 ## Environment Setup
 
@@ -54,7 +47,7 @@ docker run --gpus device=0 --rm -it \
 	adal
 ```
 
-請將 `/path/to/Dataset` 替換成實際資料集根目錄。Windows、實驗室主機與其他 volume mount 範例請參考 `DockerReadme.md`。
+請將 `/path/to/Dataset` 替換成實際資料集根目錄。
 
 ### Dataset Configuration
 
@@ -63,7 +56,9 @@ docker run --gpus device=0 --rm -it \
 - VoxCeleb2：`small`、`medium`、`large`、`mixture` 與 `ensemble` 訓練變體。
 - VoxCeleb1：`Vox-O`、`Vox-E`、`Vox-H`、`Vox-CA5`、`Vox-CA10`、`Vox-CA15`、`Vox-CA20` 等測試組合。
 
-資料集下載來源、資料前處理方式與 metadata 格式：`[待補充]`
+資料集下載來源與 metadata 檔案：
+- VoxCeleb 官方資料集載點: [VoxCeleb](https://mm.kaist.ac.kr/datasets/voxceleb/)
+- VoxCeleb metadata: [qinxiaoyi CASV](https://github.com/qinxiaoyi/Cross-Age_Speaker_Verification)
 
 ## ECAPA-TDNN 模型預訓練權重
 
@@ -153,9 +148,13 @@ if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
 ## Author & Contact
 
 **Ming-Yu, Shieh (謝名祐)**
-Master's Thesis, June 2026
+
+Master's Thesis, November 2026
+
 Department of Computer Science and Information Engineering
+
 National Central University (國立中央大學)
+
 Advisor: Dr. Hung-Hsuan Chen (陳弘軒 博士)
 
 If you have any questions about the code, the paper, or the methodology, feel free to reach out:
