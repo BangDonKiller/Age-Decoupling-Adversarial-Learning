@@ -1,5 +1,5 @@
 """
-Train script for CrossGapMoE (3 frozen experts + dynamic router + per-expert calibrators).
+Train script for CrossGapEnsemble (3 frozen experts + dynamic router + per-expert calibrators).
 
 Loss design (as requested):
 1) Router guidance loss:
@@ -28,7 +28,7 @@ from tqdm import tqdm
 from data.vox1_loader import PairwiseDataset as Vox1PairDataset
 from data.vox2_loader import Vox2PairDataset
 from loss.circleloss import CircleLoss
-from model.disentangled_model import CrossGapMoE, ExpertCheckpointPaths
+from model.disentangled_model import CrossGapEnsemble, ExpertCheckpointPaths
 from params.param import DEVICE, NUM_WORKERS, BATCH_SIZE, DATASET_INFO
 from tool.EER import ComputeErrorRates, ComputeMinDcf, compute_eer
 
@@ -63,7 +63,7 @@ SCORE_AGGREGATION_MODE = "weighted"  # "weighted" or "top1"
 MODE = "train"  # "train" or "inference"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
-TRAIN_DATASET_VARIANT = "moe"
+TRAIN_DATASET_VARIANT = "ensemble"
 
 INFERENCE_DATASETS: list[tuple[str, str]] = [
 	("VoxCeleb1", "Vox-O"),
@@ -81,9 +81,9 @@ TRAIN_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"
 VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
 VAL_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_META_DIR"]
 
-SAVE_ROOT = Path("checkpoints/cross_gap_moe")
-LOG_ROOT = Path("logs/cross_gap_moe")
-RUN_NAME = "cross_gap_moe_router_circle"
+SAVE_ROOT = Path("checkpoints/cross_gap_ensemble")
+LOG_ROOT = Path("logs/cross_gap_ensemble")
+RUN_NAME = "cross_gap_ensemble_router_circle"
 
 
 def set_seed(seed: int) -> None:
@@ -161,8 +161,8 @@ def build_run_name(seed: int) -> str:
 	return f"{RUN_NAME}_seed{seed}"
 
 
-def build_model() -> CrossGapMoE:
-	return CrossGapMoE(
+def build_model() -> CrossGapEnsemble:
+	return CrossGapEnsemble(
 		C=1024,
 		feature_dim=192,
 		router_hidden_dim=256,
@@ -194,7 +194,7 @@ def resolve_inference_ckpt_paths() -> list[str]:
 	return unique_paths
 
 
-def load_moe_checkpoint(model: CrossGapMoE, checkpoint_path: Path, device: str) -> dict:
+def load_ensemble_checkpoint(model: CrossGapEnsemble, checkpoint_path: Path, device: str) -> dict:
 	checkpoint = torch.load(str(checkpoint_path), map_location=device)
 	model_state_dict = checkpoint.get("model_state_dict")
 	if model_state_dict is None:
@@ -202,7 +202,7 @@ def load_moe_checkpoint(model: CrossGapMoE, checkpoint_path: Path, device: str) 
 
 	load_result = model.load_state_dict(model_state_dict, strict=True)
 	print("\n" + "=" * 66)
-	print(f"Loaded MoE checkpoint: {checkpoint_path}")
+	print(f"Loaded ensemble checkpoint: {checkpoint_path}")
 	print("-" * 66)
 	# print(f"{'epoch':<16}: {checkpoint.get('epoch', 'N/A')}")
 	print(f"{'missing_keys':<16}: {len(load_result.missing_keys)}")
@@ -245,7 +245,7 @@ def run_inference_for_multiple_ckpts_and_datasets() -> None:
 
 		for ckpt_path in available_ckpts:
 			print(f"載入 checkpoint: {ckpt_path}")
-			load_moe_checkpoint(model, Path(ckpt_path), DEVICE)
+			load_ensemble_checkpoint(model, Path(ckpt_path), DEVICE)
 
 			infer_metrics = run_zeroshot_inference_epoch(
 				model=model,
@@ -320,7 +320,7 @@ def print_zeroshot_metrics_block(title: str, metrics: dict) -> None:
 	print("=" * 66)
 
 
-def print_trainable_parameters(model: CrossGapMoE) -> None:
+def print_trainable_parameters(model: CrossGapEnsemble) -> None:
 	trainable_named_params = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
 	total_trainable = sum(param.numel() for _, param in trainable_named_params)
 
@@ -338,7 +338,7 @@ def print_trainable_parameters(model: CrossGapMoE) -> None:
 
 
 def run_epoch(
-	model: CrossGapMoE,
+	model: CrossGapEnsemble,
 	loader: DataLoader,
 	optimizer: torch.optim.Optimizer | None,
 	ce_loss_fn: nn.Module,
@@ -482,7 +482,7 @@ def run_epoch(
 
 
 def run_zeroshot_inference_epoch(
-	model: CrossGapMoE,
+	model: CrossGapEnsemble,
 	loader: DataLoader,
 	device: str,
 	collect_router_weights: bool = False,
@@ -554,7 +554,7 @@ def run_zeroshot_inference_epoch(
 	}
 
 
-def save_checkpoint(model: CrossGapMoE, optimizer: torch.optim.Optimizer, epoch: int, path: Path) -> None:
+def save_checkpoint(model: CrossGapEnsemble, optimizer: torch.optim.Optimizer, epoch: int, path: Path) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	torch.save(
 		{

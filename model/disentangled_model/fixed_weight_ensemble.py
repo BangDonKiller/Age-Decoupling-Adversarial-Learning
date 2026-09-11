@@ -1,11 +1,11 @@
 """
-Three-expert full-finetune MoE model with dynamic pairwise router.
+Three-expert MoE variant with dynamic router training and fixed router weights for inference.
 
 Key design:
 1. Load three ECAPA experts from full-finetune checkpoints.
 2. Freeze all expert parameters.
-3. Add one trainable score calibrator (scale + bias) per expert.
-4. Route each pair dynamically by expert-specific feature differences.
+3. Train the router only during training.
+4. After training, save one fixed 3-way weight vector and reuse it for all test pairs.
 """
 
 from __future__ import annotations
@@ -21,14 +21,13 @@ from model.feature_extractor.ecapa_tdnn import ECAPA_TDNN
 
 
 @dataclass(frozen=True)
-class ExpertCheckpointPaths:
+class FixedRouterExpertCheckpointPaths:
 	small: str = "checkpoints/siamese_full_finetune/full_ft_lr1e4_small_seed42/siamese_best.pt"
 	medium: str = "checkpoints/siamese_full_finetune/full_ft_lr1e4_medium_seed42/siamese_best.pt"
 	large: str = "checkpoints/siamese_full_finetune/full_ft_lr1e4_large_seed42/siamese_best.pt"
 
 
 def _extract_state_dict(checkpoint: object) -> Dict[str, torch.Tensor]:
-	"""Extract state dict from different checkpoint wrappers."""
 	if isinstance(checkpoint, dict):
 		for key in ("model_state_dict", "state_dict", "model"):
 			if key in checkpoint and isinstance(checkpoint[key], dict):
@@ -39,7 +38,6 @@ def _extract_state_dict(checkpoint: object) -> Dict[str, torch.Tensor]:
 
 
 def _load_flexible_weights(module: nn.Module, path: str) -> None:
-	"""Load weights with prefix compatibility (module./speaker_encoder.)."""
 	checkpoint = torch.load(path, map_location="cpu")
 	loaded_state = _extract_state_dict(checkpoint)
 	current_state = module.state_dict()
@@ -94,8 +92,6 @@ def _load_flexible_weights(module: nn.Module, path: str) -> None:
 
 
 class BaseExpertModel(nn.Module):
-	"""ECAPA expert backbone wrapper."""
-
 	def __init__(self, C: int = 1024):
 		super().__init__()
 		self.encoder = ECAPA_TDNN(C=C)
@@ -104,20 +100,8 @@ class BaseExpertModel(nn.Module):
 		return self.encoder(x, aug=spec_aug)
 
 
-class ScoreCalibrator(nn.Module):
-	"""Per-expert trainable affine calibration for cosine score."""
-
-	def __init__(self):
-		super().__init__()
-		self.alpha = nn.Parameter(torch.tensor([1.0], dtype=torch.float32))
-		self.beta = nn.Parameter(torch.tensor([0.0], dtype=torch.float32))
-
-	def forward(self, score: torch.Tensor) -> torch.Tensor:
-		return self.alpha * score + self.beta
-
-
-class PairwiseRouter(nn.Module):
-	"""Dynamic router based on concatenated expert-wise pair differences."""
+class FixedWeightRouter(nn.Module):
+	"""Train dynamically, but support switching to one frozen global weight vector."""
 
 	def __init__(
 		self,
@@ -139,6 +123,22 @@ class PairwiseRouter(nn.Module):
 			nn.Dropout(dropout),
 			nn.Linear(hidden_dim, 3),
 		)
+		self.register_buffer("fixed_weights", torch.tensor([1 / 3, 1 / 3, 1 / 3], dtype=torch.float32))
+		self.use_fixed_weights = False
+
+	def set_fixed_weights(self, weights: torch.Tensor) -> None:
+		weights = weights.detach().float().flatten()
+		if weights.numel() != 3:
+			raise ValueError(f"fixed router weights must have 3 elements, got shape {tuple(weights.shape)}")
+		weights = torch.clamp(weights, min=0.0)
+		weight_sum = torch.sum(weights)
+		if torch.isclose(weight_sum, torch.tensor(0.0, device=weights.device)):
+			raise ValueError("fixed router weights sum to zero")
+		weights = weights / weight_sum
+		self.fixed_weights.copy_(weights.to(self.fixed_weights.device))
+
+	def enable_fixed_weights(self, enabled: bool = True) -> None:
+		self.use_fixed_weights = enabled
 
 	def forward(
 		self,
@@ -146,7 +146,14 @@ class PairwiseRouter(nn.Module):
 		diff_medium: torch.Tensor,
 		diff_large: torch.Tensor,
 		return_logits: bool = False,
-	) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+	) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor | None]:
+		if self.use_fixed_weights:
+			batch_size = diff_small.size(0)
+			weights = self.fixed_weights.unsqueeze(0).expand(batch_size, -1)
+			if return_logits:
+				return weights, None
+			return weights
+
 		if self.input_mode == "cosine_distance":
 			fused_diff = torch.stack([diff_small, diff_medium, diff_large], dim=-1)
 		else:
@@ -158,17 +165,8 @@ class PairwiseRouter(nn.Module):
 		return weights
 
 
-class CrossGapMoE(nn.Module):
-	"""
-	Three-expert MoE with frozen experts and trainable router/calibrators.
-
-	Forward input:
-	- x1, x2: pair waveform tensors.
-
-	Forward output:
-	- score_final: [B] fused similarity score.
-	- weights: [B, 3] router weights for (small, medium, large).
-	"""
+class CrossGapFixedRouterEnsemble(nn.Module):
+	"""Three-expert fixed-weight ensemble without score calibrators and with optional fixed routing at inference."""
 
 	def __init__(
 		self,
@@ -177,15 +175,11 @@ class CrossGapMoE(nn.Module):
 		router_hidden_dim: int = 256,
 		router_dropout: float = 0.1,
 		router_input_mode: str = "embedding_diff",
-		score_aggregation_mode: str = "weighted",
-		expert_ckpt_paths: ExpertCheckpointPaths | None = None,
+		expert_ckpt_paths: FixedRouterExpertCheckpointPaths | None = None,
 	):
 		super().__init__()
-		if score_aggregation_mode not in {"weighted", "top1"}:
-			raise ValueError(f"Unsupported score_aggregation_mode: {score_aggregation_mode}")
-		self.score_aggregation_mode = score_aggregation_mode
 
-		paths = expert_ckpt_paths or ExpertCheckpointPaths()
+		paths = expert_ckpt_paths or FixedRouterExpertCheckpointPaths()
 
 		self.expert_small = BaseExpertModel(C=C)
 		self.expert_medium = BaseExpertModel(C=C)
@@ -197,11 +191,7 @@ class CrossGapMoE(nn.Module):
 
 		self._freeze_experts()
 
-		self.calib_small = ScoreCalibrator()
-		self.calib_medium = ScoreCalibrator()
-		self.calib_large = ScoreCalibrator()
-
-		self.router = PairwiseRouter(
+		self.router = FixedWeightRouter(
 			feature_dim=feature_dim,
 			hidden_dim=router_hidden_dim,
 			dropout=router_dropout,
@@ -213,9 +203,14 @@ class CrossGapMoE(nn.Module):
 			model.requires_grad_(False)
 			model.eval()
 
+	def set_fixed_router_weights(self, weights: torch.Tensor) -> None:
+		self.router.set_fixed_weights(weights)
+
+	def enable_fixed_router(self, enabled: bool = True) -> None:
+		self.router.enable_fixed_weights(enabled)
+
 	def train(self, mode: bool = True):
 		super().train(mode)
-		# Keep frozen experts in eval mode to lock BN/Dropout behavior.
 		self.expert_small.eval()
 		self.expert_medium.eval()
 		self.expert_large.eval()
@@ -250,7 +245,7 @@ class CrossGapMoE(nn.Module):
 			diff_s = torch.abs(f1_s - f2_s)
 			diff_m = torch.abs(f1_m - f2_m)
 			diff_l = torch.abs(f1_l - f2_l)
-   
+
 			dist_s = 1 - score_s
 			dist_m = 1 - score_m
 			dist_l = 1 - score_l
@@ -267,36 +262,24 @@ class CrossGapMoE(nn.Module):
 			return_logits=True,
 		)
 
-		score_s_calib = self.calib_small(score_s)
-		score_m_calib = self.calib_medium(score_m)
-		score_l_calib = self.calib_large(score_l)
-
-		stacked_scores = torch.stack([score_s_calib, score_m_calib, score_l_calib], dim=1)
-		if self.score_aggregation_mode == "top1":
-			top1_idx = torch.argmax(weights, dim=1, keepdim=True)
-			score_final = torch.gather(stacked_scores, dim=1, index=top1_idx).squeeze(1)
-		else:
-			score_final = torch.sum(weights.detach() * stacked_scores, dim=1)
+		stacked_scores = torch.stack([score_s, score_m, score_l], dim=1)
+		score_final = torch.sum(weights * stacked_scores, dim=1)
 
 		if not return_details:
 			return score_final, weights
 
 		details = {
-			"router_logits": router_logits,
-			"score_aggregation_mode": torch.tensor(0 if self.score_aggregation_mode == "weighted" else 1, device=weights.device),
-			"top1_expert_idx": torch.argmax(weights, dim=1),
 			"score_small": score_s,
 			"score_medium": score_m,
 			"score_large": score_l,
-			"score_small_calib": score_s_calib,
-			"score_medium_calib": score_m_calib,
-			"score_large_calib": score_l_calib,
 			"diff_small": diff_s,
 			"diff_medium": diff_m,
 			"diff_large": diff_l,
 			"dist_small": dist_s,
 			"dist_medium": dist_m,
 			"dist_large": dist_l,
+			"fixed_router_weights": self.router.fixed_weights.clone(),
 		}
+		if router_logits is not None:
+			details["router_logits"] = router_logits
 		return score_final, weights, details
-

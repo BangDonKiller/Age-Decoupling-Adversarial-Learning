@@ -1,5 +1,5 @@
 """
-Train script for CrossGapFixedRouterMoE (3 frozen experts + dynamic router during training).
+Train script for CrossGapFixedRouterEnsemble (3 frozen experts + dynamic router during training).
 
 Loss design:
 1) Router guidance loss:
@@ -33,7 +33,7 @@ from tqdm import tqdm
 from data.vox1_loader import PairwiseDataset as Vox1PairDataset
 from data.vox2_loader import Vox2PairDataset
 from loss.circleloss import CircleLoss
-from model.disentangled_model import CrossGapFixedRouterMoE, FixedRouterExpertCheckpointPaths
+from model.disentangled_model import CrossGapFixedRouterEnsemble, FixedRouterExpertCheckpointPaths
 from params.param import DEVICE, NUM_WORKERS, BATCH_SIZE, DATASET_INFO
 from tool.EER import ComputeErrorRates, ComputeMinDcf, compute_eer
 
@@ -62,7 +62,7 @@ TRAIN_SPEC_AUG = False
 MODE = "train"
 
 TRAIN_DATASET_NAME = "VoxCeleb2"
-TRAIN_DATASET_VARIANT = "moe"
+TRAIN_DATASET_VARIANT = "ensemble"
 
 INFERENCE_DATASETS: list[tuple[str, str]] = [
 	("VoxCeleb1", "Vox-O"),
@@ -80,9 +80,9 @@ TRAIN_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["train"
 VAL_AUDIO_DIR = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_DIR"]
 VAL_META_CSV = DATASET_INFO[TRAIN_DATASET_NAME][TRAIN_DATASET_VARIANT]["val"]["AUDIO_META_DIR"]
 
-SAVE_ROOT = Path("checkpoints/cross_gap_moe_fixed_router")
-LOG_ROOT = Path("logs/cross_gap_moe_fixed_router")
-RUN_NAME = "cross_gap_moe_fixed_router_no_calibrator"
+SAVE_ROOT = Path("checkpoints/cross_gap_ensemble_fixed_router")
+LOG_ROOT = Path("logs/cross_gap_ensemble_fixed_router")
+RUN_NAME = "cross_gap_ensemble_fixed_router_no_calibrator"
 
 
 def set_seed(seed: int) -> None:
@@ -174,8 +174,8 @@ def build_run_name(seed: int) -> str:
 	return f"{RUN_NAME}_seed{seed}"
 
 
-def build_model() -> CrossGapFixedRouterMoE:
-	return CrossGapFixedRouterMoE(
+def build_model() -> CrossGapFixedRouterEnsemble:
+	return CrossGapFixedRouterEnsemble(
 		C=1024,
 		feature_dim=192,
 		router_hidden_dim=256,
@@ -206,7 +206,7 @@ def resolve_inference_ckpt_paths() -> list[str]:
 	return unique_paths
 
 
-def load_moe_checkpoint(model: CrossGapFixedRouterMoE, checkpoint_path: Path, device: str) -> dict:
+def load_ensemble_checkpoint(model: CrossGapFixedRouterEnsemble, checkpoint_path: Path, device: str) -> dict:
 	checkpoint = torch.load(str(checkpoint_path), map_location=device)
 	model_state_dict = checkpoint.get("model_state_dict")
 	if model_state_dict is None:
@@ -227,7 +227,7 @@ def load_moe_checkpoint(model: CrossGapFixedRouterMoE, checkpoint_path: Path, de
 
 	fixed_router_weights = model.router.fixed_weights.detach().cpu()
 	print("\n" + "=" * 66)
-	print(f"Loaded MoE checkpoint: {checkpoint_path}")
+	print(f"Loaded ensemble checkpoint: {checkpoint_path}")
 	print("-" * 66)
 	print(f"{'missing_keys':<16}: {len(load_result.missing_keys)}")
 	print(f"{'unexpected_keys':<16}: {len(load_result.unexpected_keys)}")
@@ -270,7 +270,7 @@ def run_inference_for_multiple_ckpts_and_datasets() -> None:
 
 		for ckpt_path in available_ckpts:
 			print(f"載入 checkpoint: {ckpt_path}")
-			load_moe_checkpoint(model, Path(ckpt_path), DEVICE)
+			load_ensemble_checkpoint(model, Path(ckpt_path), DEVICE)
 
 			infer_metrics = run_zeroshot_inference_epoch(
 				model=model,
@@ -354,7 +354,7 @@ def print_zeroshot_metrics_block(title: str, metrics: dict) -> None:
 	print("=" * 66)
 
 
-def print_trainable_parameters(model: CrossGapFixedRouterMoE) -> None:
+def print_trainable_parameters(model: CrossGapFixedRouterEnsemble) -> None:
 	trainable_named_params = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
 	total_trainable = sum(param.numel() for _, param in trainable_named_params)
 
@@ -372,7 +372,7 @@ def print_trainable_parameters(model: CrossGapFixedRouterMoE) -> None:
 
 
 def run_epoch(
-	model: CrossGapFixedRouterMoE,
+	model: CrossGapFixedRouterEnsemble,
 	loader: DataLoader,
 	optimizer: torch.optim.Optimizer | None,
 	ce_loss_fn: nn.Module,
@@ -519,7 +519,7 @@ def run_epoch(
 
 
 def run_zeroshot_inference_epoch(
-	model: CrossGapFixedRouterMoE,
+	model: CrossGapFixedRouterEnsemble,
 	loader: DataLoader,
 	device: str,
 	collect_router_weights: bool = False,
@@ -607,7 +607,7 @@ def run_zeroshot_inference_epoch(
 
 
 def save_checkpoint(
-	model: CrossGapFixedRouterMoE,
+	model: CrossGapFixedRouterEnsemble,
 	optimizer: torch.optim.Optimizer,
 	epoch: int,
 	path: Path,

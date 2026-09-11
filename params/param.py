@@ -24,10 +24,7 @@ LEARNING_RATE = 1e-3  # 從零開始訓練，用更高的學習率
 NUM_WORKERS = 0
 
 MODEL_list = {
-    # "ECAPA-TDNN": "speechbrain/spkrec-ecapa-voxceleb",
     "ECAPA-TDNN": "yangwang825/ecapa-tdnn-vox2",
-    "ResNet34": "speechbrain/spkrec-resnet-voxceleb",
-    "x-vector": "",
 }
 MODEL_ID = MODEL_list["ECAPA-TDNN"]
 
@@ -126,7 +123,7 @@ DATASET_INFO = {
                 "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_val_mixture.csv",
             },
         },
-        "moe": {
+        "ensemble": {
             "train": {
                 "AUDIO_DIR": "/app/dataset/VoxCeleb2/vox2_moe_train",
                 "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_moe_train.csv",
@@ -136,20 +133,6 @@ DATASET_INFO = {
                 "AUDIO_META_DIR": "/app/dataset/VoxCeleb2/vox2_moe_val.csv",
             },
         },
-        "audio_suffix": ".wav",
-    },
-    "LibriSpeech": {
-        "AUDIO_DIR": "D:\\Dataset\\LibriSpeech",
-        "AUDIO_META_DIR": "D:\\Dataset\\LibriSpeech\\SPEAKERS.txt",
-        "audio_suffix": ".flac",
-    },
-    "GLOBE": {
-        "AUDIO_DIR": list(Path("D:\\Dataset\\GLOBE\\data").rglob("train-*.parquet")),
-        "audio_suffix": ".parquet", 
-    },
-    "TIMIT": {
-        "AUDIO_DIR": "D:\\Dataset\\TIMIT\\data\\TRAIN",
-        "AUDIO_META_DIR": "D:\\Dataset\\TIMIT\\train_meta_data.csv",
         "audio_suffix": ".wav",
     },
     "MUSAN": {
